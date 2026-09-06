@@ -126,13 +126,45 @@ describe("file_mtime_age", () => {
 })
 
 // ── http_ok ─────────────────────────────────────────────────────────────────
+// vi.stubGlobal is not available under bun:test's vitest-compat shim.
+// Instead, follow the same pattern as packages/core/test/embedder/ollama.test.ts:
+// save the real fetch at module level, swap via Object.defineProperty in
+// beforeEach, and restore in afterEach so a failing test never leaves fetch
+// stubbed for subsequent test files.
+
+const _originalFetch = globalThis.fetch
+
+const _setFetch = (impl: typeof globalThis.fetch) => {
+  Object.defineProperty(globalThis, "fetch", {
+    configurable: true,
+    writable: true,
+    value: impl,
+  })
+}
+
+const _restoreFetch = () => {
+  if (_originalFetch === undefined) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (globalThis as { fetch?: typeof globalThis.fetch }).fetch
+  } else {
+    _setFetch(_originalFetch)
+  }
+}
 
 describe("http_ok", () => {
+  const mockFetch = vi.fn()
+
+  beforeEach(() => {
+    mockFetch.mockReset()
+    _setFetch(mockFetch as unknown as typeof globalThis.fetch)
+  })
+
+  afterEach(() => {
+    _restoreFetch()
+  })
+
   it("returns fresh when fetch responds 200", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200 }),
-    )
+    mockFetch.mockResolvedValue({ ok: true, status: 200 })
 
     const health: HealthPayload = {
       predicate: "http_ok",
@@ -147,10 +179,7 @@ describe("http_ok", () => {
   })
 
   it("returns stale when fetch responds 500", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({ ok: false, status: 500 }),
-    )
+    mockFetch.mockResolvedValue({ ok: false, status: 500 })
 
     const health: HealthPayload = {
       predicate: "http_ok",
@@ -166,10 +195,7 @@ describe("http_ok", () => {
   })
 
   it("returns ok=false (eval_error) when fetch throws (network error)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockRejectedValue(new Error("network failure")),
-    )
+    mockFetch.mockRejectedValue(new Error("network failure"))
 
     const health: HealthPayload = {
       predicate: "http_ok",
