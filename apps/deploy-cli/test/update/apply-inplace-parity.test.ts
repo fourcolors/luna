@@ -287,11 +287,11 @@ interface TsRun extends Streams {
 /**
  * DRIVE B: the port, over the same fixture shape.
  *
- * `configureClaudeExecutable` and `envValue` are the REAL bash-lib delegates,
- * resolved against the repo's own lib - the same bytes the bash drive sources -
- * because the stale-pin scenario's entire assertion is that the helper's own
- * stderr reaches the operator unaltered. A stubbed helper would assert the
- * forwarding of bytes the test itself invented.
+ * `configureClaudeExecutable`, `repinClaudeExecutable`, and `envValue` are the
+ * REAL bash-lib delegates, resolved against the repo's own lib - the same bytes
+ * the bash drive sources - because the stale-pin and wrong-version-pin scenarios'
+ * entire assertion is that the helper's own stderr reaches the operator unaltered.
+ * A stubbed helper would assert the forwarding of bytes the test itself invented.
  */
 const runTsApply = (fx: Fixture, args: ApplyArgs): TsRun => {
   const env = driveEnv(fx)
@@ -341,7 +341,15 @@ const runTsApply = (fx: Fixture, args: ApplyArgs): TsRun => {
       return args.checkoutOk
     },
     dirExists,
-    configureClaudeExecutable: (req) => lib.configureClaudeExecutable(req),
+    // Wire to the LEGACY function (luna_configure_claude_executable) so a mutation
+    // that reverts apply-inplace.ts's repinClaudeExecutable call back to
+    // configureClaudeExecutable is caught by the wrong-version-pin fixture rather
+    // than silently passing (both delegates call the same underlying function
+    // without this distinction).
+    configureClaudeExecutable: (req) => lib.legacyConfigureClaudeExecutable(req),
+    // Wire to the NEW function (luna_repin_claude_executable): unconditionally
+    // re-detects and replaces even a stale-but-executable wrong-version pin.
+    repinClaudeExecutable: (req) => lib.configureClaudeExecutable(req),
     envValue: (f, k) => lib.envValue(f, k),
     commandExists: makeCommandExists(env),
     isExecutable,
@@ -876,6 +884,37 @@ describe("apply_ref_inplace: the claude re-pin on a BARE HOST", () => {
     expect(p.bash.rc).toBe(1)
     expect(p.step).toBe("claude-repin")
     // The degrade check sits AFTER the `|| return 1`, so it never runs.
+    expect(p.bash.stderr).not.toContain("POSTCONDITION degraded")
+  })
+
+  it("re-pins a stale-but-executable wrong-version pin to the fresh binary", { timeout: 60_000 }, () => {
+    // THE SCENARIO THIS ROW EXISTS FOR: a pin that passes the `[[ -x $value ]]`
+    // guard in luna_configure_claude_executable (so the old function would return
+    // early without re-detecting) but is NOT the binary luna_find_claude_executable
+    // now resolves — e.g. a 0.3.175 symlink still present after a lockfile-bumping
+    // bun install upgraded the SDK to 0.3.257. luna_repin_claude_executable
+    // bypasses the keep-if-executable guard and always re-detects, so both engines
+    // replace the wrong-version pin with the freshly-installed binary.
+    //
+    // DRIVE A (bash) calls luna_repin_claude_executable directly at :1262.
+    // DRIVE B (ts) calls opts.repinClaudeExecutable which is wired to
+    // bashLib.configureClaudeExecutable, itself delegating luna_repin_claude_executable.
+    // The parity assertion is the whole point: if Drive B were wired to
+    // luna_configure_claude_executable instead, it would return silently while
+    // Drive A emits the `replacing stale claude pin` warning — the diff would catch
+    // it, and that diff is the mutation-check for this fixture.
+    const p = drivePair(
+      { readyAtTarget: true, readyAtPrev: true, claude: { stub: "present", envPin: "wrong-version" } },
+      args,
+    )
+    expectParity(p)
+    expect(p.bash.rc).toBe(0)
+    // luna_repin_claude_executable emits `replacing stale claude pin: <old> -> <new>`
+    // when it replaces an existing (wrong) pin. The old path is the wrong-version
+    // binary written by the fixture; the new path is the claude stub that
+    // luna_find_claude_executable resolves from PATH.
+    expect(p.bash.stderr).toContain("warning: replacing stale claude pin:")
+    expect(p.bash.stderr).toContain("wrong-version-claude")
     expect(p.bash.stderr).not.toContain("POSTCONDITION degraded")
   })
 })

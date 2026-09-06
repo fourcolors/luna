@@ -126,6 +126,7 @@ const makeRig = (options: RigOptions): Rig => {
       claudeRequests.push(request)
       return { ok: true, exitCode: 0, stdout: "", stderr: "" }
     },
+    legacyConfigureClaudeExecutable: () => ({ ok: true, exitCode: 0, stdout: "", stderr: "" }),
   }
   const deps = buildFlowDeps({
     config: options.config,

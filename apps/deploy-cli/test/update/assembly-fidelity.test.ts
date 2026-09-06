@@ -83,6 +83,7 @@ const FIXTURE_BASH_LIB: BashLib = {
   findBun: () => ({ ok: true, path: "/fixture/bun" }),
   envValue: () => ({ found: true, value: "", exitCode: 0, stderr: "" }),
   configureClaudeExecutable: () => ({ ok: true, exitCode: 0, stdout: "", stderr: "" }),
+  legacyConfigureClaudeExecutable: () => ({ ok: true, exitCode: 0, stdout: "", stderr: "" }),
 }
 
 /**

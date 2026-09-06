@@ -677,13 +677,18 @@ exit 1
  * `stub` decides what `command -v claude` answers - the FIRST branch of
  * luna_find_claude_executable (scripts/lib/luna-deploy.sh:113-116) and the
  * whole of the warn-only degrade check. `envPin` decides what
- * luna_configure_claude_executable reads out of ENV_FILE before it detects
- * anything (:128, :134-141):
- *   - "detected": the pin already names the claude stub, which is executable,
- *     so the helper returns at :134-136 having written nothing.
+ * luna_repin_claude_executable reads out of ENV_FILE before it detects
+ * anything (:188-212):
+ *   - "detected": the pin already names the claude stub, which is executable
+ *     AND is the same path luna_find_claude_executable would detect, so the
+ *     helper writes nothing and stays silent.
  *   - "stale": the pin names a path that does not exist, so the helper emits
- *     `removing stale LUNA_CLAUDE_CODE_EXECUTABLE (<path> is not executable)`
+ *     `no usable claude binary found after bun install; clearing stale pin: <path>`
  *     on stderr, removes the key, and re-detects.
+ *   - "wrong-version": the pin names a DIFFERENT executable (not the stub in
+ *     fx.bin), so the helper emits `replacing stale claude pin: <old> -> <new>`
+ *     and upserts the freshly-detected binary. Requires `stub: "present"` so
+ *     luna_find_claude_executable resolves the stub from PATH.
  * Omitting `envPin` writes no .env at all, which is what every pre-S22d
  * fixture did.
  *
@@ -692,7 +697,7 @@ exit 1
  */
 export interface ClaudeFixtureOptions {
   readonly stub?: "present" | "absent"
-  readonly envPin?: "detected" | "stale"
+  readonly envPin?: "detected" | "stale" | "wrong-version"
 }
 
 /**
@@ -867,7 +872,24 @@ export const makeFixture = (opts: FixtureOptions): Fixture => {
     if (claude.envPin === "detected" && claudeBin === undefined) {
       throw new Error("makeFixture: claude.envPin 'detected' requires claude.stub 'present' (the pin must name an executable)")
     }
-    const pinned = claude.envPin === "detected" ? claudeBin : join(temp, "stale-claude")
+    if (claude.envPin === "wrong-version" && claudeBin === undefined) {
+      throw new Error("makeFixture: claude.envPin 'wrong-version' requires claude.stub 'present' (needs a fresh binary to re-pin to)")
+    }
+    let pinned: string | undefined
+    if (claude.envPin === "detected") {
+      pinned = claudeBin
+    } else if (claude.envPin === "wrong-version") {
+      // A DIFFERENT executable: exists and is executable (so the keep-if-executable
+      // guard in luna_configure_claude_executable would skip re-detection), but NOT
+      // the binary luna_find_claude_executable would detect. luna_repin_claude_executable
+      // bypasses that guard and replaces it with the freshly-detected binary.
+      const wrongVersionBin = join(temp, "wrong-version-claude")
+      writeFileSync(wrongVersionBin, "#!/bin/sh\nexit 0\n")
+      chmodExec(wrongVersionBin)
+      pinned = wrongVersionBin
+    } else {
+      pinned = join(temp, "stale-claude")
+    }
     mkdirSync(lunaHome, { recursive: true })
     // mode 600: the same posture luna_upsert_env enforces on the file it
     // rewrites (scripts/lib/luna-deploy.sh:52-62), so the fixture's starting

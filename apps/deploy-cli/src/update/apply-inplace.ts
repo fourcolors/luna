@@ -14,7 +14,7 @@
  * module spawns nothing, stats nothing, reads no environment variable and
  * writes to no stream it was not handed. `gitTarget`/`gitTargetCapture`/
  * `runTarget` are already target.ts's narrow waist; `lockfileHash`,
- * `onCheckout`, `dirExists`, `configureClaudeExecutable`, `envValue`,
+ * `onCheckout`, `dirExists`, `configureClaudeExecutable`, `repinClaudeExecutable`, `envValue`,
  * `commandExists` and `isExecutable` are the remaining collaborators bash
  * reaches through global state. Injecting all of them is what lets the parity
  * suite drive the REAL bash function and this function over one fixture and
@@ -185,6 +185,15 @@ export interface ApplyInplaceOptions {
   readonly dirExists: (path: string) => boolean
   /** bash-lib.ts's `configureClaudeExecutable`, host arm only (:1245). */
   readonly configureClaudeExecutable: (req: ConfigureClaudeRequest) => ConfigureClaudeResult
+  /**
+   * bash-lib.ts's `repinClaudeExecutable` (luna_repin_claude_executable :1262),
+   * host arm only. Unconditionally re-detects and re-writes the pin so a
+   * stale-but-executable wrong-version pin (e.g. 0.3.175 still linked at
+   * /usr/local/bin/claude after a lockfile-bumping bun install) is replaced by
+   * the freshly-installed binary. Mirrors the incus arm's luna_repin_claude_executable
+   * call inside the container payload.
+   */
+  readonly repinClaudeExecutable: (req: ConfigureClaudeRequest) => ConfigureClaudeResult
   /** bash-lib.ts's `envValue`, host arm only (:1248). */
   readonly envValue: (envFile: string, key: string) => EnvValueResult
   /**
@@ -327,7 +336,7 @@ export const applyInplaceSync = (opts: ApplyInplaceOptions): ApplyInplaceOutcome
     if (rc === REPIN_NO_CLAUDE) opts.warn(claudeDegradedLine)
     else if (rc !== 0) return { ok: false, step: "claude-repin" }
   } else {
-    const result = opts.configureClaudeExecutable({
+    const result = opts.repinClaudeExecutable({
       envFile: opts.envFile,
       // bash's `$REPO_DIR` (:1245). See this module's header for why this is
       // deliberately not `containerRepoDir` even though they are equal here.
