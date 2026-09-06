@@ -90,7 +90,7 @@ afterEach(() => {
 
 const settleInvalidOracle = (secs: string): string =>
   bashLogLine({
-    line: 1293,
+    line: 1287,
     fn: "luna_warn",
     anchor: "is not a non-negative number of seconds",
     vars: { RESTART_SETTLE_SECS: secs },
@@ -98,7 +98,7 @@ const settleInvalidOracle = (secs: string): string =>
 
 const settlingOracle = (secs: string): string =>
   bashLogLine({
-    line: 1296,
+    line: 1290,
     fn: "luna_info",
     anchor: "after stop so DuckDB/SQLite release",
     vars: { RESTART_SETTLE_SECS: secs },
@@ -106,7 +106,7 @@ const settlingOracle = (secs: string): string =>
 
 const settleSleepFailedOracle = (secs: string): string =>
   bashLogLine({
-    line: 1300,
+    line: 1294,
     fn: "luna_warn",
     anchor: "post-stop settle sleep failed",
     vars: { RESTART_SETTLE_SECS: secs },
@@ -114,18 +114,18 @@ const settleSleepFailedOracle = (secs: string): string =>
 
 const startLimitOracle = (serviceName: string): string =>
   bashLogLine({
-    line: 1392,
+    line: 1386,
     fn: "luna_warn",
     anchor: "is start-limit latched failed",
     vars: { SERVICE_NAME: serviceName },
   })
 
 const mainPidInconclusiveOracle = (): string =>
-  bashLogLine({ line: 1586, fn: "luna_warn", anchor: "restart postcondition INCONCLUSIVE" })
+  bashLogLine({ line: 1580, fn: "luna_warn", anchor: "restart postcondition INCONCLUSIVE" })
 
 const mainPidUnchangedOracle = (prePid: string, postPid: string): string =>
   bashLogLine({
-    line: 1590,
+    line: 1584,
     fn: "luna_warn",
     anchor: "restart did not replace the server process",
     vars: { pre_pid: prePid, post_pid: postPid },
@@ -526,7 +526,7 @@ describe("the guard verdict line is emitted from inside the primitive, before an
 
     expect(outcome.code).toBe(3)
     const expected = bashLogLine({
-      line: 1502,
+      line: 1496,
       fn: "luna_warn",
       anchor: "deferring restart",
       vars: { n: "2", READINESS_PORT: READINESS_PORT },
@@ -547,7 +547,7 @@ describe("the guard verdict line is emitted from inside the primitive, before an
 
     expect(outcome.code).toBe(0)
     const expected = bashLogLine({
-      line: 1518,
+      line: 1512,
       fn: "luna_warn",
       anchor: "no server process; restart permitted",
       vars: { state: "failed" },
@@ -572,14 +572,14 @@ describe("the guard verdict line is emitted from inside the primitive, before an
     const unreachable = makeRig()
     expect(runRestart(unreachable, { guard: { queryActiveWsCount: unknown }, unitState: "" }).code).toBe(3)
     expect(unreachable.warns).toEqual([
-      bashLogLine({ line: 1521, fn: "luna_warn", anchor: "transport never reached systemd" }),
+      bashLogLine({ line: 1515, fn: "luna_warn", anchor: "transport never reached systemd" }),
     ])
 
     const uncertain = makeRig()
     expect(runRestart(uncertain, { guard: { queryActiveWsCount: unknown }, unitState: "activating\n" }).code).toBe(3)
     expect(uncertain.warns).toEqual([
       bashLogLine({
-        line: 1524,
+        line: 1518,
         fn: "luna_warn",
         anchor: "may be serving; deferring",
         vars: { state: "activating" },
@@ -593,7 +593,7 @@ describe("the guard verdict line is emitted from inside the primitive, before an
 
     expect(outcome.code).toBe(0)
     const expected = bashLogLine({
-      line: 1488,
+      line: 1482,
       fn: "luna_warn",
       anchor: "SESSION GUARD OVERRIDDEN by operator",
       vars: { OPERATOR_OVERRIDE_REASON: "incident 42" },

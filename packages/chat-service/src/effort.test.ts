@@ -18,6 +18,7 @@ const XHIGH_CAPABLE = [
   "claude-opus-4-8",
   "claude-opus-4-7",
   "claude-fable-5",
+  "claude-fable-5-1",  // SDK 0.3.257: same xhigh_effort capability as fable-5
   "claude-opus-5",
   "claude-sonnet-5",
 ]
@@ -130,6 +131,10 @@ describe("defaultEffortForModel — per-model default effort", () => {
 
   it("defaults Fable 5 to 'high' (SDK: default_effort: high)", () => {
     expect(defaultEffortForModel("claude-fable-5")).toBe("high")
+  })
+
+  it("defaults Fable 5.1 to 'high' (SDK 0.3.257: same default_effort as fable-5)", () => {
+    expect(defaultEffortForModel("claude-fable-5-1")).toBe("high")
   })
 
   it("defaults Opus 5 to 'high' (SDK 0.3.219: default_effort: high)", () => {

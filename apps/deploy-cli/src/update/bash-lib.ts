@@ -3,7 +3,7 @@
  * the four functions the binary deliberately does not port:
  * `luna_validate_profile` (scripts/lib/luna-deploy.sh:182-185),
  * `luna_find_bun` (:441-455), `luna_env_value` (:88-101) and
- * `luna_configure_claude_executable` (:124-148).
+ * `luna_repin_claude_executable` (:213-248).
  *
  * WHY DELEGATE RATHER THAN TRANSCRIBE. Three of the four write or read the
  * server's `.env`, and the write path (`luna_upsert_env`, :35-64 via
@@ -74,7 +74,7 @@
  * whitespace the bash keeps.
  *
  * OUT OF SCOPE: `luna_upsert_env` / `luna_remove_env` as standalone entry
- * points (nothing outside `luna_configure_claude_executable` needs them on the
+ * points (nothing outside `luna_repin_claude_executable` needs them on the
  * inplace path), and the host-arm degrade check's `command -v claude`
  * (scripts/luna-update-server:1253), which belongs to apply-inplace.ts along
  * with the rest of that arm's outcome arity.
@@ -218,7 +218,7 @@ export function resolveBashLib(options: ResolveBashLibOptions): ResolveBashLibRe
       ok: false,
       exitCode: 1,
       errorLine: lunaDieLine(
-        `no readable ${LIB_RELATIVE} at ${libFile} (derived from ${BASH_ENGINE_ENV}=${engine}); the binary engine delegates luna_validate_profile, luna_find_bun, luna_env_value and luna_configure_claude_executable to it`,
+        `no readable ${LIB_RELATIVE} at ${libFile} (derived from ${BASH_ENGINE_ENV}=${engine}); the binary engine delegates luna_validate_profile, luna_find_bun, luna_env_value and luna_repin_claude_executable to it`,
       ),
     }
   }
@@ -289,8 +289,21 @@ export interface BashLib {
   readonly findBun: () => FindBunResult
   /** `luna_env_value "$ENV_FILE" <KEY>` (scripts/luna-update-server:1248, :845). */
   readonly envValue: (envFile: string, key: string) => EnvValueResult
-  /** `luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"` (scripts/luna-update-server:1245). */
+  /** `luna_repin_claude_executable "$ENV_FILE" "$REPO_DIR"` (scripts/luna-update-server:1262). */
   readonly configureClaudeExecutable: (request: ConfigureClaudeRequest) => ConfigureClaudeResult
+  /**
+   * `luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR"` (scripts/lib/luna-deploy.sh:150-174).
+   *
+   * EXPOSED FOR PARITY-SUITE MUTATION CHECKING ONLY — this is the OLD function
+   * that keeps a stale-but-executable pin. Production code must call
+   * `configureClaudeExecutable` (which delegates `luna_repin_claude_executable`)
+   * or the `repinClaudeExecutable` delegate on `ApplyInplaceOpts`. Having this
+   * method lets the parity test wire `configureClaudeExecutable` to the legacy
+   * function and `repinClaudeExecutable` to the new one, so a mutation that
+   * reverts the host arm to `opts.configureClaudeExecutable` produces a test
+   * failure on the wrong-version-pin fixture rather than silently passing.
+   */
+  readonly legacyConfigureClaudeExecutable: (request: ConfigureClaudeRequest) => ConfigureClaudeResult
 }
 
 const makeBashLib = (bashEngine: string, libFile: string, runBash: BashRunner): BashLib => {
@@ -324,10 +337,21 @@ const makeBashLib = (bashEngine: string, libFile: string, runBash: BashRunner): 
     },
 
     configureClaudeExecutable: ({ envFile, repoDir, dryRun }) => {
-      const r = call("luna_configure_claude_executable", [envFile, repoDir], {
+      const r = call("luna_repin_claude_executable", [envFile, repoDir], {
         // The helper reads `${DRY_RUN:-false}`; pass the literal both ways so a
         // stale DRY_RUN in the inherited environment cannot leak in and turn a
         // real deploy's re-pin into a no-op.
+        DRY_RUN: dryRun ? "true" : "false",
+      })
+      return { ok: r.status === 0, exitCode: r.status, stdout: r.stdout, stderr: r.stderr }
+    },
+
+    legacyConfigureClaudeExecutable: ({ envFile, repoDir, dryRun }) => {
+      // THE OLD FUNCTION - keeps a stale-but-executable pin unchanged.
+      // Only used by the parity suite to wire the "wrong" delegate for mutation
+      // checking so a revert of the host arm's repinClaudeExecutable call to
+      // configureClaudeExecutable is caught by the wrong-version-pin fixture.
+      const r = call("luna_configure_claude_executable", [envFile, repoDir], {
         DRY_RUN: dryRun ? "true" : "false",
       })
       return { ok: r.status === 0, exitCode: r.status, stdout: r.stdout, stderr: r.stderr }

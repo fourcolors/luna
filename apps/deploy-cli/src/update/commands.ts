@@ -187,7 +187,7 @@ export const bunRunArgv = (bunBin: string, script: string): ReadonlyArray<string
  * transcription.
  */
 export const incusRepinPayload =
-  "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n $v && -x $v ]] || command -v claude >/dev/null 2>&1 || exit 9; }"
+  "source /root/luna/scripts/lib/luna-deploy.sh && luna_repin_claude_executable /root/.luna/.env /root/luna && { v=$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n $v && -x $v ]] || exit 9; }"
 
 /**
  * The argv `run_target` receives for the re-pin, i.e. exactly

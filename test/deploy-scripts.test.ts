@@ -3413,7 +3413,161 @@ esac`
     })
   })
 
-  // ── phase 2: luna-autodeploy --force gating (human-only, reason-gated) ─────
+  describe("luna_repin_claude_executable — stale-but-executable pin is replaced, not kept", () => {
+    const LIB = join(repoRoot, "scripts/lib/luna-deploy.sh")
+
+    // Source the lib and call luna_repin_claude_executable directly.
+    // Stubs: a stale_claude at a path that already exists and is executable,
+    // and a fresh_claude in the node_modules glibc location that is also
+    // executable. The repin MUST replace the stale pin even though it is -x.
+    const runRepin = (
+      envFile: string,
+      repoDir: string,
+      extraEnv: Record<string, string | undefined> = {},
+    ) =>
+      spawnSync(
+        "bash",
+        [
+          "-c",
+          `set -uo pipefail; source "${LIB}"; luna_repin_claude_executable "$ENV_FILE" "$REPO_DIR"`,
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: { ...process.env, ENV_FILE: envFile, REPO_DIR: repoDir, ...extraEnv },
+        },
+      )
+
+    it("replaces a stale-but-executable pin with the repo-bundled glibc binary", () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      const envFile = join(temp, ".env")
+
+      // Stale pin: exists, executable, but NOT the freshly-installed one.
+      const stalePin = join(temp, "stale-claude")
+      // Fresh binary: the glibc location luna_find_claude_executable prefers.
+      const freshClaude = join(
+        repo,
+        "node_modules",
+        "@anthropic-ai",
+        "claude-agent-sdk-linux-x64",
+        "claude",
+      )
+
+      mkdirSync(join(freshClaude, ".."), { recursive: true })
+      // Stale binary reports --version OK (it's executable).
+      writeFileSync(stalePin, "#!/usr/bin/env bash\nexit 0\n")
+      // Fresh binary also passes --version (used by luna_find_claude_executable).
+      writeFileSync(freshClaude, "#!/usr/bin/env bash\nexit 0\n")
+      spawnSync("chmod", ["+x", stalePin, freshClaude])
+
+      // Pre-condition: .env pins the stale binary.
+      writeFileSync(envFile, `LUNA_CLAUDE_CODE_EXECUTABLE=${stalePin}\n`)
+
+      const result = runRepin(envFile, repo, {
+        // Keep PATH clean so PATH fallback doesn't interfere.
+        PATH: "/usr/bin:/bin",
+      })
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(result.stderr).toContain("replacing stale claude pin")
+      const written = readFileSync(envFile, "utf8")
+      // The pin must now point at the FRESH binary, not the stale one.
+      expect(written).toContain(`LUNA_CLAUDE_CODE_EXECUTABLE=${freshClaude}`)
+      expect(written).not.toContain(stalePin)
+    })
+
+    it("is a no-op when the pin already matches the best available binary", () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      const envFile = join(temp, ".env")
+
+      const freshClaude = join(
+        repo,
+        "node_modules",
+        "@anthropic-ai",
+        "claude-agent-sdk-linux-x64",
+        "claude",
+      )
+      mkdirSync(join(freshClaude, ".."), { recursive: true })
+      writeFileSync(freshClaude, "#!/usr/bin/env bash\nexit 0\n")
+      spawnSync("chmod", ["+x", freshClaude])
+
+      // Pre-condition: .env already pins the correct binary.
+      writeFileSync(envFile, `LUNA_CLAUDE_CODE_EXECUTABLE=${freshClaude}\n`)
+
+      const result = runRepin(envFile, repo, { PATH: "/usr/bin:/bin" })
+
+      expect(result.status, result.stderr).toBe(0)
+      // No "replacing" message — it was already correct.
+      expect(result.stderr).not.toContain("replacing")
+      // Pin value is unchanged.
+      expect(readFileSync(envFile, "utf8")).toContain(
+        `LUNA_CLAUDE_CODE_EXECUTABLE=${freshClaude}`,
+      )
+    })
+
+    it("prefers glibc (non-musl) binary when both exist in node_modules", () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      const envFile = join(temp, ".env")
+
+      // musl binary (must NOT be picked on glibc hosts).
+      const muslClaude = join(
+        repo,
+        "node_modules",
+        "@anthropic-ai",
+        "claude-agent-sdk-linux-x64-musl",
+        "claude",
+      )
+      // glibc binary (must be picked).
+      const glibcClaude = join(
+        repo,
+        "node_modules",
+        "@anthropic-ai",
+        "claude-agent-sdk-linux-x64",
+        "claude",
+      )
+      mkdirSync(join(muslClaude, ".."), { recursive: true })
+      mkdirSync(join(glibcClaude, ".."), { recursive: true })
+      writeFileSync(muslClaude, "#!/usr/bin/env bash\nexit 0\n")
+      writeFileSync(glibcClaude, "#!/usr/bin/env bash\nexit 0\n")
+      spawnSync("chmod", ["+x", muslClaude, glibcClaude])
+
+      writeFileSync(envFile, "")
+
+      const result = runRepin(envFile, repo, { PATH: "/usr/bin:/bin" })
+
+      expect(result.status, result.stderr).toBe(0)
+      const written = readFileSync(envFile, "utf8")
+      // glibc path must be chosen, musl must NOT appear.
+      expect(written).toContain(`LUNA_CLAUDE_CODE_EXECUTABLE=${glibcClaude}`)
+      expect(written).not.toContain("musl")
+    })
+
+    it("falls back to PATH claude when node_modules has no binary", () => {
+      const temp = makeTempDir()
+      const repo = join(temp, "repo")
+      const envFile = join(temp, ".env")
+      const bin = join(temp, "bin")
+
+      mkdirSync(join(repo, "node_modules"), { recursive: true })
+      mkdirSync(bin, { recursive: true })
+      const pathClaude = join(bin, "claude")
+      writeFileSync(pathClaude, "#!/usr/bin/env bash\nexit 0\n")
+      spawnSync("chmod", ["+x", pathClaude])
+      writeFileSync(envFile, "")
+
+      const result = runRepin(envFile, repo, { PATH: `${bin}:/usr/bin:/bin` })
+
+      expect(result.status, result.stderr).toBe(0)
+      expect(readFileSync(envFile, "utf8")).toContain(
+        `LUNA_CLAUDE_CODE_EXECUTABLE=${pathClaude}`,
+      )
+    })
+  })
+
+    // ── phase 2: luna-autodeploy --force gating (human-only, reason-gated) ─────
   describe("luna-autodeploy --force gating", () => {
     const LUNA_AUTODEPLOY = join(repoRoot, "scripts/luna-autodeploy")
 

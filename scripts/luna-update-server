@@ -1232,26 +1232,26 @@ apply_ref_inplace() {
     luna_info "bun.lock unchanged -> skipping bun install"
   fi
 
-  # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE (no-op in dry-run). Deps can move on
-  # `bun install` and the override path goes stale — without re-pinning the
-  # server boots but cannot spawn `claude` (a REAL incident this session).
+  # Re-pin LUNA_CLAUDE_CODE_EXECUTABLE unconditionally after bun install (no-op
+  # in dry-run). Use luna_repin_claude_executable, NOT luna_configure_claude_executable:
+  # the configure helper keeps a stale-but-executable pin — a 0.3.175 binary that
+  # is still -x never gets replaced, making the SDK bump a runtime no-op. The repin
+  # helper bypasses the keep-if-executable guard and always re-detects, mirroring
+  # repin_claude_releases which carries the same comment for the releases path.
   if [[ -n "$INCUS_CONTAINER" ]]; then
     # The container's claude executable + .env are container-FS artifacts; a
-    # host-side luna_configure_claude_executable would introspect HOST paths and
-    # write a host-perspective path into the container's .env (wrong). Run the same
-    # helper INSIDE the container against the container's .env (/root/.luna/.env)
-    # and repo (/root/luna), sourcing the shared lib there. (no-op in dry-run.)
+    # host-side call would introspect HOST paths and write a host-perspective path
+    # into the container's .env (wrong). Run luna_repin_claude_executable INSIDE
+    # the container against the container's .env (/root/.luna/.env) and repo
+    # (/root/luna), sourcing the shared lib there. (no-op in dry-run.)
     #
-    # POSTCONDITION (warn-only): the re-pin helper returns 0 even when it found
-    # nothing to pin — the silent half of the real incident where the server
-    # boots but cannot spawn `claude`. The verification rides the SAME payload
-    # so it observes the container's PATH/.env; exit 9 marks "no usable claude"
-    # distinctly from a transport/exec failure. Warn-only because rollback
-    # cannot fix an absent binary, and failing the deploy would deadlock
-    # updates on an orthogonal defect.
+    # POSTCONDITION (warn-only): exit 9 marks "no usable claude found" distinctly
+    # from a transport/exec failure. Warn-only because rollback cannot fix an
+    # absent binary, and failing the deploy would deadlock updates on an orthogonal
+    # defect.
     local repin_rc=0
     run_target bash -lc \
-      "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }" ||
+      "source /root/luna/scripts/lib/luna-deploy.sh && luna_repin_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || exit 9; }" ||
       repin_rc=$?
     if (( repin_rc == 9 )); then
       luna_warn "POSTCONDITION degraded: no usable claude executable after re-pin — server will boot but cannot spawn claude"
@@ -1259,13 +1259,7 @@ apply_ref_inplace() {
       return 1
     fi
   else
-    luna_configure_claude_executable "$ENV_FILE" "$REPO_DIR" || return 1
-    # Same warn-only postcondition, evaluated host-side.
-    local claude_pin
-    claude_pin="$(luna_env_value "$ENV_FILE" LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true)"
-    if [[ -z "$claude_pin" || ! -x "$claude_pin" ]] && ! command -v claude >/dev/null 2>&1; then
-      luna_warn "POSTCONDITION degraded: no usable claude executable after re-pin — server will boot but cannot spawn claude"
-    fi
+    luna_repin_claude_executable "$ENV_FILE" "$REPO_DIR" || return 1
   fi
 
 }
@@ -1716,7 +1710,7 @@ if [[ "$DRY_RUN" == true ]]; then
   run_target "$BUN_BIN" install --cwd "$CONTAINER_REPO_DIR" --frozen-lockfile
   if [[ -n "$INCUS_CONTAINER" ]]; then
     run_target bash -lc \
-      "source /root/luna/scripts/lib/luna-deploy.sh && luna_configure_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || command -v claude >/dev/null 2>&1 || exit 9; }"
+      "source /root/luna/scripts/lib/luna-deploy.sh && luna_repin_claude_executable /root/.luna/.env /root/luna && { v=\$(luna_env_value /root/.luna/.env LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true); [[ -n \$v && -x \$v ]] || exit 9; }"
   fi
   restart_service
   run_target "$BUN_BIN" run "$(dream_wake_install_script)"

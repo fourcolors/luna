@@ -104,21 +104,47 @@ luna_find_claude_executable() {
   local repo_dir="$1"
   local candidate
 
-  if command -v claude >/dev/null 2>&1; then
-    command -v claude
-    return 0
+  # Prefer the repo's own installed SDK binary before falling back to PATH.
+  # Detection priority mirrors the TS healer (claude-executable.ts):
+  #   1. The glibc platform package inside node_modules (never the -musl twin,
+  #      which errors "cannot execute: required file not found" on glibc hosts).
+  #   2. PATH claude, as a last resort.
+  # Each candidate is verified with `--version` rather than just -x, so a
+  # mis-architecture binary (musl on glibc, wrong arch) is rejected early.
+  #
+  # WHY repo-first: `command -v claude` in PATH on a live host resolves the
+  # INSTALLED symlink at /usr/local/bin/claude — a symlink that may point at a
+  # stale SDK release (e.g. 0.3.175 on a box whose lockfile already has 0.3.239+).
+  # Checking PATH first re-pins the stale binary even after a successful
+  # bun install, making the bump a runtime no-op.
+
+  if [[ -d "$repo_dir/node_modules" ]]; then
+    # Hoisted layout: node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+    candidate="$(
+      find "$repo_dir/node_modules" \
+        -path '*/@anthropic-ai/claude-agent-sdk-linux-x64/claude' \
+        -not -path '*-musl*' \
+        -type f -perm -111 2>/dev/null |
+        sort |
+        tail -n 1
+    )"
+    if [[ -n "$candidate" ]] && "$candidate" --version >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
   fi
 
-  [[ -d "$repo_dir/node_modules" ]] || return 1
-  candidate="$(
-    find "$repo_dir/node_modules" \
-      -path '*/@anthropic-ai/claude-agent-sdk-linux-x64/claude' \
-      -type f -perm -111 2>/dev/null |
-      sort |
-      tail -n 1
-  )"
-  [[ -n "$candidate" ]] || return 1
-  printf '%s\n' "$candidate"
+  # PATH fallback (e.g. the operator has no node_modules yet — fresh install path).
+  if command -v claude >/dev/null 2>&1; then
+    candidate="$(command -v claude)"
+    if "$candidate" --version >/dev/null 2>&1; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+    luna_warn "claude found in PATH ($candidate) but --version failed — skipping stale/mis-arch binary"
+  fi
+
+  return 1
 }
 
 luna_configure_claude_executable() {
@@ -144,6 +170,44 @@ luna_configure_claude_executable() {
   detected="$(luna_find_claude_executable "$repo_dir" || true)"
   if [[ -n "$detected" ]]; then
     luna_upsert_env "$env_file" "LUNA_CLAUDE_CODE_EXECUTABLE" "$detected"
+  fi
+}
+
+# luna_repin_claude_executable <env_file> <repo_dir>
+#
+# Unconditionally re-detect and re-write LUNA_CLAUDE_CODE_EXECUTABLE.
+# Unlike luna_configure_claude_executable, this function BYPASSES the
+# keep-if-executable guard so a stale-but-executable pin (e.g. a 0.3.175
+# symlink still pointing at the old release after a lockfile-bumping bun
+# install) gets replaced by the freshly-installed binary.
+#
+# Call this AFTER a lockfile-changing bun install, mirroring repin_claude_releases
+# which does the same for the releases layout. If detection finds nothing, the
+# old pin is cleared and a warn-only degraded notice is emitted (the server
+# still boots, just cannot spawn claude — same posture as repin_claude_releases).
+luna_repin_claude_executable() {
+  local env_file="$1"
+  local repo_dir="$2"
+
+  [[ "${DRY_RUN:-false}" == true ]] && return 0
+
+  local detected
+  detected="$(luna_find_claude_executable "$repo_dir" || true)"
+
+  local old_pin
+  old_pin="$(luna_env_value "$env_file" LUNA_CLAUDE_CODE_EXECUTABLE 2>/dev/null || true)"
+
+  if [[ -n "$detected" ]]; then
+    if [[ "$old_pin" != "$detected" ]]; then
+      [[ -n "$old_pin" ]] && luna_warn "replacing stale claude pin: $old_pin -> $detected"
+      luna_upsert_env "$env_file" "LUNA_CLAUDE_CODE_EXECUTABLE" "$detected"
+    fi
+  else
+    if [[ -n "$old_pin" ]]; then
+      luna_warn "no usable claude binary found after bun install; clearing stale pin: $old_pin"
+      luna_remove_env "$env_file" "LUNA_CLAUDE_CODE_EXECUTABLE"
+    fi
+    luna_warn "POSTCONDITION degraded: no usable claude executable detected — server will boot but cannot spawn claude"
   fi
 }
 

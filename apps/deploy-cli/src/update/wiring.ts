@@ -545,6 +545,8 @@ export const buildFlowDeps = (args: BuildFlowDepsArgs): UpdateFlowDeps => {
       dirExists: io.dirExists,
       configureClaudeExecutable: (req: ConfigureClaudeRequest): ConfigureClaudeResult =>
         bashLib.configureClaudeExecutable(req),
+      repinClaudeExecutable: (req: ConfigureClaudeRequest): ConfigureClaudeResult =>
+        bashLib.configureClaudeExecutable(req),
       envValue: (envFile: string, key: string): EnvValueResult => bashLib.envValue(envFile, key),
       commandExists: io.commandExists,
       isExecutable: io.isExecutable,

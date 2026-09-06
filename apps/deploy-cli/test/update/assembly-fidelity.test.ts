@@ -3,7 +3,7 @@
  * each pinned by the source it was measured against rather than by a
  * transcription of the fix.
  *
- *   1. bash guards three journal writes with `|| true` (:1816, :1856, :1865)
+ *   1. bash guards three journal writes with `|| true` (:1810, :1877, :1886)
  *      while the port bound them to a seam that THROWS, which loses exit 2 on
  *      the CRITICAL path and with it the whole exit-code contract.
  *   2. `${NEW_HEAD:-$REF}` was ported as `newHead ?? ref`, which substitutes
@@ -83,6 +83,7 @@ const FIXTURE_BASH_LIB: BashLib = {
   findBun: () => ({ ok: true, path: "/fixture/bun" }),
   envValue: () => ({ found: true, value: "", exitCode: 0, stderr: "" }),
   configureClaudeExecutable: () => ({ ok: true, exitCode: 0, stdout: "", stderr: "" }),
+  legacyConfigureClaudeExecutable: () => ({ ok: true, exitCode: 0, stdout: "", stderr: "" }),
 }
 
 /**
@@ -120,7 +121,7 @@ const makeBrokenJournalRig = (
 }
 
 // --------------------------------------------------------------------------
-// 1. the `|| true` journal writes (:1816, :1856, :1865)
+// 1. the `|| true` journal writes (:1810, :1877, :1886)
 // --------------------------------------------------------------------------
 
 describe("the journal writes bash guards with `|| true`", () => {
@@ -137,10 +138,10 @@ describe("the journal writes bash guards with `|| true`", () => {
     // The three this port binds to the swallowing seam. :1749/:1756/:1789 are
     // do_rollback_releases', which config.ts delegates whole, so they are
     // guarded in the bash and unreachable from this binary.
-    expect(guarded).toEqual([1776, 1783, 1816, 1843, 1883, 1892])
+    expect(guarded).toEqual([1770, 1777, 1810, 1837, 1877, 1886])
     // The four the port deliberately lets throw: under `set -euo pipefail` an
     // unguarded failure aborts the bash run, so a throw is the faithful port.
-    expect(bare).toEqual([2029, 2070, 2072, 2098])
+    expect(bare).toEqual([2023, 2064, 2066, 2092])
     // And the apply-phase checkout, which is neither: wiring.ts turns its
     // throw into a FAILED apply (`onCheckout`), not into a swallow.
     expect(returning).toEqual([1182, 1213])
@@ -150,7 +151,7 @@ describe("the journal writes bash guards with `|| true`", () => {
     // apply_ref fails, so the rollback never reaches restart or readiness and
     // lands directly on :1854-1857: the CRITICAL printf, then
     // `write_transaction "rollback-failed" || true`, then exit 2. TWO writes
-    // are attempted on this path ("rolling-back" at :1816 as well) and both
+    // are attempted on this path ("rolling-back" at :1837 as well) and both
     // must be survivable.
     const rig = makeBrokenJournalRig("luna-journal-critical-", [], (argv) => {
       const inner = argv[0] === "incus" ? argv.slice(4) : argv
@@ -167,7 +168,7 @@ describe("the journal writes bash guards with `|| true`", () => {
     expect(rig.stderr()).toContain(`CRITICAL: update to ${TARGET} failed AND rollback to ${PREV} also failed`)
   })
 
-  it("a failed `forward-failed` write still dies at exit 1 with its own message (:1865)", () => {
+  it("a failed `forward-failed` write still dies at exit 1 with its own message (:1886)", () => {
     const rig = makeBrokenJournalRig("luna-journal-forward-", ["--no-rollback"])
 
     const outcome = rig.deps.failForward({

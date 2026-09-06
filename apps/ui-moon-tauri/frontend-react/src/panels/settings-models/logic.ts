@@ -70,6 +70,7 @@ export interface ModelOption {
 export const ANTHROPIC_MODELS: readonly ModelOption[] = [
   { id: "claude-sonnet-5", label: "Claude Sonnet 5 - balanced default" },
   { id: "claude-fable-5", label: "Claude Fable 5 - 1M context, xhigh reasoning" },
+  { id: "claude-fable-5-1", label: "Claude Fable 5.1 - 1M context, xhigh reasoning" },
   { id: "claude-mythos-5", label: "Claude Mythos 5 - 1M context, first-party only" },
   { id: "claude-opus-5", label: "Claude Opus 5 - 1M context, xhigh reasoning" },
   { id: "claude-opus-4-8", label: "Claude Opus 4.8 - most capable" },

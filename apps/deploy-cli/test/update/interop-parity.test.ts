@@ -114,7 +114,7 @@ const STALE_TAKEOVER_LINE = bashLogLine({
 })
 
 /**
- * `scripts/luna-update-server:1959` carries `${PREV:0:9}` and `${REF:0:9}`,
+ * `scripts/luna-update-server:1953` carries `${PREV:0:9}` and `${REF:0:9}`,
  * substring expansions `bashLogLine` deliberately refuses to evaluate (it
  * throws on any surviving `$`), so this ONE expectation is composed here rather
  * than extracted. The wording is still guarded: the anchor below asserts the
@@ -127,9 +127,9 @@ const recoveringLine = (phase: string, prev: string, target: string): string => 
     .map((line, index) => ({ text: line.replace(/^\s+/, ""), line: index + 1 }))
     .filter((entry) => entry.text.startsWith(prefix))
   const only = hits[0]
-  if (hits.length !== 1 || only === undefined || only.line !== 1959) {
+  if (hits.length !== 1 || only === undefined || only.line !== 1953) {
     throw new Error(
-      `interop-parity: expected exactly ONE ${JSON.stringify(prefix)} line at scripts/luna-update-server:1959, ` +
+      `interop-parity: expected exactly ONE ${JSON.stringify(prefix)} line at scripts/luna-update-server:1953, ` +
         `found ${hits.length} at ${JSON.stringify(hits.map((h) => h.line))} - update the citation and this expectation.`,
     )
   }
