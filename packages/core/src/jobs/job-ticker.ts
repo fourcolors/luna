@@ -91,7 +91,7 @@
  * so any stragglers left in an existing DB stay inert.
  */
 import { TestClock } from "effect/testing"
-import { Context, Duration, Effect, FiberMap, Layer, Ref, Schedule } from "effect"
+import { Context, Duration, Effect, FiberMap, Layer, Option, Ref, Schedule } from "effect"
 import * as Semaphore from "effect/Semaphore"
 import * as EffectClock from "effect/Clock"
 import { Clock } from "../clock.js"
@@ -102,6 +102,7 @@ import {
 import { defaultRetryBackoffMs, makeExecutor } from "./job-ticker-executor.js"
 import { makeDrainOnce } from "./job-ticker-producer.js"
 import { runBootReconcile } from "./job-ticker-reconcile.js"
+import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import { JobsStoreService } from "./jobs-store.js"
 import { WorkerRegistry } from "./worker-registry.js"
 
@@ -528,6 +529,25 @@ export const JobTickerLayer = (
 
       // job-ticker-producer-executor-276 - the EXECUTOR (job-ticker-executor.ts):
       // the forked tail of a real dispatch. See that file for the full doc.
+      // ADR 0001 P2 — inject noteApi if AgentNotesService is present.
+      // serviceOption keeps it OUT of the Layer's R (stays optional).
+      // Wrapped into a Promise callback to satisfy ExecutorDeps.noteApi
+      // (the executor's R must stay never; Effect.runPromise bridges that).
+      const notesOpt = yield* Effect.serviceOption(AgentNotesService)
+      const noteApi = Option.isSome(notesOpt)
+        ? {
+            recordIfChanged: (
+              input: { sessionId: string; kind: string; summary: string; payload?: unknown },
+              opts?: { fingerprint?: string },
+            ): Promise<unknown> =>
+              Effect.runPromise(
+                notesOpt.value
+                  .recordIfChanged(input, opts)
+                  .pipe(Effect.catch(() => Effect.succeed(null))),
+              ),
+          }
+        : undefined
+
       const executor = makeExecutor({
         store,
         registry,
@@ -538,6 +558,7 @@ export const JobTickerLayer = (
         retryBackoff,
         defaultMaxAttempts,
         doctorCfg,
+        ...(noteApi !== undefined ? { noteApi } : {}),
       })
 
       // job-ticker-producer-executor-276 - the PRODUCER (job-ticker-producer.ts):

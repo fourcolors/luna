@@ -13,6 +13,11 @@
 import { Duration, Effect } from "effect"
 import type { ClockService } from "../clock.js"
 import {
+  evalPredicate,
+  extractHealthPayload,
+  type PredicateOutcome,
+} from "./outcome-health-predicate.js"
+import {
   handleDoctorWorkflowFailure,
   isDoctorWorkflowJob,
   maybeEnqueueDoctor,
@@ -120,6 +125,24 @@ export interface ExecutorDeps {
   readonly retryBackoff: (attempt: number) => Duration.Input
   readonly defaultMaxAttempts: number
   readonly doctorCfg: DoctorEnqueueConfig
+  /**
+   * ADR 0001 Phase 2 — outcome-health alerting. Injected from the
+   * JobTickerLayer so the executor stays typed Effect<void> (R=never).
+   * Called only on successful dispatches that carry a `health` predicate.
+   * Fires at-most-once per (jobId, outcomeState) via recordIfChanged dedupe.
+   * A missing / undefined dep silently skips predicate evaluation.
+   */
+  readonly noteApi?: {
+    readonly recordIfChanged: (
+      input: {
+        readonly sessionId: string
+        readonly kind: string
+        readonly summary: string
+        readonly payload?: unknown
+      },
+      opts?: { readonly fingerprint?: string }
+    ) => Promise<unknown>
+  }
 }
 
 /**
@@ -391,6 +414,78 @@ export const makeExecutor = (
         lastStatus: result._tag === "Success" ? "fired" : "errored",
       })
       .pipe(Effect.catch(() => Effect.void))
+
+    // ADR 0001 Phase 2 — Outcome-health predicate evaluation.
+    // Runs only on success, AFTER every durable job-state write above
+    // (recordRunEnd, retry/reset setV2Fields, touch). A predicate result
+    // of "stale" or "unknown" NEVER affects the run's terminal status —
+    // "job ran successfully" and "job achieved a fresh outcome" are
+    // distinct properties. Advisor hard requirement: no foreign-DB I/O
+    // inside the tick producer — evaluation is here in the executor fiber.
+    if (result._tag === "Success" && deps.noteApi) {
+      const health = extractHealthPayload(job.payload)
+      if (health !== null) {
+        yield* Effect.promise(async () => {
+          const outcome: PredicateOutcome = await evalPredicate(health)
+          const { noteApi } = deps
+          if (!noteApi) return
+
+          let newOutcomeState: string
+          if (outcome.ok) {
+            newOutcomeState = outcome.result.state // "fresh" | "stale"
+            const patchV5: { lastOutcomeSuccessAt?: number; outcomeState: string } = {
+              outcomeState: newOutcomeState,
+            }
+            if (newOutcomeState === "fresh") {
+              patchV5.lastOutcomeSuccessAt = finishedAt
+            }
+            // Fire-and-forget store write — never throws into executor.
+            await store
+              .setV2Fields(job.id, patchV5)
+              .pipe(Effect.catch(() => Effect.succeed(false)))
+              .pipe(Effect.runPromise)
+              .catch(() => false)
+          } else {
+            newOutcomeState = "unknown"
+            await store
+              .setV2Fields(job.id, { outcomeState: "unknown" })
+              .pipe(Effect.catch(() => Effect.succeed(false)))
+              .pipe(Effect.runPromise)
+              .catch(() => false)
+          }
+
+          // Emit a notify-only agent_note when stale or unknown.
+          // Fingerprinted on (jobId, outcomeState) so a persistently-
+          // stale job produces exactly ONE note per state (dedupe proof).
+          if (newOutcomeState !== "fresh") {
+            const detail = outcome.ok
+              ? (outcome.result.detail ?? "")
+              : outcome.error.message
+            const summary =
+              `[outcome-health] job ${job.id} (${job.payload?.label ?? "unlabelled"}): ` +
+              `predicate "${health.predicate}" → ${newOutcomeState}` +
+              (detail ? `: ${detail}` : "")
+            await noteApi
+              .recordIfChanged(
+                {
+                  sessionId: "system",
+                  kind: "outcome-health",
+                  summary,
+                  payload: {
+                    jobId: job.id,
+                    label: job.payload?.label,
+                    predicate: health.predicate,
+                    outcomeState: newOutcomeState,
+                    detail,
+                  },
+                },
+                { fingerprint: `${job.id}:${newOutcomeState}` },
+              )
+              .catch(() => undefined)
+          }
+        }).pipe(Effect.catch(() => Effect.void))
+      }
+    }
 
     // issue #277 - postCommit (deferred delivery) runs LAST, strictly
     // AFTER every durable job-state write above (recordRunEnd, the

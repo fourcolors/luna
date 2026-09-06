@@ -32,6 +32,8 @@ const baseJob = (over: Partial<PersistedJob> = {}): PersistedJob => ({
   orphanStreak: 0,
   healAttempts: 0,
   healState: "ok",
+  lastOutcomeSuccessAt: null,
+  outcomeState: null,
   ...over,
 })
 

@@ -70,7 +70,8 @@ Source: `packages/core/src/jobs/jobs-store.ts`, wired at `paths.lunaDbPath`.
 
 ```
 jobs (id, kind, spec, next_run, last_run, last_status, payload_json, created_at, updated_at,
-      schedule, enabled, next_run_at, retry_attempt, fail_streak, orphan_streak, heal_attempts, heal_state)
+      schedule, enabled, next_run_at, retry_attempt, fail_streak, orphan_streak, heal_attempts, heal_state,
+      last_outcome_success_at, outcome_state)
 job_runs (id, job_id, started_at, finished_at, status, attempt, output_text, error, steps_json)
 ```
 
