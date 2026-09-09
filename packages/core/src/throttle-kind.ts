@@ -26,6 +26,7 @@ export type ThrottleKind =
   | "rate_limit"
   | "session_limit"
   | "quota_exhausted"
+  | "credit_exhausted"
   | "model_busy"
 
 /**
@@ -76,6 +77,49 @@ export function classifyThrottleKind(text: string): ThrottleKind | undefined {
     text.includes("usage limit reached")
   ) {
     return "quota_exhausted"
+  }
+
+  // Claude Code subscription CREDIT exhaustion. Distinct from the rolling
+  // windows above: these are the literal prefixes the `claude` CLI emits when a
+  // seat has no usage credits left (`USAGE_LIMIT_ERROR_PREFIXES`, exported from
+  // @anthropic-ai/claude-agent-sdk >= ~0.3.2xx), plus the first-party API's
+  // "credit balance is too low" (Console-side, so not in the CLI's list).
+  //
+  // Why this is its own kind rather than more `quota_exhausted` phrases: the
+  // window these refusals name is HOURS TO DAYS (a 7-day overage pool, an admin
+  // re-enabling a seat), so the broker gives it the long cooldown. Reusing
+  // `quota_exhausted` would either leave it on the 60s default (thrash: cool,
+  // re-pick the dead account, fail, repeat every minute) or drag Gemini's
+  // per-MINUTE `resource_exhausted` up to a 3-hour bench with it.
+  //
+  // ORDER: this branch sits BELOW `quota_exhausted` deliberately. The SDK's
+  // "you've hit your" / "you've reached your" prefixes are broad enough to
+  // swallow "You've hit your weekly limit", which must keep classifying as
+  // `quota_exhausted` for the existing rotation behavior. Ordering it here
+  // means only genuinely-new phrasing reaches `credit_exhausted`.
+  //
+  // The real incident this closes: "Claude Code returned an error result:
+  // You're out of usage credits. Switch to another model to continue." matched
+  // NOTHING in this table, so `classifyThrottleKind` returned undefined, which
+  // no-op'd BOTH consumers — the adapter never reported a throttle (no
+  // cooldown) and `defaultIsRotatableError` refused to rotate. One thread ate
+  // the same refusal 17 times while a healthy sibling account sat idle.
+  if (
+    text.includes("out of usage credits") ||
+    text.includes("out of extra usage") ||
+    text.includes("out of usage · add funds") ||
+    text.includes("out of usage · contact your admin") ||
+    text.includes("doesn't include usage credits") ||
+    text.includes("doesn't include usage") ||
+    text.includes("doesn't include extra usage") ||
+    text.includes("usage allocation has been disabled") ||
+    text.includes("usage limit is set to $0") ||
+    text.includes("requires usage credits") ||
+    text.includes("credit balance is too low") ||
+    text.includes("you've hit your") ||
+    text.includes("you've reached your")
+  ) {
+    return "credit_exhausted"
   }
 
   // Transient capacity: Anthropic surfaces this as 529 (overloaded_error).

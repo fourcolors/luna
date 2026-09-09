@@ -229,6 +229,36 @@ describe("AccountBroker.report", () => {
     expect(a1?.cooldownUntilMs).toBe(1000 + 3 * 60 * 60 * 1000)
   })
 
+  it("credit_exhausted gets the same 3-hour cooldown as session_limit, not the 60s default", async () => {
+    // Regression: a drained subscription credit pool ("You're out of usage
+    // credits") recovers on a multi-hour/multi-day window, so the 60s default
+    // would re-pick the dead account a minute later and the caller would eat
+    // the identical refusal on a loop.
+    const out = await Effect.runPromise(
+      Effect.gen(function* () {
+        const broker = yield* AccountBroker
+        yield* Effect.scoped(
+          broker.acquireSession({ model: "m", boundAccountId: "a1" }),
+        )
+        yield* broker.report({ accountId: "a1", kind: "credit_exhausted" })
+        const exit = yield* Effect.exit(
+          Effect.scoped(
+            broker.acquireSession({ model: "m", boundAccountId: "a1" }),
+          ),
+        )
+        const generic = yield* Effect.scoped(
+          broker.acquireSession({ model: "m" }),
+        )
+        const records = yield* broker._inspect()
+        return { exit, generic, records }
+      }).pipe(Effect.provide(buildLayer(1000))),
+    )
+    expect(Exit.isFailure(out.exit)).toBe(true)
+    expect(out.generic.accountId).not.toBe("a1")
+    const a1 = out.records.find((a) => a.id === "a1")
+    expect(a1?.cooldownUntilMs).toBe(1000 + 3 * 60 * 60 * 1000)
+  })
+
   it("all exhausted → AllAccountsExhaustedError with kind populated", async () => {
     const out = await Effect.runPromiseExit(
       Effect.gen(function* () {
