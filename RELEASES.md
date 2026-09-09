@@ -106,13 +106,33 @@ Two facts about the ALREADY-PUBLISHED releases remain load-bearing:
   # 1. Bump the version and cut the tag locally (no publish yet):
   bun run scripts/bump-server.ts <x.y.z> --tag
 
-  # 2. Review the diff and the tag, then push to trigger the release pipeline:
-  bun run scripts/bump-server.ts <x.y.z> --tag --push
-  # — or equivalently after step 1: git push origin server-v<x.y.z>
+  # 2. Review the diff and the tag, then push the BRANCH FIRST:
+  git push origin master
+
+  # 3. Only then push the tag, which fires the release pipeline:
+  git push origin server-v<x.y.z>
   ```
 
-  `--push` is operator-gated: it publishes a GitHub Release visible to all
-  self-hosters. Do not run it without reviewing intent and the tag contents.
+  **Push the branch before the tag.** `bump-server.ts` commits the version bump
+  and tags it locally, but `--push` pushes *only the tag*. Using it alone
+  publishes a release whose `targetSha` is a commit that is not on `master`,
+  leaves `server.version.json` on `master` reading the OLD version, and makes the
+  completion gate below unrunnable — `luna-guardian accept` requires
+  `--expected-sha` to equal the deployed `HEAD`, which can never match an
+  off-branch commit. Prefer the explicit two-push sequence above. (The Moon
+  runbook already documents its branch push; this one did not.)
+
+  Pushing the tag is operator-gated: it publishes a GitHub Release visible to all
+  self-hosters. Do not do it without reviewing intent and the tag contents.
+
+- **Write the release notes before publishing.** The workflow does not generate
+  them — `release-server.yml` publishes a canned one-liner. Add
+  `docs/releases/server-v<x.y.z>.md` in the bump PR and attach it afterwards with
+  `gh release edit server-v<x.y.z> --notes-file docs/releases/server-v<x.y.z>.md`.
+  Notes are the ONLY channel that reaches a self-hoster before they update, which
+  matters because the engine that runs their upgrade hop is the OLD engine already
+  on their disk. Any manual pre-step (for example a `--units-only` re-render after
+  a unit-shape change) can travel no other way.
 - **What the workflow publishes:** only `server-latest.json`. No binaries, no
   signed bundles — the server is updated via `git fetch` + conditional
   `bun install` by `scripts/luna-update-server` (the apply engine).
