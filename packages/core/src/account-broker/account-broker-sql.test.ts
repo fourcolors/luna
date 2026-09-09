@@ -466,6 +466,38 @@ d("AccountBrokerLayer.fromSql — hydration", () => {
     }
   })
 
+  it("(5d) report(kind: credit_exhausted) holds the same 3-hour cooldown, and persists it", async () => {
+    // Parity with the in-memory broker's LONG_COOLDOWN_KINDS (§7.5 — the two
+    // brokers must never disagree). Also asserts the write-back, so the bench
+    // survives one restart instead of evaporating and re-picking a dead account.
+    const dbPath = tmpDb()
+    try {
+      const FIXED = 1_000_000
+      await seedAccountsTable(dbPath, [
+        { id: "a1", kind: "anthropic", secret_ref: "anth:a1" },
+      ])
+      const log = await Effect.runPromise(Ref.make<ReadonlyArray<string>>([]))
+      const layer = buildLayer(
+        dbPath,
+        stubSecretsLayer({ "anth:a1": "x" }, log),
+        FIXED,
+      )
+      const accounts = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* AccountBroker
+            yield* broker.report({ accountId: "a1", kind: "credit_exhausted" })
+            return yield* broker._inspect()
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+      const a1 = accounts.find((a) => a.id === "a1")
+      expect(a1?.cooldownUntilMs).toBe(FIXED + 3 * 60 * 60 * 1000)
+    } finally {
+      cleanupTmp(dbPath)
+    }
+  })
+
   it("(6) malformed row (empty kind) → ConfigError with offending id; Layer fails", async () => {
     const dbPath = tmpDb()
     try {

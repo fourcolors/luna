@@ -71,7 +71,12 @@ export type UsageReport =
   | { readonly accountId: string; readonly kind: "error" }
   | {
       readonly accountId: string
-      readonly kind: "rate_limit" | "session_limit" | "quota_exhausted" | "model_busy"
+      readonly kind:
+        | "rate_limit"
+        | "session_limit"
+        | "quota_exhausted"
+        | "credit_exhausted"
+        | "model_busy"
       readonly retryAfterMs?: number
     }
   | {
@@ -196,6 +201,17 @@ const DEFAULT_COOLDOWN_MS = 60_000
  *  default that avoids re-picking the account while letting it naturally
  *  re-enter rotation once the window passes. */
 const SESSION_LIMIT_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3 hours
+
+/** Kinds whose refusal window is hours-to-days rather than a transient burst,
+ *  so they get {@link SESSION_LIMIT_COOLDOWN_MS} instead of the 60s default.
+ *  `credit_exhausted` (a drained subscription credit pool) belongs here for the
+ *  same reason `session_limit` does: at 60s the broker re-picks the dead
+ *  account a minute later and the caller eats the identical refusal on a loop.
+ *  MUST stay identical to the copy in account-broker-sql.ts (§7.5). */
+const LONG_COOLDOWN_KINDS: ReadonlySet<string> = new Set([
+  "session_limit",
+  "credit_exhausted",
+])
 
 /**
  * Build an AccountBroker layer from a static seed. Depends on
@@ -391,13 +407,13 @@ const fromAccounts = (
             usage.kind === "rate_limit" ||
             usage.kind === "session_limit" ||
             usage.kind === "quota_exhausted" ||
+            usage.kind === "credit_exhausted" ||
             usage.kind === "model_busy"
           ) {
             const now = yield* clock.nowMs()
-            const defaultMs =
-              usage.kind === "session_limit"
-                ? SESSION_LIMIT_COOLDOWN_MS
-                : DEFAULT_COOLDOWN_MS
+            const defaultMs = LONG_COOLDOWN_KINDS.has(usage.kind)
+              ? SESSION_LIMIT_COOLDOWN_MS
+              : DEFAULT_COOLDOWN_MS
             const cooldownUntil =
               now + (usage.retryAfterMs ?? defaultMs)
             yield* Ref.update(ref, (accounts) =>

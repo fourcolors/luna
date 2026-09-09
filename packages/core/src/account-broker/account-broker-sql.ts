@@ -87,6 +87,17 @@ const SCHEMA_V1 = `
 const DEFAULT_COOLDOWN_MS = 60_000
 const SESSION_LIMIT_COOLDOWN_MS = 3 * 60 * 60 * 1000 // 3 hours
 
+/** Kinds whose refusal window is hours-to-days rather than a transient burst,
+ *  so they get {@link SESSION_LIMIT_COOLDOWN_MS} instead of the 60s default.
+ *  `credit_exhausted` (a drained subscription credit pool) belongs here for the
+ *  same reason `session_limit` does: at 60s the broker re-picks the dead
+ *  account a minute later and the caller eats the identical refusal on a loop.
+ *  MUST stay identical to the copy in account-broker.ts (§7.5). */
+const LONG_COOLDOWN_KINDS: ReadonlySet<string> = new Set([
+  "session_limit",
+  "credit_exhausted",
+])
+
 // ── bun:sqlite minimal shape (mirrors cost-store-sqlite.ts) ────────────────
 interface BunDb {
   run: (sql: string) => void
@@ -511,13 +522,13 @@ const fromSql = (
             usage.kind === "rate_limit" ||
             usage.kind === "session_limit" ||
             usage.kind === "quota_exhausted" ||
+            usage.kind === "credit_exhausted" ||
             usage.kind === "model_busy"
           ) {
             const t = yield* clock.nowMs()
-            const defaultMs =
-              usage.kind === "session_limit"
-                ? SESSION_LIMIT_COOLDOWN_MS
-                : DEFAULT_COOLDOWN_MS
+            const defaultMs = LONG_COOLDOWN_KINDS.has(usage.kind)
+              ? SESSION_LIMIT_COOLDOWN_MS
+              : DEFAULT_COOLDOWN_MS
             const cooldownUntil =
               t + (usage.retryAfterMs ?? defaultMs)
             // Single atomic Ref.modify that RETURNS the updated record, so the
