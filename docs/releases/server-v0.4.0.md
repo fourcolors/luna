@@ -41,8 +41,8 @@ UPGRADE_PROFILE=stable
 "$UPGRADE_REPO/scripts/luna-update-server" \
   --profile "$UPGRADE_PROFILE" --repo-dir "$UPGRADE_REPO" \
   --luna-home "$UPGRADE_STATE" \
-  --ref c484d696b4b62998a75098fc3a423f1b2def42ad
-test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "c484d696b4b62998a75098fc3a423f1b2def42ad"
+  --ref c484d696b4b6
+test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "$(git -C "$UPGRADE_REPO" rev-parse c484d696b4b6^{commit})"
 
 # 2. Now the installed bridge has BOTH the old entrypoint and new launcher.
 "$UPGRADE_REPO/scripts/luna-server-install" \
@@ -73,8 +73,8 @@ because v0.3.0 lacks its launcher.
 "$UPGRADE_REPO/scripts/luna-update-server" \
   --profile "$UPGRADE_PROFILE" --repo-dir "$UPGRADE_REPO" \
   --luna-home "$UPGRADE_STATE" \
-  --ref 775ee6614bb67692bbef9c40063e9af479e7e7db
-test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "775ee6614bb67692bbef9c40063e9af479e7e7db"
+  --ref 775ee6614bb6
+test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "$(git -C "$UPGRADE_REPO" rev-parse 775ee6614bb6^{commit})"
 
 # 4. Invoke the now-installed updater for the final hop.
 "$UPGRADE_REPO/scripts/luna-update-server" \
