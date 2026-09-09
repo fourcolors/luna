@@ -105,9 +105,15 @@ jobs:
           REPO: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
+          set -euo pipefail
+          NOTES_FILE="docs/releases/${TAG}.md"
+          if [ ! -s "${NOTES_FILE}" ]; then
+            echo "ERROR: missing release notes: ${NOTES_FILE}" >&2
+            exit 1
+          fi
           gh release create "${TAG}" \
             --title "Luna Server ${VERSION}" \
-            --notes "Server release ${VERSION} (${TARGET_SHA}). Install or update via \`luna update\`. See RELEASES.md for runbook." \
+            --notes-file "${NOTES_FILE}" \
             --latest=false \
             --target "${COMMIT_SHA}" \
             server-latest.json \

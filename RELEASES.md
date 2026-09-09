@@ -102,37 +102,41 @@ Two facts about the ALREADY-PUBLISHED releases remain load-bearing:
   publish. A server release stealing Latest would break the Moon updater.
 - **Operator runbook:**
 
-  ```zsh
-  # 1. Bump the version and cut the tag locally (no publish yet):
-  bun run scripts/bump-server.ts <x.y.z> --tag
+  Prepare a bump PR with `bun run scripts/bump-server.ts <x.y.z>` (without
+  `--tag`) and `docs/releases/server-v<x.y.z>.md`. Review and merge it first.
+  Then, in a clean checkout, tag the reviewed **merged commit**, not the PR
+  branch commit (a squash merge changes its SHA):
 
-  # 2. Review the diff and the tag, then push the BRANCH FIRST:
-  git push origin master
+  ```bash
+  set -euo pipefail
+  RELEASE_VERSION=0.4.0                 # replace for the release being cut
+  RELEASE_SHA="<full-reviewed-merged-sha>"
+  git fetch origin master --tags
+  git merge-base --is-ancestor "$RELEASE_SHA" origin/master
+  test "$(git show "$RELEASE_SHA:server.version.json" | jq -r .version)" = "$RELEASE_VERSION"
+  git cat-file -e "$RELEASE_SHA:docs/releases/server-v$RELEASE_VERSION.md"
+  git tag -a "server-v$RELEASE_VERSION" "$RELEASE_SHA" -m "Luna Server $RELEASE_VERSION"
 
-  # 3. Only then push the tag, which fires the release pipeline:
-  git push origin server-v<x.y.z>
+  # Operator-gated: this publishes the release.
+  git push origin "refs/tags/server-v$RELEASE_VERSION"
   ```
 
-  **Push the branch before the tag.** `bump-server.ts` commits the version bump
-  and tags it locally, but `--push` pushes *only the tag*. Using it alone
-  publishes a release whose `targetSha` is a commit that is not on `master`,
-  leaves `server.version.json` on `master` reading the OLD version, and makes the
-  completion gate below unrunnable — `luna-guardian accept` requires
-  `--expected-sha` to equal the deployed `HEAD`, which can never match an
-  off-branch commit. Prefer the explicit two-push sequence above. (The Moon
-  runbook already documents its branch push; this one did not.)
+  Stop if a check fails or the tag already exists; inspect its target rather
+  than moving a published tag. The branch must already contain the release
+  commit on the remote. `git push origin master` from a PR checkout does not
+  integrate that PR, and tagging before a squash merge leaves the tag off the
+  deployed branch. `bump-server.ts --tag` creates a new version-file commit, so
+  do not rerun it after the bump has already merged.
 
   Pushing the tag is operator-gated: it publishes a GitHub Release visible to all
   self-hosters. Do not do it without reviewing intent and the tag contents.
 
-- **Write the release notes before publishing.** The workflow does not generate
-  them — `release-server.yml` publishes a canned one-liner. Add
-  `docs/releases/server-v<x.y.z>.md` in the bump PR and attach it afterwards with
-  `gh release edit server-v<x.y.z> --notes-file docs/releases/server-v<x.y.z>.md`.
-  Notes are the ONLY channel that reaches a self-hoster before they update, which
-  matters because the engine that runs their upgrade hop is the OLD engine already
-  on their disk. Any manual pre-step (for example a `--units-only` re-render after
-  a unit-shape change) can travel no other way.
+- **Write the release notes before publishing.** Add
+  `docs/releases/server-v<x.y.z>.md` in the bump PR. `release-server.yml` requires
+  that file and publishes it with the release, so upgrade prerequisites are
+  available as soon as the release is discoverable. The updater executing an
+  upgrade can be the old engine already on the host; document any compatibility
+  hops and manual steps against that engine, not just the target checkout.
 - **What the workflow publishes:** only `server-latest.json`. No binaries, no
   signed bundles — the server is updated via `git fetch` + conditional
   `bun install` by `scripts/luna-update-server` (the apply engine).

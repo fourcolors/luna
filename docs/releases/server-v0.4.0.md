@@ -1,42 +1,94 @@
 # Server v0.4.0
 
-First server release since `server-v0.3.0` (2026-07-25). It covers 383 commits,
-258 of which touch server code. No wire-protocol change: `UI_WS_PROTOCOL_VERSION`
-is 2 in both releases, so existing Moon clients keep working.
+First server release since `server-v0.3.0` (2026-07-25).
+`UI_WS_PROTOCOL_VERSION` remains 2; no wire-version bump is required.
 
-## ⚠️ Read this before you update
+## Read this before updating from v0.3.0
 
-**Hosts installed at or before `server-v0.3.0` must re-render their systemd unit
-first, or the update will fail and roll back.**
+**Do not upgrade a v0.3.0 systemd installation directly to this release.**
+There are two compatibility boundaries: the unit names the removed
+`apps/ui-web/scripts/chat-server.ts`, and the old updater builds the removed
+`@luna/ui-web` package. Running the v0.3.0 installer with `--units-only` merely
+recreates the old unit. Using a newer installer before its launcher exists also
+makes a restart or rollback fail.
 
-The supervisor unit changed shape during this window. It used to name an
-app-specific subdirectory that no longer exists in the repo:
+Use the compatibility hops below for a **bare-host, in-place systemd install
+at v0.3.0**. These SHAs retain the artifacts needed by the preceding updater.
+This sequence has been checked against the source; it still requires a staged
+upgrade rehearsal before use on a production host. Older versions, launchd,
+Incus, and releases-layout installations need a procedure adapted to their
+existing supervisor and host/container paths; do not apply bare-host defaults
+to them or downgrade a newer host to these bridge commits.
 
-| | v0.3.0 | v0.4.0 |
-|---|---|---|
-| `WorkingDirectory` | `<repo>/apps/ui-web` | `<repo>` |
-| `ExecStart` | `bun run scripts/chat-server.ts` | `bun run scripts/luna-chat-server-entry.ts` |
+Before beginning, back up the database/state and installed units, ensure the
+checkout has no local work, and arrange a maintenance window with no active
+sessions. Pause existing guardian/autodeploy timers and branch auto-update for
+all hops, recording their previous settings. Otherwise automation can advance
+past a bridge before its unit is reconciled. Keep the same profile, repo path,
+state path, and any custom service/port options throughout.
 
-A systemd unit is host-persistent state. It is not shipped in the repo, so
-nothing in the v0.3.0 update engine re-renders it, and the update engine that
-runs your 0.3.0 → 0.4.0 hop is the *old* engine already on your disk. That is why
-this step can only travel as prose.
-
-Run this **before** `luna update`:
+The examples use the standard stable bare-host paths. Run with the privileges
+used for the original installation, and stop on any failed command or unhealthy
+readiness result:
 
 ```bash
-scripts/luna-server-install --units-only --profile stable
+set -euo pipefail
+UPGRADE_REPO=/root/luna
+UPGRADE_STATE=/root/.luna
+UPGRADE_PROFILE=stable
+
+# 1. The old engine can build this tree; the old unit still boots it.
+"$UPGRADE_REPO/scripts/luna-update-server" \
+  --profile "$UPGRADE_PROFILE" --repo-dir "$UPGRADE_REPO" \
+  --luna-home "$UPGRADE_STATE" \
+  --ref c484d696b4b62998a75098fc3a423f1b2def42ad
+test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "c484d696b4b62998a75098fc3a423f1b2def42ad"
+
+# 2. Now the installed bridge has BOTH the old entrypoint and new launcher.
+"$UPGRADE_REPO/scripts/luna-server-install" \
+  --profile "$UPGRADE_PROFILE" --repo-dir "$UPGRADE_REPO" \
+  --luna-home "$UPGRADE_STATE" --units-only --no-enable --no-start
+systemctl cat luna-chat-server.service
+# Confirm WorkingDirectory=/root/luna and
+# ExecStart=<bun> run scripts/luna-chat-server-entry.ts before restarting.
 ```
 
-`--units-only` re-renders the supervisor and pager units only. It never touches
-your `.env`, never reinstalls dependencies, never migrates state, and does not
-restart the service. It writes a `.prev` backup of the unit it replaces.
+The bridge installer preserves `.env` and dependencies, does not restart, and
+backs up replaced units as `.prev`. After confirming the rendered paths:
 
-**If you skip it:** `luna update` fetches, resets the checkout, and restarts.
-systemd then cannot `chdir` into the missing `apps/ui-web` (status=200),
-readiness times out after 60s, and the engine auto-rolls-back. The failure is
-safe — you end up back on v0.3.0 — but it costs roughly 90 seconds of downtime
-and repeats on every attempt until the unit is fixed.
+```bash
+systemctl restart luna-chat-server.service
+curl --fail --silent --show-error http://127.0.0.1:4753/readyz
+```
+
+Require a healthy response reporting the bridge SHA before continuing. If
+reconciliation fails, restore the saved unit and reload systemd while still at the bridge;
+do not advance. Do not roll back to v0.3.0 with the new unit still installed,
+because v0.3.0 lacks its launcher.
+
+```bash
+# In the same configured shell, after the bridge restart is healthy:
+# 3. This tree still has the SPA the bridge engine builds, but its own
+# updater no longer requires that SPA for subsequent upgrades.
+"$UPGRADE_REPO/scripts/luna-update-server" \
+  --profile "$UPGRADE_PROFILE" --repo-dir "$UPGRADE_REPO" \
+  --luna-home "$UPGRADE_STATE" \
+  --ref 775ee6614bb67692bbef9c40063e9af479e7e7db
+test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "775ee6614bb67692bbef9c40063e9af479e7e7db"
+
+# 4. Invoke the now-installed updater for the final hop.
+"$UPGRADE_REPO/scripts/luna-update-server" \
+  --profile "$UPGRADE_PROFILE" --repo-dir "$UPGRADE_REPO" \
+  --luna-home "$UPGRADE_STATE" --ref server-v0.4.0
+test "$(git -C "$UPGRADE_REPO" rev-parse HEAD)" = "$(git -C "$UPGRADE_REPO" rev-parse server-v0.4.0^{commit})"
+```
+
+Each updater hop must pass its readiness check. If it defers or fails, leave
+subsequent steps pending and inspect the reported state. Restore the previous
+automation settings only after verifying the final release and its supervision.
+A failed update can fail during the obsolete SPA build before restarting, or
+at service startup due to stale paths. Rollback is attempted, but is not a
+guarantee of recovery or a fixed downtime duration.
 
 ## Also worth knowing
 
@@ -52,8 +104,10 @@ and repeats on every attempt until the unit is fixed.
 
 ## Highlights
 
-**Deployment and supervision.** A per-profile releases layout with immutable
-releases and an atomic flip, replacing automated `reset --hard`. Path-independent
+**Deployment and supervision.** Support for a per-profile releases layout
+with immutable releases and an atomic flip. Existing in-place installations
+stay in-place until an operator performs the separate
+[layout migration](https://github.com/fourcolors/luna/blob/server-v0.4.0/docs/deploy-layout-migration.md). Path-independent
 units with a TypeScript launcher and unit-render rollback. The guardian gains
 tri-state probe classification with persisted K-of-N debounce, postconditions on
 every mutation, silent converged ticks, and a hermetic test harness. Session
