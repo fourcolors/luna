@@ -30,6 +30,7 @@ import { Context, Effect, Layer } from "effect"
 import {
   WorkerError,
   WorkerRegistry,
+  isBudgetCeilingCause,
   type Worker,
   type WorkerContext,
   type WorkerResult,
@@ -99,7 +100,14 @@ export const buildWorker = <Ctx>(
           ? Effect.fail(e)
           : Effect.fail(
               new WorkerError({
-                reason: "worker_failed",
+                // Reasoner lanes (dream, wake, bulletin) fail through a
+                // brokered turn whose errors are caller-typed, so they arrive
+                // here as opaque causes. Classify a budget ceiling at this
+                // boundary too, or those lanes would keep being retried three
+                // times on an identical budget that cannot succeed.
+                reason: isBudgetCeilingCause(e)
+                  ? "budget_exhausted"
+                  : "worker_failed",
                 kind,
                 message: `${kind} worker failed: ${(e as { message?: string }).message ?? String(e)}`,
                 cause: e,

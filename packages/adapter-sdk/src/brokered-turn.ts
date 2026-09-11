@@ -215,6 +215,22 @@ export function runBrokeredReasonerTurn<E>(args: {
           return yield* Effect.fail(args.errors.streamError(outcome.cause))
         case "empty":
           return yield* Effect.fail(args.errors.empty())
+        case "result_error":
+          // The SDK told us WHY it stopped (e.g. error_max_turns). Reasoner
+          // lanes have no budget-specific error constructor, so surface it as a
+          // stream error carrying the subtype in the message — that keeps
+          // `isBudgetCeilingCause` able to classify it downstream.
+          return yield* Effect.fail(
+            args.errors.streamError(
+              new Error(
+                `Claude Code returned an error result: ${outcome.subtype}${
+                  outcome.numTurns !== undefined
+                    ? ` (num_turns=${outcome.numTurns})`
+                    : ""
+                }`,
+              ),
+            ),
+          )
       }
     }),
   )

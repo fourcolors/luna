@@ -19,6 +19,7 @@ export {
   WorkerRegistry,
   WorkerError,
   makeWorkerRegistry,
+  isBudgetCeilingCause,
   type Worker,
   type WorkerContext,
   type WorkerResult,

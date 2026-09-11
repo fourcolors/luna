@@ -200,19 +200,35 @@ thread.
   "user_prompt":   "Survey state and write a daily brief.",
   "system_prompt": "You are an autonomous worker. Use tools freely.",
   "model":         "claude-sonnet-4-5",
-  "allowed_tools": ["mcp__local_shell__local_shell_run", "mcp__observability__obs_note"],
+  "allowed_tools": ["Bash", "Read", "Grep"],
   "max_turns":     20,
   "timeout_ms":    600000,
   "deliver_to":    { "kind": "obs_note", "kind_tag": "daily_brief" }
 }
 ```
 
-`max_turns` defaults to **1** when omitted.
+`max_turns` defaults to **15** when omitted (`DEFAULT_PROMPT_MAX_TURNS`).
+
+> 🔴 **`allowed_tools` may not name `mcp__*` tools.** Background jobs mount at
+> most ONE MCP server: the optional per-run `request_input` binding. A job's
+> `query()` therefore **cannot** call `mcp__observability__*`, `mcp__memory__*`,
+> `mcp__local_shell__*`, or any other in-process server, no matter what
+> `allowed_tools` lists — the SDK treats that field as additive pre-approval,
+> and a tool whose server is not mounted does not exist for the turn. Naming one
+> wastes turns while the model hunts for it and **can exhaust `max_turns`**.
+> See DESIGN.md §5.3.5. Use built-in tools (`Bash`, `Read`, `Grep`, `Glob`,
+> `Write`, `Edit`, `WebSearch`, `WebFetch`) and reach databases through `Bash`
+> + `sqlite3`. To report, use `deliver_to`, not an `obs_note` tool call.
 
 **`deliver_to` sinks:**
 - `{ "kind": "obs_note", "kind_tag": "<tag>", "session_id": "<id>" }` —
   writes result to `agent_notes`; both fields optional, `kind_tag`
-  defaults to `prompt_result`
+  defaults to `prompt_result`. **Caveat:** schedules created through
+  `mcp__scheduler__schedule_create` do NOT use that default — that tool
+  hardcodes `kind_tag: "reminder"` and exposes no parameter to override it,
+  so every fire of every agent-created schedule lands under
+  `kind='reminder'` regardless of what the job actually does. Filter
+  `obs_notes_recent` by `kind` with that in mind.
 - `{ "kind": "chat_thread", "thread_id": "<id>" }` - posts the result back
   into a chat thread as an assistant message (`thread_id` required)
 - `{ "kind": "log" }` — log only (default)
@@ -239,7 +255,7 @@ Right tool for shell work + intelligent analysis in one atomic unit.
       "kind": "prompt",
       "user_prompt": "Mail synced. Triage new messages and create action items.",
       "system_prompt": "You are an autonomous triage agent. Be brief.",
-      "allowed_tools": ["mcp__local_shell__local_shell_run", "mcp__observability__obs_note"],
+      "allowed_tools": ["Bash", "Read"],
       "max_turns": 12,
       "timeout_ms": 180000
     }

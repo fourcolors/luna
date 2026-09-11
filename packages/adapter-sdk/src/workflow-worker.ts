@@ -48,6 +48,7 @@ import {
   AgentNotesService,
   WorkerRegistry,
   WorkerError,
+  isBudgetCeilingCause,
   type AgentNotesApi,
   type Worker,
   type WorkerResult,
@@ -111,6 +112,14 @@ export interface PromptStepResult {
   readonly duration_ms: number
   readonly output_text?: string
   readonly error?: string
+  /**
+   * Set only when `status:"failed"` was caused by the SDK's own budget
+   * ceiling (`error_max_turns` / `error_max_budget_usd`), mirroring
+   * prompt-worker.ts's `WorkerError({reason:"budget_exhausted"})` mapping.
+   * The workflow roll-up reads this to pick the top-level `WorkerError`
+   * reason on halt — DETERMINISTIC, so the ticker must not retry it.
+   */
+  readonly reason?: "budget_exhausted"
 }
 
 export type StepResult = ShellStepResult | PromptStepResult
@@ -457,9 +466,14 @@ function runPromptStep(
           error: `prompt step exceeded timeout_ms=${outcome.timeoutMs}`,
         } satisfies PromptStepResult
       case "error":
+        // A turn/cost ceiling usually arrives here as a THROWN cause rather
+        // than a terminal result_error frame. Classify it at this boundary.
         return {
           ...base,
           status: "failed",
+          ...(isBudgetCeilingCause(outcome.cause)
+            ? { reason: "budget_exhausted" as const }
+            : {}),
           error: `sdk error: ${String(outcome.cause)}`,
         } satisfies PromptStepResult
       case "empty":
@@ -467,6 +481,27 @@ function runPromptStep(
           ...base,
           status: "failed",
           error: "sdk stream produced no type:result/subtype:success message",
+        } satisfies PromptStepResult
+      case "result_error":
+        if (
+          outcome.subtype === "error_max_turns" ||
+          outcome.subtype === "error_max_budget_usd"
+        ) {
+          return {
+            ...base,
+            status: "failed",
+            reason: "budget_exhausted",
+            error: `sdk run hit its budget ceiling (${outcome.subtype}${
+              outcome.numTurns !== undefined
+                ? `, num_turns=${outcome.numTurns}`
+                : ""
+            })`,
+          } satisfies PromptStepResult
+        }
+        return {
+          ...base,
+          status: "failed",
+          error: `sdk run ended with subtype=${outcome.subtype}`,
         } satisfies PromptStepResult
     }
   })
@@ -566,9 +601,21 @@ export const buildWorkflowWorker = (
       // steps failed — the operator sees per-step status in steps_json.
       const anyFailed = stepResults.some((r) => r.status !== "success")
       if (anyFailed && parsed.halt_on_failure) {
+        const haltedStep = stepResults[haltedAt!]
+        // A halt caused by a prompt step's own SDK budget ceiling
+        // (error_max_turns / error_max_budget_usd) is DETERMINISTIC —
+        // surface it as "budget_exhausted" so the ticker's
+        // RETRYABLE_WORKER_ERROR_REASONS set (job-ticker-executor.ts)
+        // correctly refuses to retry the identical dispatch. Every other
+        // halt (shell failure, timeout, stream error, unknown subtype)
+        // keeps the existing "worker_failed" reason.
+        const reason =
+          haltedStep?.kind === "prompt" && haltedStep.reason === "budget_exhausted"
+            ? "budget_exhausted"
+            : "worker_failed"
         return yield* Effect.fail(
           new WorkerError({
-            reason: "worker_failed",
+            reason,
             kind: "workflow",
             message: `workflow halted at step ${haltedAt} (status=${stepResults[haltedAt!]?.status})`,
             cause: workflowResult,

@@ -13,6 +13,13 @@ export interface FakeQueryOptions {
   readonly gapMs?: number
   /** Throw after yielding N messages (simulate subprocess failure). */
   readonly throwAfter?: number
+  /**
+   * Message for the thrown Error when `throwAfter` fires. Defaults to the
+   * generic "fake-sdk: simulated failure" marker. Callers that need to
+   * exercise cause-classification (e.g. `isBudgetCeilingCause`) pass the
+   * exact production string here instead.
+   */
+  readonly throwMessage?: string
 }
 
 export interface FakeQueryInstance {
@@ -35,7 +42,7 @@ export const makeFakeQuery = (opts: FakeQueryOptions): FakeQueryInstance => {
       yield m
       n++
       if (opts.throwAfter !== undefined && n >= opts.throwAfter) {
-        throw new Error("fake-sdk: simulated failure")
+        throw new Error(opts.throwMessage ?? "fake-sdk: simulated failure")
       }
     }
   }

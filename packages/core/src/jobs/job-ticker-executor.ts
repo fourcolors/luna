@@ -39,6 +39,15 @@ import type { WorkerEntry, WorkerRegistryApi } from "./worker-registry.js"
  * exact same way every time, so retrying them on a tight backoff only burns
  * cycles and turns a once-per-cron-period failure into a hot-loop. They fall
  * back to the job's natural cron cadence instead (unretried).
+ *
+ * `budget_exhausted` (the SDK's own `error_max_turns` / `error_max_budget_usd`
+ * ceiling) is DELIBERATELY excluded for the same reason: retrying with an
+ * identical turn/cost budget cannot succeed. It is NOT a free pass, though —
+ * the failure below still increments `failStreak` regardless of retryability
+ * (see the `else` branch after this set is consulted), so the doctor's
+ * payload-patch rail (which raises `max_turns`) still fires once the streak
+ * threshold is hit. That patch rail is the intended path back to health for
+ * this reason, not a tight retry loop.
  */
 const RETRYABLE_WORKER_ERROR_REASONS: ReadonlySet<string> = new Set([
   "deadline_passed",

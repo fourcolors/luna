@@ -1582,6 +1582,57 @@ describe("JobTicker", () => {
     )
   })
 
+  it("Seam 3: a budget_exhausted failure is NOT retried (deterministic — same budget, same result) but still bumps fail_streak", async () => {
+    const budgetExhausted: Worker = () =>
+      Effect.fail(
+        new WorkerError({
+          reason: "budget_exhausted",
+          message: "SDK run hit its budget ceiling (error_max_turns, num_turns=15)",
+        }),
+      )
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({
+        id: "budget-exhausted-job",
+        kind: "wake",
+        spec: "0 0 1 1 *",
+        payload: { label: "be" },
+      })
+      yield* store.setV2Fields("budget-exhausted-job", {
+        schedule: "0 0 1 1 *",
+        nextRunAt: 0,
+      })
+
+      const summary = yield* ticker.drain
+      expect(summary.forked).toBe(1)
+      yield* ticker.awaitIdle
+
+      const after = yield* store.getById("budget-exhausted-job")
+      // NOT retried: retry_attempt stays 0 and next_run_at is left at the
+      // natural (far-future, yearly) cron fire — proving the executor
+      // consulted RETRYABLE_WORKER_ERROR_REASONS and refused, exactly like
+      // bad_payload/unknown_kind above. Retrying with the identical budget
+      // cannot succeed.
+      expect(after?.retryAttempt).toBe(0)
+      const wellPastRetryWindowMs = Date.now() + 24 * 3600 * 1000 * 7
+      expect((after?.nextRunAt ?? 0) > wellPastRetryWindowMs).toBe(true)
+      // Still counted as a failure: fail_streak increments regardless of
+      // retryability, so the doctor's payload-patch rail (which raises
+      // max_turns) still fires once the streak threshold is hit — the
+      // intended path back to health for this reason.
+      expect(after?.failStreak).toBe(1)
+
+      // A second drain does not re-fire it — proving it was never
+      // rescheduled sooner by the retry path.
+      const s2 = yield* ticker.drain
+      expect(s2.considered).toBe(0)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: budgetExhausted }))),
+    )
+  })
+
   it("Seam 3: exhausting maxAttempts stops retrying and resets retry_attempt (falls back to cron cadence)", async () => {
     const alwaysFail: Worker = () =>
       Effect.fail(new WorkerError({ reason: "worker_failed", message: "still broken" }))
