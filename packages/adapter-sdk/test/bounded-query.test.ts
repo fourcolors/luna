@@ -113,6 +113,56 @@ describe("runBoundedQuery — terminal outcomes", () => {
     expect(out._tag).toBe("empty")
   })
 
+  it("result_error: a terminal error_max_turns result frame → _tag='result_error'", async () => {
+    const maxTurnsMsg = {
+      type: "result",
+      subtype: "error_max_turns",
+      session_id: "s",
+      uuid: "u",
+      is_error: true,
+      duration_ms: 5,
+      duration_api_ms: 3,
+      num_turns: 15,
+    } as unknown as SDKMessage
+    const sdkLayer = SDKClient.fake(() =>
+      makeFakeQuery({ messages: [maxTurnsMsg] }).query,
+    )
+    const out = await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x" }))
+    expect(out).toEqual({
+      _tag: "result_error",
+      subtype: "error_max_turns",
+      numTurns: 15,
+    })
+  })
+
+  it("result_error: a success frame followed by an error_max_turns frame still yields 'result' (success always wins)", async () => {
+    const maxTurnsMsg = {
+      type: "result",
+      subtype: "error_max_turns",
+      session_id: "s",
+      uuid: "u2",
+      is_error: true,
+      duration_ms: 5,
+      duration_api_ms: 3,
+      num_turns: 16,
+    } as unknown as SDKMessage
+    const sdkLayer = SDKClient.fake(() =>
+      makeFakeQuery({ messages: [resultMsg("hello"), maxTurnsMsg] }).query,
+    )
+    const out = await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x" }))
+    expect(out._tag).toBe("result")
+    if (out._tag === "result") expect(out.text).toBe("hello")
+  })
+
+  it("result_error: neither a success nor an error result frame → _tag='empty' (unaffected by the new branch)", async () => {
+    const sdkLayer = SDKClient.fake(() =>
+      makeFakeQuery({ messages: [makeAssistantMessage("s", "thinking", "u3")] })
+        .query,
+    )
+    const out = await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x" }))
+    expect(out._tag).toBe("empty")
+  })
+
   it("error: producer throws → _tag='error' carries the cause", async () => {
     const sdkLayer = SDKClient.fake(() =>
       makeFakeQuery({

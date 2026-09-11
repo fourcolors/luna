@@ -69,6 +69,24 @@ const fakeClientThrows = (): Layer.Layer<SDKClient> =>
     }).query
   })
 
+const fakeClientResultError = (
+  subtype: string,
+  numTurns?: number,
+): Layer.Layer<SDKClient> =>
+  SDKClient.fake((_params) => {
+    const msg = {
+      type: "result",
+      subtype,
+      session_id: "sid",
+      uuid: "uuid-err",
+      is_error: true,
+      duration_ms: 5,
+      duration_api_ms: 3,
+      ...(numTurns !== undefined ? { num_turns: numTurns } : {}),
+    } as unknown as SDKMessage
+    return makeFakeQuery({ messages: [msg] }).query
+  })
+
 const ctx: WorkerContext = {
   jobId: "test-job",
   runId: 42,
@@ -418,6 +436,67 @@ describe("buildPromptWorker", () => {
       expect(result._tag).toBe("Failure")
       if (result._tag === "Failure") {
         expect(result.failure.reason).toBe("worker_failed")
+      }
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+    )
+  })
+
+  it("SDK result frame subtype='error_max_turns' → WorkerError(reason='budget_exhausted')", async () => {
+    const sdkLayer = fakeClientResultError("error_max_turns", 15)
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildPromptWorker(sdk, notes)
+      const result = yield* Effect.result(
+        worker({ user_prompt: "x" }, ctx),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("budget_exhausted")
+        expect(result.failure.message).toMatch(/error_max_turns/)
+        expect(result.failure.message).toMatch(/num_turns=15/)
+      }
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+    )
+  })
+
+  it("SDK result frame subtype='error_max_budget_usd' → WorkerError(reason='budget_exhausted')", async () => {
+    const sdkLayer = fakeClientResultError("error_max_budget_usd")
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildPromptWorker(sdk, notes)
+      const result = yield* Effect.result(
+        worker({ user_prompt: "x" }, ctx),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("budget_exhausted")
+        expect(result.failure.message).toMatch(/error_max_budget_usd/)
+      }
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))),
+    )
+  })
+
+  it("SDK result frame with an unknown non-success subtype → WorkerError(reason='worker_failed') naming the subtype", async () => {
+    const sdkLayer = fakeClientResultError("error_during_execution")
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildPromptWorker(sdk, notes)
+      const result = yield* Effect.result(
+        worker({ user_prompt: "x" }, ctx),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("worker_failed")
+        expect(result.failure.message).toMatch(/error_during_execution/)
       }
     })
     await Effect.runPromise(

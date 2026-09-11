@@ -171,25 +171,34 @@ const main = async (): Promise<void> => {
       intent?: string
       diagnosis?: string
     } = {}
+    // Set ONLY when we (not plan.json) are proposing the max_turns bump —
+    // the actual patch value is resolved below, after fetching the
+    // patient's CURRENT payload, as Math.max(currentMaxTurns, targetMaxTurns)
+    // so a job already configured higher is never downgraded.
+    let targetMaxTurns: number | undefined
     if (existsSync(join(stateDir, "plan.json"))) {
       plan = readJson("plan.json")
     } else {
-      // Heuristic default when LLM plan was not captured to disk:
-      // raise max_turns if evidence suggests turn exhaustion.
+      // Heuristic default when LLM plan was not captured to disk: raise
+      // max_turns if evidence suggests turn/budget exhaustion — matching
+      // either the loose "max turns" text or the typed WorkerError reason
+      // string `budget_exhausted: ...` now surfaced for the SDK's own
+      // error_max_turns/error_max_budget_usd result frames (bounded-query.ts
+      // result_error -> prompt-worker.ts / workflow-worker.ts).
       const evidence = finding.evidence ?? {}
       const err = String(evidence["last_error"] ?? finding.summary)
-      if (/max(?:imum)?\s*turns|max_turns/i.test(err)) {
+      if (/max(?:imum)?\s*turns|max_turns|budget_exhausted/i.test(err)) {
         plan = {
           intent: "recover scheduled work",
           diagnosis: "max_turns too low",
-          patch: { max_turns: 20 },
         }
+        targetMaxTurns = 20
       } else {
         plan = {
           intent: finding.summary,
           diagnosis: "generic chronic failure",
-          patch: { max_turns: 15 },
         }
+        targetMaxTurns = 15
       }
     }
     if (plan.escalate) {
@@ -208,7 +217,24 @@ const main = async (): Promise<void> => {
         jobs,
         backups: new DoctorBackupStore(),
       })
-      const payloadPatch = plan.patch ?? {}
+      let payloadPatch = plan.patch ?? {}
+      // NEVER lower max_turns. job-heal.ts's patchPatient does a SHALLOW
+      // merge of payload patches (`{...currentPayload, ...patch}`), so a
+      // fixed-constant patch (e.g. max_turns:15) would DOWNGRADE a job
+      // already configured higher (the daily brief defaults to 30). Only
+      // WE write max_turns here — never below what the patient already has.
+      if (plan.patch === undefined && targetMaxTurns !== undefined) {
+        const patient = await rt.runPromise(jobs.getById(finding.patient.id))
+        const rawCurrent = patient?.payload["max_turns"]
+        const currentMaxTurns =
+          typeof rawCurrent === "number" && Number.isFinite(rawCurrent)
+            ? rawCurrent
+            : 0
+        payloadPatch = {
+          ...payloadPatch,
+          max_turns: Math.max(currentMaxTurns, targetMaxTurns),
+        }
+      }
       await run(
         heal.patchPatient(finding.patient.id, backup.backupId, {
           payload: payloadPatch,

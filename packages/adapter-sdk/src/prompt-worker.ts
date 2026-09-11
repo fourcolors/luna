@@ -64,7 +64,11 @@ import {
   type SDKClientService,
   type QueryParams,
 } from "./sdk-client.js"
-import { runBoundedQuery, DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import {
+  runBoundedQuery,
+  isBudgetCeilingCause,
+  DEFAULT_QUERY_TIMEOUT_MS,
+} from "./bounded-query.js"
 import {
   JobRunToolsProviderTag,
   type JobRunToolsProvider,
@@ -199,6 +203,12 @@ export function parsePromptPayload(raw: unknown): PromptPayload | string {
  * empty stream all surface as `WorkerError({reason:"worker_failed"})` so the
  * ticker writes a typed row to `job_runs.error`. The subprocess is aborted on
  * timeout, so a hung turn cannot wedge the single-fiber V2 ticker.
+ *
+ * A terminal `result_error` (the SDK's own non-success `type:"result"` frame,
+ * e.g. `error_max_turns`) maps to `WorkerError({reason:"budget_exhausted"})`
+ * for the two known budget-ceiling subtypes — DETERMINISTIC, so the executor
+ * deliberately does not retry it (see `RETRYABLE_WORKER_ERROR_REASONS`) — and
+ * to `worker_failed` (naming the subtype) for anything else.
  */
 function boundedResultText(
   sdk: SDKClientService,
@@ -219,9 +229,14 @@ function boundedResultText(
             }),
           )
         case "error":
+          // A turn/cost ceiling usually arrives here as a THROWN cause rather
+          // than a terminal result_error frame. Classify it once, at this
+          // boundary, so everything downstream can key on the reason.
           return Effect.fail(
             new WorkerError({
-              reason: "worker_failed",
+              reason: isBudgetCeilingCause(outcome.cause)
+                ? "budget_exhausted"
+                : "worker_failed",
               kind: "prompt",
               message: `SDK stream error: ${String(outcome.cause)}`,
               cause: outcome.cause,
@@ -234,6 +249,30 @@ function boundedResultText(
               kind: "prompt",
               message:
                 "SDK stream produced no type:result/subtype:success message",
+            }),
+          )
+        case "result_error":
+          if (
+            outcome.subtype === "error_max_turns" ||
+            outcome.subtype === "error_max_budget_usd"
+          ) {
+            return Effect.fail(
+              new WorkerError({
+                reason: "budget_exhausted",
+                kind: "prompt",
+                message: `SDK run hit its budget ceiling (${outcome.subtype}${
+                  outcome.numTurns !== undefined
+                    ? `, num_turns=${outcome.numTurns}`
+                    : ""
+                })`,
+              }),
+            )
+          }
+          return Effect.fail(
+            new WorkerError({
+              reason: "worker_failed",
+              kind: "prompt",
+              message: `SDK run ended with subtype=${outcome.subtype}`,
             }),
           )
       }

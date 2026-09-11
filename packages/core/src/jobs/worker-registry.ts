@@ -128,6 +128,16 @@ export class WorkerError extends Data.TaggedError("WorkerError")<{
     | "worker_failed"
     | "deadline_passed"
     | "defect"
+    /**
+     * DETERMINISTIC: the run hit a turn or cost ceiling the SDK itself
+     * reported (`error_max_turns` / `error_max_budget_usd`). Retrying with
+     * the same budget cannot succeed — the identical dispatch will hit the
+     * identical ceiling every time. Deliberately excluded from
+     * `RETRYABLE_WORKER_ERROR_REASONS` (job-ticker-executor.ts); the fix is
+     * raising the budget, not retrying, which is what the doctor's
+     * payload-patch rail is for.
+     */
+    | "budget_exhausted"
   readonly kind?: string
   readonly message: string
   readonly cause?: unknown

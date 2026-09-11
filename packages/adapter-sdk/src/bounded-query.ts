@@ -61,7 +61,7 @@ interface BoundedQueryUsage {
 }
 
 /**
- * The four terminal outcomes of a bounded turn. Each caller maps these onto
+ * The terminal outcomes of a bounded turn. Each caller maps these onto
  * its own contract (a step result, a `WorkerError`, a `DreamError`, …).
  */
 export type BoundedQueryOutcome =
@@ -81,10 +81,53 @@ export type BoundedQueryOutcome =
     }
   /** Stream ended with no `type:"result"`/`subtype:"success"` message. */
   | { readonly _tag: "empty" }
+  /**
+   * Stream ended with a terminal `type:"result"` frame whose subtype was NOT
+   * "success" (e.g. `error_max_turns`, `error_max_budget_usd`) — a
+   * deterministic SDK-reported ceiling, distinct from `"empty"` (no result
+   * frame at all) so callers can tell "the SDK told us why it stopped" from
+   * "the stream just ended". Only surfaced when no success frame preceded it
+   * (see the fold: a success frame always wins).
+   */
+  | { readonly _tag: "result_error"; readonly subtype: string; readonly numTurns?: number }
   /** Deadline hit; the subprocess was aborted. */
   | { readonly _tag: "timeout"; readonly timeoutMs: number }
   /** The producer's `for await` threw (subprocess/stream error). */
   | { readonly _tag: "error"; readonly cause: unknown }
+
+/**
+ * Budget-ceiling markers as they appear when the SDK *throws* rather than
+ * emitting a terminal `result_error` frame.
+ *
+ * Measured on a live install before this was written: the `result_error` path
+ * never fired even once, while 141 of 195 recent job failures carried a thrown
+ * cause reading `Claude Code returned an error result: Reached maximum number
+ * of turns (15)`. Classifying only the frame would therefore have fixed nothing
+ * in production, which is why both routes are handled.
+ *
+ * Matching on prose is confined to this one boundary on purpose: it is the only
+ * place where an opaque thrown cause can become a typed reason. Everything
+ * downstream keys on `WorkerError.reason` and never on the message text — the
+ * regex-against-a-message remedy is the defect ADR 0002 replaces.
+ */
+const BUDGET_CEILING_MARKERS: readonly RegExp[] = [
+  /reached\s+(?:the\s+)?maximum\s+number\s+of\s+turns/i,
+  /\berror_max_turns\b/i,
+  /\berror_max_budget_usd\b/i,
+  /\bmax(?:imum)?[\s_]*turns\b/i,
+]
+
+/**
+ * True when a thrown stream cause is the SDK reporting that the run hit a turn
+ * or cost ceiling. Deterministic: retrying on the same budget cannot succeed.
+ */
+export const isBudgetCeilingCause = (cause: unknown): boolean => {
+  const text =
+    cause instanceof Error
+      ? `${cause.message}\n${cause.stack ?? ""}`
+      : String(cause)
+  return BUDGET_CEILING_MARKERS.some((re) => re.test(text))
+}
 
 /** A frame in the detached producer→consumer channel. */
 type Frame =
@@ -152,9 +195,15 @@ export function runBoundedQuery(
         usage?: BoundedQueryUsage
         structuredOutput?: unknown
       } | null = null
+      // Captures the first non-success terminal `result` frame seen (e.g.
+      // `error_max_turns`). Only consulted at the end if `acc` never got set
+      // — a later success frame (there shouldn't be one after a terminal
+      // result, but the loop doesn't assume that) always wins, matching the
+      // "a success frame always wins" contract above.
+      let resultError: { subtype: string; numTurns?: number } | null = null
       while (true) {
         const frame = yield* Queue.take(queue)
-        if (frame._tag === "end") return acc
+        if (frame._tag === "end") return { acc, resultError }
         if (frame._tag === "error") return yield* Effect.fail(frame.cause)
         const m = frame.msg as {
           type?: string
@@ -173,6 +222,7 @@ export function runBoundedQuery(
             cache_read_input_tokens?: number
           }
           modelUsage?: Record<string, unknown>
+          num_turns?: number
         }
         // A success result frame counts when it carries EITHER a text result
         // (today's path) OR a structured_output payload (the SDK may omit the
@@ -212,6 +262,16 @@ export function runBoundedQuery(
                 }
               : {}),
           }
+        } else if (m.type === "result" && m.subtype !== "success") {
+          // Terminal result frame reporting a non-success subtype (e.g. the
+          // SDK's `error_max_turns` / `error_max_budget_usd` ceilings). Keep
+          // consuming — do NOT fail or break — so a success frame arriving
+          // later (if the stream is not actually done) still wins per the
+          // "a success frame always wins" contract.
+          resultError = {
+            subtype: m.subtype ?? "unknown",
+            ...(typeof m.num_turns === "number" ? { numTurns: m.num_turns } : {}),
+          }
         }
       }
     })
@@ -229,19 +289,32 @@ export function runBoundedQuery(
       abortQuietly(abort)
       return { _tag: "error", cause: outcome.failure } satisfies BoundedQueryOutcome
     }
-    const opt = outcome.success // Option<{text, usage?} | null>
+    const opt = outcome.success // Option<{acc: {...} | null, resultError: {...} | null}>
     if (Option.isNone(opt)) {
       abortQuietly(abort)
       return { _tag: "timeout", timeoutMs } satisfies BoundedQueryOutcome
     }
-    if (opt.value !== null) {
+    const { acc, resultError } = opt.value
+    if (acc !== null) {
+      // A success frame always wins, even if a non-success result frame was
+      // also seen (shouldn't happen on a well-formed stream, but the fold
+      // doesn't assume it can't).
       return {
         _tag: "result",
-        text: opt.value.text,
-        ...(opt.value.structuredOutput !== undefined
-          ? { structuredOutput: opt.value.structuredOutput }
+        text: acc.text,
+        ...(acc.structuredOutput !== undefined
+          ? { structuredOutput: acc.structuredOutput }
           : {}),
-        ...(opt.value.usage ? { usage: opt.value.usage } : {}),
+        ...(acc.usage ? { usage: acc.usage } : {}),
+      } satisfies BoundedQueryOutcome
+    }
+    if (resultError !== null) {
+      return {
+        _tag: "result_error",
+        subtype: resultError.subtype,
+        ...(resultError.numTurns !== undefined
+          ? { numTurns: resultError.numTurns }
+          : {}),
       } satisfies BoundedQueryOutcome
     }
     return { _tag: "empty" } satisfies BoundedQueryOutcome
