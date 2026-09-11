@@ -37,15 +37,25 @@ const flag = (name: string): string | undefined => {
   if (i < 0) return undefined
   return args[i + 1]
 }
-const stateDir = flag("--state-dir")
+const stateDirRaw = flag("--state-dir")
 const attempt = Math.max(1, Number(flag("--attempt") ?? "1") || 1)
 
-if (!cmd || !stateDir) {
+// Guarded so importing this module (e.g. to unit-test `clampMaxTurns`) never
+// exits the process or requires --state-dir on the test runner's own argv.
+// Mirrors vault-migrate-keychain.ts's import.meta.main guard.
+if (import.meta.main && (!cmd || !stateDirRaw)) {
   console.error(
     "usage: luna-doctor-workflow <diagnose|backup|apply|verify|finalize> --state-dir <dir> [--attempt N]",
   )
   process.exit(2)
 }
+// Asserted non-null: the CLI body below only ever runs under `import.meta.main`
+// (see the guard above and `main()`'s own gate at the bottom of this file),
+// where the check just above guarantees a non-empty stateDir. When this
+// module is merely imported (tests), none of the code that reads `stateDir`
+// executes — this cast exists purely so the rest of the file's declarations
+// typecheck without threading `| undefined` through every call site.
+const stateDir = stateDirRaw as string
 
 const readJson = <T>(name: string): T => {
   const p = join(stateDir, name)
@@ -56,6 +66,30 @@ const readJson = <T>(name: string): T => {
 const writeJson = (name: string, value: unknown): void => {
   mkdirSync(stateDir, { recursive: true })
   writeFileSync(join(stateDir, name), JSON.stringify(value, null, 2), "utf8")
+}
+
+/**
+ * NEVER lower max_turns. job-heal.ts's `deepMergePayload` is misnamed — it is
+ * a ONE-LEVEL spread (`{...currentPayload, ...patch}`) — so any fixed-constant
+ * patch (e.g. max_turns:15) REPLACES the current value outright and DOWNGRADES
+ * a job already configured higher (the daily brief defaults to 30). This clamp
+ * is applied unconditionally, to an LLM-authored plan.json patch just as much
+ * as to our own heuristic: an LLM proposing max_turns:10 for a job at 30 is the
+ * same defect. `rawCurrent` is untyped (lifted straight off a persisted job's
+ * `payload` JSON) so a missing / non-numeric / NaN value is treated as 0 (no
+ * floor beyond `proposed`). `proposed === undefined` means no bump was ever
+ * requested — pass that through unchanged rather than inventing a floor.
+ */
+export const clampMaxTurns = (
+  rawCurrent: unknown,
+  proposed: number | undefined,
+): number | undefined => {
+  if (proposed === undefined) return undefined
+  const current =
+    typeof rawCurrent === "number" && Number.isFinite(rawCurrent)
+      ? rawCurrent
+      : 0
+  return Math.max(current, proposed)
 }
 
 const classify = (finding: DoctorFinding): RemedyClass => {
@@ -217,22 +251,26 @@ const main = async (): Promise<void> => {
         jobs,
         backups: new DoctorBackupStore(),
       })
-      let payloadPatch = plan.patch ?? {}
-      // NEVER lower max_turns. job-heal.ts's patchPatient does a SHALLOW
-      // merge of payload patches (`{...currentPayload, ...patch}`), so a
-      // fixed-constant patch (e.g. max_turns:15) would DOWNGRADE a job
-      // already configured higher (the daily brief defaults to 30). Only
-      // WE write max_turns here — never below what the patient already has.
-      if (plan.patch === undefined && targetMaxTurns !== undefined) {
+      let payloadPatch: Record<string, unknown> = { ...(plan.patch ?? {}) }
+      // NEVER lower max_turns. job-heal.ts's `deepMergePayload` is misnamed —
+      // it is a ONE-LEVEL spread (`{...currentPayload, ...patch}`) — so any
+      // fixed-constant patch (e.g. max_turns:15) REPLACES the current value
+      // outright and DOWNGRADES a job already configured higher (the daily
+      // brief defaults to 30). The clamp below is applied unconditionally, to
+      // an LLM-authored plan.json patch just as much as to our own heuristic:
+      // an LLM proposing max_turns:10 for a job at 30 is the same defect.
+      const proposedMaxTurns =
+        typeof payloadPatch["max_turns"] === "number" &&
+        Number.isFinite(payloadPatch["max_turns"])
+          ? (payloadPatch["max_turns"] as number)
+          : targetMaxTurns
+      if (proposedMaxTurns !== undefined) {
         const patient = await rt.runPromise(jobs.getById(finding.patient.id))
-        const rawCurrent = patient?.payload["max_turns"]
-        const currentMaxTurns =
-          typeof rawCurrent === "number" && Number.isFinite(rawCurrent)
-            ? rawCurrent
-            : 0
+        const rawCurrent = (patient?.payload as Record<string, unknown> | null)
+          ?.["max_turns"]
         payloadPatch = {
           ...payloadPatch,
-          max_turns: Math.max(currentMaxTurns, targetMaxTurns),
+          max_turns: clampMaxTurns(rawCurrent, proposedMaxTurns),
         }
       }
       await run(
@@ -345,7 +383,9 @@ const main = async (): Promise<void> => {
   process.exit(2)
 }
 
-main().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}

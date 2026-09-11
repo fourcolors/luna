@@ -94,7 +94,7 @@ so everything produced in those turns is thrown away.
 
 **The doctor is blind to it.** The doctor's only auto-remedy is a `max_turns`
 patch, gated on `/max(?:imum)?\s*turns|max_turns/i`
-(`apps/server/scripts/luna-doctor-workflow.ts:177`). The runtime's actual wording
+(`apps/server/scripts/luna-doctor-workflow.ts:181`). The runtime's actual wording
 is `Reached maximum number of turns (15)`. The regex requires `maximum` followed
 by optional whitespace and then `turns`; the real string has
 `maximum number of turns`, so it does not match. Measured confirmation: a
@@ -102,10 +102,12 @@ substring census over 14 days returns **0 rows** for `max_turns`, `turn limit`,
 and `turn_limit`, while 150 runs died of a turn cap in that same window.
 
 Every turn-exhausted job therefore takes the generic branch, which patches
-`max_turns: 15`. Because `patchPatient` deep-merges
-(`packages/core/src/doctor/job-heal.ts:120`), that is a **downgrade** for any job
-configured higher. The doctor's verify step then checks only that the row exists,
-is enabled, and parses, never that the failure stopped.
+`max_turns: 15`. That is a **downgrade** for any job configured higher, because
+`patchPatient`'s payload merge is a one-level spread
+(`{...currentPayload, ...patch}` in `packages/core/src/doctor/job-heal.ts`,
+misleadingly named `deepMergePayload`), so a scalar in the patch replaces the
+current value outright. The doctor's verify step then checks only that the row
+exists, is enabled, and parses, never that the failure stopped.
 
 The distribution makes the cost concrete. Of 293 turn-cap deaths all-time,
 **255 died at the default of 15**. Jobs configured at 25, 30, or 60 almost never
@@ -250,7 +252,7 @@ heartbeat re-emits regardless. Fix the rail before adopting it.
   "has this already been done?" check, written after the loop spent eleven cycles
   pushing already-merged branches. Its docstring claims a consumer calls it.
   Nothing does; the live check is a hand-ported shell copy in
-  `push-through-install.ts:36`. Wire it up or delete it.
+  `push-through-install.ts:37`. Wire it up or delete it.
 - **Work items are never marked done.** `push-through-install.ts:217` sets
   `next_actions.status='doing'`; nothing in the repo ever sets `'done'`.
 - **A cancelled schedule cannot be restored.** `schedule_cancel` deletes the row
@@ -453,6 +455,10 @@ The first is smallest and most certain, which is why it leads.
 ---
 
 ## Method and limits
+
+Line numbers in this document are pinned to `master` @ `0645f94b` and will drift
+as the file changes; prefer the named symbol over the line when following a
+citation.
 
 Runtime claims come from a live install measured on 2026-09-11: `luna.db`
 (101 jobs, 18,531 runs, 6,704 notes), `memory.db` (407 records), the analytics

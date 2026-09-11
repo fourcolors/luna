@@ -95,39 +95,10 @@ export type BoundedQueryOutcome =
   /** The producer's `for await` threw (subprocess/stream error). */
   | { readonly _tag: "error"; readonly cause: unknown }
 
-/**
- * Budget-ceiling markers as they appear when the SDK *throws* rather than
- * emitting a terminal `result_error` frame.
- *
- * Measured on a live install before this was written: the `result_error` path
- * never fired even once, while 141 of 195 recent job failures carried a thrown
- * cause reading `Claude Code returned an error result: Reached maximum number
- * of turns (15)`. Classifying only the frame would therefore have fixed nothing
- * in production, which is why both routes are handled.
- *
- * Matching on prose is confined to this one boundary on purpose: it is the only
- * place where an opaque thrown cause can become a typed reason. Everything
- * downstream keys on `WorkerError.reason` and never on the message text — the
- * regex-against-a-message remedy is the defect ADR 0002 replaces.
- */
-const BUDGET_CEILING_MARKERS: readonly RegExp[] = [
-  /reached\s+(?:the\s+)?maximum\s+number\s+of\s+turns/i,
-  /\berror_max_turns\b/i,
-  /\berror_max_budget_usd\b/i,
-  /\bmax(?:imum)?[\s_]*turns\b/i,
-]
-
-/**
- * True when a thrown stream cause is the SDK reporting that the run hit a turn
- * or cost ceiling. Deterministic: retrying on the same budget cannot succeed.
- */
-export const isBudgetCeilingCause = (cause: unknown): boolean => {
-  const text =
-    cause instanceof Error
-      ? `${cause.message}\n${cause.stack ?? ""}`
-      : String(cause)
-  return BUDGET_CEILING_MARKERS.some((re) => re.test(text))
-}
+// NOTE: budget-ceiling classification lives in @luna/core's worker-registry,
+// next to the `WorkerError.reason` union it feeds, so BOTH the SDK workers
+// here and core's own `define-worker` boundary (which wraps the reasoner
+// lanes) share one definition. See `isBudgetCeilingCause`.
 
 /** A frame in the detached producer→consumer channel. */
 type Frame =

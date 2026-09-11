@@ -150,6 +150,49 @@ export class WorkerError extends Data.TaggedError("WorkerError")<{
   readonly stepsJson?: string
 }> {}
 
+/**
+ * Budget-ceiling markers as they appear when the SDK reports a turn or cost
+ * ceiling by THROWING rather than by emitting a terminal error frame.
+ *
+ * Measured on a live install before this was written: the terminal-frame route
+ * never fired once, while 141 of 195 recent job failures carried a thrown
+ * cause reading `Claude Code returned an error result: Reached maximum number
+ * of turns (15)`. Classifying only the frame would have fixed nothing.
+ *
+ * Kept deliberately NARROW. An earlier draft also matched a bare
+ * `max(imum)?[\s_]*turns`, which matches the SDK's own `maxTurns` option name
+ * and would misclassify any error echoing the request options — turning a
+ * retryable fault into a non-retryable one. Every string this classifier is
+ * known to face is covered by the three markers below.
+ */
+const BUDGET_CEILING_MARKERS: readonly RegExp[] = [
+  /reached\s+(?:the\s+)?maximum\s+number\s+of\s+turns/i,
+  /\berror_max_turns\b/i,
+  /\berror_max_budget_usd\b/i,
+]
+
+/**
+ * True when a failure cause is the SDK reporting that the run hit a turn or
+ * cost ceiling. Deterministic: retrying on the same budget cannot succeed.
+ *
+ * Matching on prose is confined to this ONE boundary on purpose — it is the
+ * only place an opaque thrown cause can become a typed reason. Everything
+ * downstream keys on `WorkerError.reason` and never on message text; a
+ * regex-against-a-message remedy is the defect ADR 0002 replaces.
+ *
+ * Only `message` is inspected, not `stack`: all three markers are
+ * message-borne, and widening the haystack only widens false positives.
+ */
+export const isBudgetCeilingCause = (cause: unknown): boolean => {
+  const text =
+    cause instanceof Error
+      ? cause.message
+      : typeof cause === "string"
+        ? cause
+        : String((cause as { message?: unknown } | null)?.message ?? cause)
+  return BUDGET_CEILING_MARKERS.some((re) => re.test(text))
+}
+
 export interface WorkerRegistryApi {
   /**
    * Register (or replace) the worker for `kind` — either a bare `Worker`

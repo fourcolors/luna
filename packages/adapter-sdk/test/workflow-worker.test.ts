@@ -27,7 +27,7 @@ import {
   type ShellStepResult,
   type PromptStepResult,
 } from "../src/workflow-worker.js"
-import { makeFakeQuery } from "./fake-sdk.js"
+import { makeFakeQuery, makeAssistantMessage } from "./fake-sdk.js"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 
 const fakeClientWithText = (text: string): Layer.Layer<SDKClient> =>
@@ -38,6 +38,23 @@ const fakeClientWithText = (text: string): Layer.Layer<SDKClient> =>
       result: text,
     } as unknown as SDKMessage
     return makeFakeQuery({ messages: [result] }).query
+  })
+
+/**
+ * Route B (thrown cause) fake: the SDK's `for await` throws the LITERAL
+ * production string measured live — 141 of 195 observed job failures
+ * carried this exact message via a thrown cause, never the terminal
+ * `result_error` frame. See worker-registry.ts's `isBudgetCeilingCause` doc
+ * and prompt-worker.test.ts's mirror of this fake.
+ */
+const fakeClientThrowsBudgetCeiling = (): Layer.Layer<SDKClient> =>
+  SDKClient.fake(() => {
+    return makeFakeQuery({
+      messages: [makeAssistantMessage("sid", "x", "u")],
+      throwAfter: 0,
+      throwMessage:
+        "Claude Code returned an error result: Reached maximum number of turns (15)",
+    }).query
   })
 
 const ctx: WorkerContext = { jobId: "wf-test", runId: 1, attempt: 1, deadline: 0 }
@@ -327,6 +344,66 @@ describe("buildWorkflowWorker — prompt steps", () => {
       expect(steps.steps[0].kind).toBe("shell")
       expect(steps.steps[1].kind).toBe("prompt")
       expect(steps.steps[2].kind).toBe("shell")
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))))
+  })
+
+  it("prompt step budget-ceiling throw (Route B) → PromptStepResult carries reason='budget_exhausted'", async () => {
+    const sdkLayer = fakeClientThrowsBudgetCeiling()
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildWorkflowWorker(sdk, notes)
+      const result = yield* Effect.result(
+        worker({ steps: [{ kind: "prompt", user_prompt: "do thing" }] }, ctx),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure).toBeInstanceOf(WorkerError)
+        // The halt rollup below reads exactly this per-step `reason` field to
+        // pick the top-level WorkerError's reason. Reverting runPromptStep's
+        // "error" case (workflow-worker.ts) back to omitting `reason` on a
+        // budget-ceiling throw would fail this assertion (and the next test).
+        expect(result.failure.reason).toBe("budget_exhausted")
+        const cause = result.failure.cause as { steps: PromptStepResult[] }
+        expect(cause.steps[0]?.status).toBe("failed")
+        expect(cause.steps[0]?.reason).toBe("budget_exhausted")
+      }
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))))
+  })
+
+  it("halt rollup: a budget-ceiling prompt step AFTER a successful shell step still surfaces WorkerError(reason='budget_exhausted') at the top level, not 'worker_failed'", async () => {
+    const sdkLayer = fakeClientThrowsBudgetCeiling()
+    const prog = Effect.gen(function* () {
+      const sdk = yield* SDKClient
+      const notes = yield* AgentNotesService
+      const worker = buildWorkflowWorker(sdk, notes)
+      const result = yield* Effect.result(
+        worker(
+          {
+            steps: [
+              { kind: "shell", cmd: "echo ok" },
+              { kind: "prompt", user_prompt: "do thing" },
+              { kind: "shell", cmd: "echo SHOULD_NOT_RUN" },
+            ],
+          },
+          ctx,
+        ),
+      )
+      expect(result._tag).toBe("Failure")
+      if (result._tag === "Failure") {
+        expect(result.failure.reason).toBe("budget_exhausted")
+        expect(result.failure.message).toMatch(/halted at step 1/)
+        const cause = result.failure.cause as {
+          steps: PromptStepResult[]
+          halted_at: number
+        }
+        expect(cause.halted_at).toBe(1)
+        expect(cause.steps.length).toBe(2)
+        // The third step (echo SHOULD_NOT_RUN) must never have run.
+        expect(cause.steps[2]).toBeUndefined()
+      }
     })
     await Effect.runPromise(prog.pipe(Effect.provide(Layer.mergeAll(sdkLayer, TestNotes))))
   })

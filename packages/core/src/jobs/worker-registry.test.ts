@@ -7,10 +7,65 @@ import {
   WorkerRegistry,
   WorkerError,
   makeWorkerRegistry,
+  isBudgetCeilingCause,
   type Worker,
 } from "./worker-registry.js"
 
 const idCtx = { jobId: "j", runId: 1, attempt: 1, deadline: 0 }
+
+describe("isBudgetCeilingCause", () => {
+  it("TRUE for the literal production string (thrown-route cause, issue measured 141/195 failures)", () => {
+    expect(
+      isBudgetCeilingCause(
+        new Error(
+          "Claude Code returned an error result: Reached maximum number of turns (15)",
+        ),
+      ),
+    ).toBe(true)
+  })
+
+  it("TRUE for the frame-route subtype markers error_max_turns / error_max_budget_usd", () => {
+    expect(isBudgetCeilingCause(new Error("error_max_turns"))).toBe(true)
+    expect(isBudgetCeilingCause(new Error("error_max_budget_usd"))).toBe(true)
+  })
+
+  it("accepts an Error instance, a bare string, and an object carrying a message field", () => {
+    expect(
+      isBudgetCeilingCause(new Error("reached maximum number of turns")),
+    ).toBe(true)
+    expect(isBudgetCeilingCause("reached maximum number of turns")).toBe(true)
+    expect(
+      isBudgetCeilingCause({ message: "reached maximum number of turns" }),
+    ).toBe(true)
+  })
+
+  it("FALSE for 'maxTurns' — the SDK's own option name, NOT a ceiling report (the critical negative case)", () => {
+    // An earlier draft's regex also matched a bare `max(imum)?[\s_]*turns`,
+    // which matches the SDK's own `maxTurns` request option — any error that
+    // happens to echo the request options back (e.g. in a validation/debug
+    // message) would then be misclassified as a deterministic, non-retryable
+    // budget failure when it might be a perfectly retryable transient fault.
+    expect(isBudgetCeilingCause(new Error("maxTurns"))).toBe(false)
+    expect(
+      isBudgetCeilingCause(new Error("invalid option: maxTurns must be > 0")),
+    ).toBe(false)
+  })
+
+  it("FALSE for max_tokens (a different, unrelated ceiling)", () => {
+    expect(isBudgetCeilingCause(new Error("max_tokens exceeded"))).toBe(false)
+  })
+
+  it("FALSE for a generic network/stream error with no budget wording", () => {
+    expect(isBudgetCeilingCause(new Error("ECONNRESET: socket hang up"))).toBe(
+      false,
+    )
+  })
+
+  it("FALSE for null/undefined", () => {
+    expect(isBudgetCeilingCause(null)).toBe(false)
+    expect(isBudgetCeilingCause(undefined)).toBe(false)
+  })
+})
 
 describe("WorkerRegistry", () => {
   it("dispatch on unknown kind fails with WorkerError({reason:'unknown_kind'})", async () => {
