@@ -156,12 +156,11 @@ export function makeRouter(
 
   const search: MemoryRouter["search"] = (args) => {
     const requestedTopK = args.topK ?? 10
-    // Scope is pushed to the backend, which filters by visibility BEFORE
-    // ranking (memory_vectors carries denormalized scope columns, backfilled
-    // at Layer build — no post-filter starvation for conforming backends).
-    // We still over-fetch 4x for scoped queries as a safety net: it is a
-    // no-op for backends that filter pre-ranking, and protects against
-    // backends that ignore the scope arg (the post-filter below then prunes).
+    // Scope is pushed to the backend. Keyed queries and FTS filter by scope
+    // in SQL before ranking. The HNSW vector path still ranks globally then
+    // prunes by scope (vectorlite limitation), so the 4x over-fetch below
+    // mitigates starvation there. The post-filter is a safety net for
+    // backends that ignore the scope arg entirely.
     const backendArgs =
       args.scope !== undefined
         ? { ...args, topK: Math.max(requestedTopK * 4, 20) }

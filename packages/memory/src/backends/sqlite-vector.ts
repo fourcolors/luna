@@ -839,7 +839,10 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
             sql += ` ORDER BY updated_at DESC`
             // LIMIT can only be pushed when no JS-side filter remains;
             // otherwise it applies after matchesQuery, preserving semantics.
-            const needsJsFilter = q.scope !== undefined
+            // JS-side filters: scope matching, and superseded-row exclusion
+            // (unless includeSuperseded is true).
+            const needsJsFilter =
+              q.scope !== undefined || q.includeSuperseded !== true
             if (q.limit !== undefined && !needsJsFilter) {
               sql += ` LIMIT ?`
               params.push(q.limit)
