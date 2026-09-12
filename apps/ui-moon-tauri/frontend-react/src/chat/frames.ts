@@ -584,6 +584,11 @@ export function createFrames(ctx: FramesCtx) {
         // A delivered background result IS a complete turn, so the face stops
         // here rather than waiting for a turn-complete that never comes.
         MoonFace.setBusy(false);
+      } else if (frame.threadId && frame.message) {
+        // Background delivery for a thread we're not viewing: keep its cache
+        // converged so switching back paints the delivered result instantly
+        // instead of a stale, shorter transcript.
+        ThreadCache.appendMessage(frame.threadId, frame.message);
       }
       // Raise an OS notification even for a non-active thread: this result
       // arrived from a background/scheduled task, so the user is likely not
@@ -591,7 +596,14 @@ export function createFrames(ctx: FramesCtx) {
       Notifier.notifyDelivered(frame.message);
       return;
     }
-    if (!sameThread) return;   // streamed done for another thread -> ignore
+    if (!sameThread) {
+      // Streamed done for a background thread: the thread-isolation rule
+      // means we don't render it, but the per-thread cache MUST stay
+      // converged — otherwise switching back paints a stale ("slimmed down")
+      // transcript until the re-subscribe snapshot lands.
+      if (frame.threadId && frame.message) ThreadCache.appendMessage(frame.threadId, frame.message);
+      return;
+    }
     // Finalize the active turn. flush() forces an immediate render so a
     // still-pending rAF frame can't overwrite the closed state.
     // RE-ARM, do not clear. `assistant-done` fires once per intermediate step,

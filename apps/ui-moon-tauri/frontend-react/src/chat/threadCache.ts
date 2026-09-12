@@ -101,6 +101,40 @@ export function clear(ctx: ThreadCacheCtx, threadId: string | null | undefined):
   delete ctx.state.threadCache[threadId]
 }
 
+/**
+ * Append a single live message to a thread's cached entry.
+ *
+ * WHY THIS EXISTS: the cache is populated on `thread-snapshot`, but live
+ * frames (`assistant-done`) for BACKGROUND threads never refreshed it — the
+ * handlers dropped them after the thread-isolation check. Switching back to
+ * such a thread painted a stale, shorter transcript ("slimmed down") until
+ * the re-subscribe snapshot arrived. Appending completed messages keeps the
+ * cache converged with the live stream, so the instant paint is never stale.
+ *
+ * No-op when there is no cached entry (nothing to converge with — the next
+ * snapshot will populate it) or when the message is not an object. The
+ * entry's array is replaced, never mutated in place, so a `paint()` that
+ * already handed out the old array keeps a stable view.
+ */
+export function appendMessage(
+  ctx: ThreadCacheCtx,
+  threadId: string | null | undefined,
+  message: unknown,
+): void {
+  if (!threadId || !ctx.state) return
+  if (!message || typeof message !== "object") return
+  const entry = ctx.state.threadCache[threadId]
+  if (!entry) return
+  const seq = (message as { seq?: unknown }).seq
+  ctx.state.threadCache[threadId] = {
+    messages: [...entry.messages, message],
+    throughSeq:
+      Number.isFinite(seq) && (seq as number) > entry.throughSeq
+        ? (seq as number)
+        : entry.throughSeq,
+  }
+}
+
 export function markBusy(ctx: ThreadCacheCtx, threadId: string | null | undefined): void {
   if (!threadId || !ctx.state) return
   // Idempotent by design: re-marking an already-busy thread must not trigger a
