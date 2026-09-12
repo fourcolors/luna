@@ -1007,15 +1007,15 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 ? ftsByNsScopeStmt.all(
                     match,
                     namespace,
-                    limit,
                     scope.subjectId,
                     scope.observerId,
+                    limit,
                   )
                 : ftsAllScopeStmt.all(
                     match,
-                    limit,
                     scope.subjectId,
                     scope.observerId,
+                    limit,
                   )
               : namespace !== undefined
                 ? ftsByNsStmt.all(match, namespace, limit)
