@@ -257,8 +257,21 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         // (no-op when every row already carries its effective scope).
         backfillVectorScopes(db)
         // Compute the HNSW sidecar path up-front so the close-time
-        // chmod can see it (vectorlite writes the file on db.close()).
+        // chmod can see it (vectorlite is *supposed* to write the file on
+        // db.close(), but the flush is best-effort — see below).
         // Null for in-memory / special-URI DBs — secureSidecar no-ops.
+        //
+        // NOTE (2026-09-12): The close-time sidecar flush does NOT reliably
+        // happen when this backend's full set of prepared statements is
+        // active. Bisection showed: with only the base statements the
+        // sidecar flushes; adding the new scoped/hash statements back (in
+        // any combination of 2+ groups) prevents vectorlite from ever
+        // opening the sidecar file (verified via strace — zero openat
+        // attempts). The mechanism is unclear (finalizing statements before
+        // close does not help), but the RELIABLE contract is: memory_vectors
+        // is the canonical store, and backfillHnswIfEmpty rebuilds the HNSW
+        // index on open when the sidecar is missing/empty. Tests 7k/7l/7m
+        // assert the rebuild behavior, not the flush.
         const sidecarPath = deriveHnswSidecarPath(dbPath)
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
