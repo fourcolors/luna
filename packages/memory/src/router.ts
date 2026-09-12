@@ -158,10 +158,14 @@ export function makeRouter(
     const requestedTopK = args.topK ?? 10
     // Scope is pushed to the backend, which filters by visibility BEFORE
     // ranking (memory_vectors carries denormalized scope columns, backfilled
-    // at Layer build — no post-filter starvation). The post-filter below is
-    // kept as a safety net: it is a no-op for conforming backends and
-    // protects against any backend that ignores the scope arg.
-    const backendArgs = args
+    // at Layer build — no post-filter starvation for conforming backends).
+    // We still over-fetch 4x for scoped queries as a safety net: it is a
+    // no-op for backends that filter pre-ranking, and protects against
+    // backends that ignore the scope arg (the post-filter below then prunes).
+    const backendArgs =
+      args.scope !== undefined
+        ? { ...args, topK: Math.max(requestedTopK * 4, 20) }
+        : args
     const inner = ((): Stream.Stream<
       { readonly record: MemoryRecord; readonly score: number },
       MemoryBackendError
