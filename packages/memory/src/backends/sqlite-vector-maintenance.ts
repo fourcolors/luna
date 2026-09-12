@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import { MemoryBackendError, type EmbedderApi } from "@luna/core"
+import {
+  effectiveMemoryScope,
+  type MemoryRecord,
+  type MemoryScope,
+} from "../types.js"
 import { initVectorlite } from "./vectorlite-init.js"
 import { probeHnswPopulation, backfillHnswRows } from "./hnsw-backfill.js"
 import { deriveHnswSidecarPath, secureSidecar } from "./hnsw-sidecar.js"
@@ -97,7 +102,7 @@ export interface MemoryReembedRow {
   readonly id: string
   readonly namespace: string
   readonly reasons: ReadonlyArray<string>
-  readonly action: "would-reembed" | "reembedded" | "skipped"
+  readonly action: "would-reembed" | "reembedded" | "backfilled" | "skipped"
   readonly skipReason?: string
 }
 
@@ -106,6 +111,7 @@ export interface MemoryReembedResult {
   readonly scannedRows: number
   readonly staleRows: number
   readonly reembedded: number
+  readonly backfilled: number
   readonly skipped: number
   readonly rows: ReadonlyArray<MemoryReembedRow>
 }
@@ -121,7 +127,8 @@ export const MEMORY_VECTOR_SCHEMA_MIGRATION = `
     updated_at      INTEGER NOT NULL,
     tags_json       TEXT NOT NULL,
     scope_json      TEXT,
-    provenance_json TEXT
+    provenance_json TEXT,
+    superseded_by   TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_memory_ns ON memory_keyed(namespace);
   CREATE INDEX IF NOT EXISTS idx_memory_kind ON memory_keyed(kind);
@@ -205,6 +212,27 @@ const ENRICHMENT_COLUMN = {
   sql: "ALTER TABLE memory_vectors ADD COLUMN enrichment TEXT NOT NULL DEFAULT ''",
 } as const
 
+/**
+ * Denormalized effective scope on `memory_vectors` so vector ranking can
+ * filter by visibility BEFORE ranking (no post-filter starvation). Written
+ * by `put()` from `effectiveMemoryScope(rec)` — never NULL — and backfilled
+ * for pre-existing rows by `backfillVectorScopes`.
+ */
+const VECTOR_SCOPE_COLUMNS = [
+  {
+    name: "observer_id",
+    sql: "ALTER TABLE memory_vectors ADD COLUMN observer_id TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    name: "subject_id",
+    sql: "ALTER TABLE memory_vectors ADD COLUMN subject_id TEXT NOT NULL DEFAULT ''",
+  },
+  {
+    name: "visibility",
+    sql: "ALTER TABLE memory_vectors ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'",
+  },
+] as const
+
 const RECORD_METADATA_COLUMNS = [
   {
     name: "scope_json",
@@ -213,6 +241,10 @@ const RECORD_METADATA_COLUMNS = [
   {
     name: "provenance_json",
     sql: "ALTER TABLE memory_keyed ADD COLUMN provenance_json TEXT",
+  },
+  {
+    name: "superseded_by",
+    sql: "ALTER TABLE memory_keyed ADD COLUMN superseded_by TEXT",
   },
 ] as const
 
@@ -237,14 +269,54 @@ export function hashEmbeddingInput(input: string): string {
   return createHash("sha256").update(input).digest("hex")
 }
 
-function extractText(content: unknown): string | null {
+/**
+ * SIRA-style corpus enrichment phrases carried at `content.enrichmentPhrases`.
+ * Joined into the `memory_vectors.enrichment` column, indexed as a second
+ * FTS5 column so bm25()/hybrid-terms match query vocabulary the record's own
+ * text never uses. Lexical-index-only: never embedded.
+ */
+export function extractEnrichmentPhrases(
+  content: unknown,
+): ReadonlyArray<string> {
   if (
     content !== null &&
     typeof content === "object" &&
-    "text" in content &&
-    typeof (content as { text: unknown }).text === "string"
+    "enrichmentPhrases" in content
   ) {
-    return (content as { text: string }).text
+    const raw = (content as { enrichmentPhrases: unknown }).enrichmentPhrases
+    if (Array.isArray(raw) && raw.every((p) => typeof p === "string")) {
+      return raw as ReadonlyArray<string>
+    }
+  }
+  return []
+}
+
+/**
+ * Kind-aware text extraction for embedding.
+ *
+ * `content.text` is the default text-bearing field. Kinds that carry their
+ * text under a different field declare the fallback here — beliefs, for
+ * example, store their text in `content.statement` (see `BeliefContent` in
+ * `@luna/core`). Records with no extractable text stay keyed-only and are
+ * invisible to vector search by design.
+ *
+ * This is the single canonical extractor: both the write path
+ * (`sqlite-vector.ts`'s `put`) and the maintenance paths (audit, reembed,
+ * backfill) must use it, or records and their vectors silently disagree
+ * about what is searchable.
+ */
+export function extractMemoryText(
+  content: unknown,
+  kind?: string,
+): string | null {
+  if (content !== null && typeof content === "object") {
+    const record = content as Record<string, unknown>
+    if (typeof record.text === "string") return record.text
+    // The kind literal is intentionally local: importing BELIEF_KIND from
+    // @luna/core would cycle (@luna/core/beliefs imports @luna/memory).
+    if (kind === "belief" && typeof record.statement === "string") {
+      return record.statement
+    }
   }
   return null
 }
@@ -277,7 +349,7 @@ function expectedHashForRow(row: VectorAuditRow): string {
 function keyedTextForRow(row: VectorAuditRow): string | null {
   if (row.content_json === null) return null
   try {
-    return extractText(JSON.parse(row.content_json))
+    return extractMemoryText(JSON.parse(row.content_json), row.kind ?? undefined)
   } catch {
     return null
   }
@@ -354,6 +426,12 @@ export function ensureMemoryVectorSchema(db: BunDatabase): void {
   // Enrichment column must land on memory_vectors BEFORE memory_fts is
   // (re)created below - see ensureMemoryFtsSchema's doc comment.
   if (!cols.has(ENRICHMENT_COLUMN.name)) db.run(ENRICHMENT_COLUMN.sql)
+  for (const col of VECTOR_SCOPE_COLUMNS) {
+    if (!cols.has(col.name)) db.run(col.sql)
+  }
+  db.run(
+    `CREATE INDEX IF NOT EXISTS idx_vectors_scope ON memory_vectors(subject_id, visibility)`,
+  )
   ensureMemoryFtsSchema(db)
 }
 
@@ -576,6 +654,249 @@ export function getMemoryVectorStatus(args: {
   )
 }
 
+interface MissingVectorRow {
+  readonly id: string
+  readonly namespace: string
+  readonly kind: string | null
+  readonly content_json: string | null
+  readonly tags_json: string | null
+  readonly scope_json: string | null
+  readonly updated_at: number
+}
+
+/**
+ * Keyed rows that never got a vector row — e.g. beliefs written before
+ * kind-aware extraction, or records written while the embedder was
+ * unavailable. Returns them ordered by (namespace, id) for stable runs.
+ */
+function selectMissingVectorRows(
+  db: BunDatabase,
+  namespace?: string,
+): ReadonlyArray<MissingVectorRow> {
+  const sql = `SELECT k.id, k.namespace, k.kind, k.content_json, k.tags_json,
+            k.scope_json, k.updated_at
+     FROM memory_keyed k LEFT JOIN memory_vectors v ON v.id = k.id
+     WHERE v.id IS NULL
+     ${namespace !== undefined ? "AND k.namespace = ?" : ""}
+     ORDER BY k.namespace, k.id`
+  return (
+    namespace !== undefined
+      ? db.query(sql).all(namespace)
+      : db.query(sql).all()
+  ) as MissingVectorRow[]
+}
+
+/**
+ * Embed and insert vector rows for keyed rows that lack them. Plain INSERTs:
+ * the AFTER INSERT trigger on `memory_vectors` keeps `memory_fts` and the
+ * HNSW v-table in sync, exactly as the write path relies on.
+ */
+function backfillMissingVectors(args: {
+  db: BunDatabase
+  embedder: EmbedderApi
+  namespace?: string
+  limit?: number
+  dryRun: boolean
+}): Effect.Effect<
+  { backfilled: number; skipped: number; rows: MemoryReembedRow[] },
+  MemoryBackendError
+> {
+  return Effect.gen(function* () {
+    const missing = yield* Effect.try({
+      try: () => {
+        const all = selectMissingVectorRows(args.db, args.namespace)
+        return args.limit !== undefined ? all.slice(0, args.limit) : all
+      },
+      catch: (cause) => asError("reembed.backfill.scan", cause),
+    })
+    const rows: MemoryReembedRow[] = []
+    let backfilled = 0
+    let skipped = 0
+    for (const row of missing) {
+      let content: unknown = null
+      try {
+        content =
+          row.content_json === null ? null : JSON.parse(row.content_json)
+      } catch {
+        content = null
+      }
+      let scope: MemoryScope | undefined
+      try {
+        scope =
+          row.scope_json === null
+            ? undefined
+            : (JSON.parse(row.scope_json) as MemoryScope)
+      } catch {
+        scope = undefined
+      }
+      const text = extractMemoryText(content, row.kind ?? undefined)
+      if (text === null) {
+        skipped++
+        rows.push({
+          id: row.id,
+          namespace: row.namespace,
+          reasons: ["missing-vector"],
+          action: "skipped",
+          skipReason: "no extractable text in memory_keyed",
+        })
+        continue
+      }
+      if (args.dryRun) {
+        rows.push({
+          id: row.id,
+          namespace: row.namespace,
+          reasons: ["missing-vector"],
+          action: "would-reembed",
+        })
+        continue
+      }
+      const embeddingInput = formatMemoryRecordEmbeddingInput({
+        namespace: row.namespace,
+        kind: row.kind ?? "unknown",
+        tags: parseTags(row.tags_json),
+        text,
+      })
+      const vec = yield* args.embedder.embed(embeddingInput).pipe(
+        Effect.mapError((cause) => asError("reembed.backfill.embed", cause)),
+      )
+      if (vec.length !== args.embedder.dimension) {
+        return yield* Effect.fail(
+          asError(
+            "reembed.backfill.embed",
+            new Error(
+              `dimension mismatch: got ${vec.length} expected ${args.embedder.dimension}`,
+            ),
+          ),
+        )
+      }
+      const embeddingBuf = new Uint8Array(vec.buffer, vec.byteOffset, vec.byteLength)
+      const embeddedAt = Date.now()
+      const inputHash = hashEmbeddingInput(embeddingInput)
+      // Scope is denormalized at write time from the effective scope so
+      // vector ranking can filter by visibility before ranking.
+      const effectiveScope = effectiveMemoryScope({
+        id: row.id,
+        namespace: row.namespace,
+        kind: row.kind ?? "unknown",
+        content: content as Record<string, unknown>,
+        schemaVersion: 0,
+        createdAt: 0,
+        updatedAt: row.updated_at,
+        tags: parseTags(row.tags_json),
+        ...(scope !== undefined ? { scope } : {}),
+      } as MemoryRecord)
+      yield* Effect.try({
+        try: () => {
+          args.db.run("BEGIN IMMEDIATE")
+          try {
+            args.db
+              .query(
+                `INSERT INTO memory_vectors
+                   (id, namespace, embedding, dimension, text, ts,
+                    embedding_provider, embedding_model, embedding_format,
+                    embedding_input_hash, embedded_at, enrichment,
+                    observer_id, subject_id, visibility)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+              )
+              .run(
+                row.id,
+                row.namespace,
+                embeddingBuf,
+                args.embedder.dimension,
+                text,
+                row.updated_at,
+                args.embedder.provider,
+                args.embedder.model,
+                args.embedder.embeddingFormat,
+                inputHash,
+                embeddedAt,
+                extractEnrichmentPhrases(content).join(" "),
+                effectiveScope.observerId,
+                effectiveScope.subjectId,
+                effectiveScope.visibility,
+              )
+            args.db.run("COMMIT")
+          } catch (txnErr) {
+            try {
+              args.db.run("ROLLBACK")
+            } catch {
+              /* original error wins */
+            }
+            throw txnErr
+          }
+        },
+        catch: (cause) => asError("reembed.backfill.insert", cause),
+      })
+      backfilled++
+      rows.push({
+        id: row.id,
+        namespace: row.namespace,
+        reasons: ["missing-vector"],
+        action: "backfilled",
+      })
+    }
+    return { backfilled, skipped, rows }
+  })
+}
+
+/**
+ * One-time backfill of the denormalized scope columns on `memory_vectors`
+ * for rows written before they existed (Fix 4). Rows whose `subject_id` is
+ * still the migration default get their effective scope computed from the
+ * keyed row (explicit scope or the legacy namespace/kind default).
+ *
+ * Runs at backend Layer build, right after `ensureMemoryVectorSchema`, so
+ * it is a no-op on healthy stores and self-heals old ones. Returns the
+ * number of rows updated.
+ */
+export function backfillVectorScopes(db: BunDatabase): number {
+  const rows = db.query(
+    `SELECT v.id AS id, k.namespace AS namespace, k.kind AS kind,
+            k.scope_json AS scope_json
+       FROM memory_vectors v
+       JOIN memory_keyed k ON k.id = v.id
+      WHERE v.subject_id = ''`,
+  ).all() as {
+    id: string
+    namespace: string
+    kind: string | null
+    scope_json: string | null
+  }[]
+  if (rows.length === 0) return 0
+  const update = db.query(
+    `UPDATE memory_vectors
+        SET observer_id = ?, subject_id = ?, visibility = ?
+      WHERE id = ?`,
+  )
+  let n = 0
+  for (const row of rows) {
+    let scope: MemoryScope | undefined
+    if (row.scope_json !== null) {
+      try {
+        scope = JSON.parse(row.scope_json) as MemoryScope
+      } catch {
+        scope = undefined
+      }
+    }
+    // Only namespace/kind/scope feed effectiveMemoryScope; the rest is filler.
+    const rec = {
+      id: row.id,
+      namespace: row.namespace,
+      kind: row.kind ?? "unknown",
+      content: {},
+      schemaVersion: 0,
+      createdAt: 0,
+      updatedAt: 0,
+      tags: [],
+      ...(scope !== undefined ? { scope } : {}),
+    } as MemoryRecord
+    const effective = effectiveMemoryScope(rec)
+    update.run(effective.observerId, effective.subjectId, effective.visibility, row.id)
+    n++
+  }
+  return n
+}
+
 export function reembedMemoryVectors(args: {
   readonly dbPath: string
   readonly embedder: EmbedderApi
@@ -607,18 +928,31 @@ export function reembedMemoryVectors(args: {
         })
 
         if (args.dryRun) {
+          const backfill = yield* backfillMissingVectors({
+            db,
+            embedder: args.embedder,
+            ...(args.namespace !== undefined
+              ? { namespace: args.namespace }
+              : {}),
+            ...(args.limit !== undefined ? { limit: args.limit } : {}),
+            dryRun: true,
+          })
           return {
             dryRun: true,
             scannedRows: candidates.scannedRows,
             staleRows: candidates.staleTotal,
             reembedded: 0,
-            skipped: 0,
-            rows: candidates.stale.map(({ audit }) => ({
-              id: audit.id,
-              namespace: audit.namespace,
-              reasons: audit.reasons,
-              action: "would-reembed" as const,
-            })),
+            backfilled: 0,
+            skipped: backfill.skipped,
+            rows: [
+              ...candidates.stale.map(({ audit }) => ({
+                id: audit.id,
+                namespace: audit.namespace,
+                reasons: audit.reasons,
+                action: "would-reembed" as const,
+              })),
+              ...backfill.rows,
+            ],
           }
         }
 
@@ -713,12 +1047,24 @@ export function reembedMemoryVectors(args: {
           })
         }
 
+        // Missing-vector backfill: keyed rows that never got a vector row
+        // (pre-kind-aware-extraction beliefs, embedder-outage writes).
+        const backfill = yield* backfillMissingVectors({
+          db,
+          embedder: args.embedder,
+          ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
+          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          dryRun: false,
+        })
+        for (const row of backfill.rows) rows.push(row)
+
         return {
           dryRun: false,
           scannedRows: candidates.scannedRows,
           staleRows: candidates.staleTotal,
           reembedded,
-          skipped,
+          backfilled: backfill.backfilled,
+          skipped: skipped + backfill.skipped,
           rows,
         }
       }),

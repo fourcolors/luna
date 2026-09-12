@@ -74,6 +74,14 @@ export interface MemoryRecord {
   readonly tags: ReadonlyArray<string>
   readonly scope?: MemoryScope
   readonly provenance?: MemoryProvenance
+  /**
+   * Supersession link: the id of the record that replaces this one. A
+   * superseded record is stale but auditable — excluded from `query()` and
+   * vector `search()` by default unless the caller opts into
+   * `includeSuperseded`. Unlike deletion, the link preserves the chain of
+   * what was believed when.
+   */
+  readonly supersededBy?: string
 }
 
 /** Filter spec for query(). All fields are conjunctive. */
@@ -85,6 +93,8 @@ export interface MemoryQuery {
   /** If set, only records with `updatedAt >= since` are returned. */
   readonly since?: number
   readonly scope?: MemoryScopeQuery
+  /** If true, records superseded by a newer record are included. */
+  readonly includeSuperseded?: boolean
 }
 
 /** Migration envelope — whole-backend export/import format. */
@@ -152,5 +162,7 @@ export function matchesQuery(rec: MemoryRecord, q: MemoryQuery): boolean {
   if (q.tag !== undefined && !rec.tags.includes(q.tag)) return false
   if (q.since !== undefined && rec.updatedAt < q.since) return false
   if (q.scope !== undefined && !matchesMemoryScope(rec, q.scope)) return false
+  if (rec.supersededBy !== undefined && q.includeSuperseded !== true)
+    return false
   return true
 }

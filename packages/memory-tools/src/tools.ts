@@ -1,11 +1,12 @@
 /**
- * Memory tools — three SDK MCP tool definitions exposed to the chat agent:
+ * Memory tools — four SDK MCP tool definitions exposed to the chat agent:
  *
  *   - memory_save(text, kind?, tags?, namespace?) → { id }
  *   - memory_search(query, kind?, limit?, namespace?)
  *       → [{ id, text, score, tags, kind, namespace, createdAt, updatedAt,
  *            scope? }]
  *   - memory_delete(id) → { deleted }
+ *   - memory_supersede(id, supersededBy) → { superseded }
  *
  * `makeMemoryTools(router, scope?)` binds every tool to a `MemoryScope`
  * (defaulting to `OPERATOR_MEMORY_SCOPE`, i.e. `luna` observing `operator`):
@@ -138,6 +139,17 @@ const searchShape = {
 
 const deleteShape = {
   id: z.string().min(1).describe("ID of the memory record to delete."),
+}
+
+const supersedeShape = {
+  id: z
+    .string()
+    .min(1)
+    .describe("ID of the memory record being superseded (the stale one)."),
+  supersededBy: z
+    .string()
+    .min(1)
+    .describe("ID of the record that replaces it (the current one)."),
 }
 
 function newId(): string {
@@ -411,5 +423,65 @@ export const makeMemoryTools = (
       }),
   })
 
-  return [save, search, del] as const
+  const supersede = defineTool({
+    name: "memory_supersede",
+    description:
+      "Mark a memory record as superseded by a newer record. The old record " +
+      "stays in the store for audit but is excluded from memory_search and " +
+      "memory queries by default. Use when a stored fact turned out to be " +
+      "wrong or outdated and a newer record now holds the truth.",
+    inputSchema: supersedeShape,
+    ...MEMORY_TOOL_DISCOVERY,
+    handler: (args) =>
+      Effect.gen(function* () {
+        const inScope = (id: string) =>
+          router.get(id).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({
+                  tool: "memory_supersede",
+                  op: "get",
+                  cause,
+                }),
+            ),
+            Effect.map(
+              (rec) =>
+                rec !== null &&
+                matchesMemoryScope(rec, {
+                  observerId: scope.observerId,
+                  subjectId: scope.subjectId,
+                })
+                ? rec
+                : null,
+            ),
+          )
+        const stale = yield* inScope(args.id)
+        const current = yield* inScope(args.supersededBy)
+        if (stale === null || current === null) {
+          return { superseded: false, reason: "record-not-found" } as const
+        }
+        if (stale.id === current.id) {
+          return { superseded: false, reason: "self-link" } as const
+        }
+        yield* router
+          .put({ ...stale, supersededBy: current.id, updatedAt: Date.now() })
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ToolError({
+                  tool: "memory_supersede",
+                  op: "put",
+                  cause,
+                }),
+            ),
+          )
+        return {
+          superseded: true,
+          id: stale.id,
+          supersededBy: current.id,
+        } as const
+      }),
+  })
+
+  return [save, search, del, supersede] as const
 }

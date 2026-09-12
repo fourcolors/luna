@@ -61,13 +61,18 @@ import {
 } from "@luna/core"
 import {
   MEMORY_ENVELOPE_VERSION,
+  effectiveMemoryScope,
   matchesQuery,
   type MemoryExport,
   type MemoryQuery,
   type MemoryRecord,
+  type MemoryScopeQuery,
 } from "../types.js"
 import {
+  backfillVectorScopes,
   ensureMemoryVectorSchema,
+  extractEnrichmentPhrases,
+  extractMemoryText,
   formatMemoryQueryEmbeddingInput,
   formatMemoryRecordEmbeddingInput,
   hashEmbeddingInput,
@@ -104,6 +109,10 @@ export interface SqliteVectorBackendApi {
     readonly topK?: number
     readonly namespace?: string
     readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
+    /** Visibility filter applied before ranking (Fix 4). */
+    readonly scope?: MemoryScopeQuery
+    /** If true, records superseded by a newer record are included. */
+    readonly includeSuperseded?: boolean
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
@@ -122,6 +131,7 @@ interface DbRow {
   tags_json: string
   scope_json: string | null
   provenance_json: string | null
+  superseded_by: string | null
 }
 
 interface VecRow {
@@ -156,6 +166,7 @@ function rowToRecord(row: DbRow): MemoryRecord {
           ) as NonNullable<MemoryRecord["provenance"]>,
         }
       : {}),
+    ...(row.superseded_by !== null ? { supersededBy: row.superseded_by } : {}),
   }
 }
 
@@ -176,38 +187,13 @@ function warnFallbackOnce(reason: string): void {
   )
 }
 
-function extractText(content: unknown): string | null {
-  if (
-    content !== null &&
-    typeof content === "object" &&
-    "text" in content &&
-    typeof (content as { text: unknown }).text === "string"
-  ) {
-    return (content as { text: string }).text
-  }
-  return null
-}
+// NOTE: text extraction for embedding lives in sqlite-vector-maintenance.ts
+// as `extractMemoryText` (kind-aware: beliefs embed `content.statement`).
+// Do not add a second local copy here; the write path and the maintenance
+// paths must agree on what is searchable.
 
-// Enrichment (SIRA-style corpus enrichment, Experiment A): optional
-// LLM-generated alias phrases carried at content.enrichmentPhrases. Joined
-// into a single string for the memory_vectors.enrichment column, which is
-// indexed as a SECOND FTS5 column (see sqlite-vector-maintenance.ts) so
-// bm25()/hybrid-terms can match query vocabulary the record's own text
-// never uses. This is a lexical-index-only signal - it is NEVER embedded;
-// the embedding input below stays text-only.
-function extractEnrichmentPhrases(content: unknown): ReadonlyArray<string> {
-  if (
-    content !== null &&
-    typeof content === "object" &&
-    "enrichmentPhrases" in content
-  ) {
-    const raw = (content as { enrichmentPhrases: unknown }).enrichmentPhrases
-    if (Array.isArray(raw) && raw.every((p) => typeof p === "string")) {
-      return raw as ReadonlyArray<string>
-    }
-  }
-  return []
-}
+// Enrichment phrase extraction lives in sqlite-vector-maintenance.ts
+// (`extractEnrichmentPhrases`) next to the FTS schema it feeds.
 
 export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, SqliteVectorBackendApi>()("luna/SqliteVectorBackend") {
   /**
@@ -267,6 +253,9 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         // maintenance connection) rather than failing fast with SQLITE_BUSY.
         db.run("PRAGMA busy_timeout = 5000")
         ensureMemoryVectorSchema(db)
+        // Denormalized scope columns predate some vector rows; backfill once
+        // (no-op when every row already carries its effective scope).
+        backfillVectorScopes(db)
         // Compute the HNSW sidecar path up-front so the close-time
         // chmod can see it (vectorlite writes the file on db.close()).
         // Null for in-memory / special-URI DBs — secureSidecar no-ops.
@@ -487,10 +476,22 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
 
         // Prepared statements
         const putKeyedStmt = db.query(
-          `INSERT OR REPLACE INTO memory_keyed
+          `INSERT INTO memory_keyed
              (id, namespace, kind, content_json, schema_version,
-              created_at, updated_at, tags_json, scope_json, provenance_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
+              created_at, updated_at, tags_json, scope_json, provenance_json,
+              superseded_by)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(id) DO UPDATE SET
+             namespace = excluded.namespace,
+             kind = excluded.kind,
+             content_json = excluded.content_json,
+             schema_version = excluded.schema_version,
+             created_at = excluded.created_at,
+             updated_at = excluded.updated_at,
+             tags_json = excluded.tags_json,
+             scope_json = excluded.scope_json,
+             provenance_json = excluded.provenance_json,
+             superseded_by = excluded.superseded_by`,
         )
         // Explicit DELETE + INSERT (rather than INSERT OR REPLACE) so the
         // FTS5 sync triggers fire predictably: the AFTER DELETE trigger
@@ -502,10 +503,27 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           `INSERT INTO memory_vectors
              (id, namespace, embedding, dimension, text, ts,
               embedding_provider, embedding_model, embedding_format,
-              embedding_input_hash, embedded_at, enrichment)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+              embedding_input_hash, embedded_at, enrichment,
+              observer_id, subject_id, visibility)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         )
         const delVecStmt = db.query(`DELETE FROM memory_vectors WHERE id = ?`)
+        // Fix 2 support: skip re-embedding when the embedding input is
+        // unchanged (hash match) — select hash, dimension, and enrichment so
+        // a dimension drift still forces a re-embed and a phrases-only change
+        // still refreshes the FTS enrichment text without re-embedding.
+        const getVecHashStmt = db.query(
+          `SELECT embedding_input_hash AS h, dimension AS d, enrichment AS e
+             FROM memory_vectors WHERE id = ?`,
+        )
+        const touchVecStmt = db.query(
+          `UPDATE memory_vectors SET ts = ?, enrichment = ? WHERE id = ?`,
+        )
+        const touchVecScopeStmt = db.query(
+          `UPDATE memory_vectors
+              SET observer_id = ?, subject_id = ?, visibility = ?
+            WHERE id = ?`,
+        )
         const getStmt = db.query(`SELECT * FROM memory_keyed WHERE id = ?`)
         const delStmt = db.query(`DELETE FROM memory_keyed WHERE id = ?`)
         const selectAllStmt = db.query(
@@ -517,6 +535,21 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         const selectVecByNsStmt = db.query(
           `SELECT id, namespace, embedding, dimension, text
              FROM memory_vectors WHERE namespace = ?`,
+        )
+        // Scope predicate (Fix 4): filter by visibility BEFORE ranking so
+        // out-of-scope rows can't starve the top-K. Mirrors
+        // matchesMemoryScope: same subject, and (shared OR same observer).
+        const SCOPE_WHERE = (alias: string) =>
+          `${alias}.subject_id = ? AND (${alias}.visibility = 'shared' OR ${alias}.observer_id = ?)`
+        const selectVecByNsScopeStmt = db.query(
+          `SELECT id, namespace, embedding, dimension, text
+             FROM memory_vectors v
+            WHERE v.namespace = ? AND ${SCOPE_WHERE("v")}`,
+        )
+        const selectVecAllScopeStmt = db.query(
+          `SELECT id, namespace, embedding, dimension, text
+             FROM memory_vectors v
+            WHERE ${SCOPE_WHERE("v")}`,
         )
         // FTS5 hybrid: BM25-ranked candidates from memory_fts joined back to
         // memory_vectors for namespace filter + id resolution. The FTS table
@@ -535,6 +568,25 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
              FROM memory_vectors v
              JOIN memory_fts f ON f.rowid = v.rowid
             WHERE memory_fts MATCH ?
+            ORDER BY bm25(memory_fts)
+            LIMIT ?`,
+        )
+        const ftsByNsScopeStmt = db.query(
+          `SELECT v.id AS id
+             FROM memory_vectors v
+             JOIN memory_fts f ON f.rowid = v.rowid
+            WHERE memory_fts MATCH ?
+              AND v.namespace = ?
+              AND ${SCOPE_WHERE("v")}
+            ORDER BY bm25(memory_fts)
+            LIMIT ?`,
+        )
+        const ftsAllScopeStmt = db.query(
+          `SELECT v.id AS id
+             FROM memory_vectors v
+             JOIN memory_fts f ON f.rowid = v.rowid
+            WHERE memory_fts MATCH ?
+              AND ${SCOPE_WHERE("v")}
             ORDER BY bm25(memory_fts)
             LIMIT ?`,
         )
@@ -561,6 +613,29 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 WHERE knn_search(h.embedding, knn_param(?, ?))`,
             )
           : null
+        // Scoped HNSW variants: the scope predicate applies on the JOIN side
+        // (memory_vectors), exactly like the namespace filter. HNSW still
+        // returns top-K globally before the WHERE prunes, so callers
+        // over-fetch when a scope is present (same 4x rule as namespaces).
+        const hnswByNsScopeStmt = hnswEnabled
+          ? db.query(
+              `SELECT v.id AS id, h.distance AS distance
+                 FROM memory_vectors_hnsw h
+                 JOIN memory_vectors v ON v.rowid = h.rowid
+                WHERE knn_search(h.embedding, knn_param(?, ?))
+                  AND v.namespace = ?
+                  AND ${SCOPE_WHERE("v")}`,
+            )
+          : null
+        const hnswAllScopeStmt = hnswEnabled
+          ? db.query(
+              `SELECT v.id AS id, h.distance AS distance
+                 FROM memory_vectors_hnsw h
+                 JOIN memory_vectors v ON v.rowid = h.rowid
+                WHERE knn_search(h.embedding, knn_param(?, ?))
+                  AND ${SCOPE_WHERE("v")}`,
+            )
+          : null
 
         // ─── put ────────────────────────────────────────────────────────
         // Atomicity (Phase 26 follow-up, advisor ⚠️ MODIFY):
@@ -574,12 +649,17 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         //      the MemoryBackendError (§6.1: no other error type).
         const put: SqliteVectorBackendApi["put"] = (rec) =>
           Effect.gen(function* () {
-            const text = extractText(rec.content)
+            const text = extractMemoryText(rec.content, rec.kind)
 
             // Step 1: embed first (only if needed). No DB state mutated yet.
+            // Skip the embedder call entirely when the embedding input is
+            // unchanged: the input hash covers namespace/kind/tags/text, so
+            // a hash match means the stored vector is still valid. The
+            // vector row's ts is still refreshed to track rec.updatedAt.
             let vecBuf: Uint8Array | null = null
             let embeddingInputHash: string | null = null
             let embeddedAt = 0
+            let vecUnchanged = false
             if (text !== null) {
               const embeddingInput = formatMemoryRecordEmbeddingInput({
                 namespace: rec.namespace,
@@ -587,22 +667,39 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 tags: rec.tags,
                 text,
               })
-              const vec = yield* embedder.embed(embeddingInput).pipe(
-                Effect.mapError((cause) => asError("put.embed", cause)),
-              )
-              if (vec.length !== embedder.dimension) {
-                yield* Effect.fail(
-                  asError(
-                    "put.embed",
-                    new Error(
-                      `dimension mismatch: got ${vec.length} expected ${embedder.dimension}`,
-                    ),
-                  ),
+              const inputHash = hashEmbeddingInput(embeddingInput)
+              const existing = yield* Effect.try({
+                try: () =>
+                  getVecHashStmt.get(rec.id) as
+                    | { h: string; d: number; e: string }
+                    | null
+                    | undefined,
+                catch: (cause) => asError("put.hash", cause),
+              })
+              if (
+                existing?.h === inputHash &&
+                existing.d === embedder.dimension
+              ) {
+                vecUnchanged = true
+                embeddingInputHash = inputHash
+              } else {
+                const vec = yield* embedder.embed(embeddingInput).pipe(
+                  Effect.mapError((cause) => asError("put.embed", cause)),
                 )
+                if (vec.length !== embedder.dimension) {
+                  yield* Effect.fail(
+                    asError(
+                      "put.embed",
+                      new Error(
+                        `dimension mismatch: got ${vec.length} expected ${embedder.dimension}`,
+                      ),
+                    ),
+                  )
+                }
+                vecBuf = float32ToBuffer(vec)
+                embeddingInputHash = inputHash
+                embeddedAt = Date.now()
               }
-              vecBuf = float32ToBuffer(vec)
-              embeddingInputHash = hashEmbeddingInput(embeddingInput)
-              embeddedAt = Date.now()
             }
 
             // Step 2+3: atomic keyed + vec writes under BEGIN IMMEDIATE.
@@ -624,14 +721,36 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                       rec.provenance !== undefined
                         ? JSON.stringify(rec.provenance)
                         : null,
+                      rec.supersededBy ?? null,
                     )
                     if (vecBuf === null) {
-                      // No text → drop any stale vec row (idempotent).
-                      delVecStmt.run(rec.id)
+                      if (vecUnchanged) {
+                        // Embedding input unchanged: keep the stored vector,
+                        // refresh ts, denormalized scope, and the FTS
+                        // enrichment text (phrases-only edits must not leave
+                        // the FTS index stale). The UPDATE fires the
+                        // memory_vectors_au trigger to resync memory_fts.
+                        touchVecStmt.run(
+                          rec.updatedAt,
+                          extractEnrichmentPhrases(rec.content).join(" "),
+                          rec.id,
+                        )
+                        const eff = effectiveMemoryScope(rec)
+                        touchVecScopeStmt.run(
+                          eff.observerId,
+                          eff.subjectId,
+                          eff.visibility,
+                          rec.id,
+                        )
+                      } else {
+                        // No text → drop any stale vec row (idempotent).
+                        delVecStmt.run(rec.id)
+                      }
                     } else {
                       // DELETE+INSERT so AFTER DELETE + AFTER INSERT triggers
                       // both fire in order, keeping memory_fts in sync.
                       delVecStmt.run(rec.id)
+                      const eff = effectiveMemoryScope(rec)
                       insertVecStmt.run(
                         rec.id,
                         rec.namespace,
@@ -645,6 +764,9 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                         embeddingInputHash,
                         embeddedAt,
                         extractEnrichmentPhrases(rec.content).join(" "),
+                        eff.observerId,
+                        eff.subjectId,
+                        eff.visibility,
                       )
                     }
                     db.run("COMMIT")
@@ -674,11 +796,49 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
 
         const query: SqliteVectorBackendApi["query"] = (q) => {
           try {
-            const rows = selectAllStmt.all() as DbRow[]
+            // Push the selective filters into SQL; the full-table scan this
+            // replaced did not survive contact with 100k-row stores.
+            // Scope matching stays in JS: effectiveMemoryScope's legacy
+            // defaults are subtle enough to keep in one tested place
+            // (matchesQuery), and it runs over the already-narrowed set.
+            const clauses: string[] = []
+            const params: unknown[] = []
+            if (q.namespace !== undefined) {
+              clauses.push(`namespace = ?`)
+              params.push(q.namespace)
+            }
+            if (q.kind !== undefined) {
+              clauses.push(`kind = ?`)
+              params.push(q.kind)
+            }
+            if (q.since !== undefined) {
+              clauses.push(`updated_at >= ?`)
+              params.push(q.since)
+            }
+            if (q.tag !== undefined) {
+              clauses.push(
+                `EXISTS (SELECT 1 FROM json_each(memory_keyed.tags_json) WHERE value = ?)`,
+              )
+              params.push(q.tag)
+            }
+            let sql = `SELECT * FROM memory_keyed`
+            if (clauses.length > 0) sql += ` WHERE ${clauses.join(" AND ")}`
+            sql += ` ORDER BY updated_at DESC`
+            // LIMIT can only be pushed when no JS-side filter remains;
+            // otherwise it applies after matchesQuery, preserving semantics.
+            const needsJsFilter = q.scope !== undefined
+            if (q.limit !== undefined && !needsJsFilter) {
+              sql += ` LIMIT ?`
+              params.push(q.limit)
+            }
+            const rows = db.query(sql).all(...params) as DbRow[]
             const matches = rows
               .map(rowToRecord)
               .filter((r) => matchesQuery(r, q))
-            const limited = q.limit ? matches.slice(0, q.limit) : matches
+            const limited =
+              q.limit !== undefined && needsJsFilter
+                ? matches.slice(0, q.limit)
+                : matches
             return Stream.fromIterable(limited)
           } catch (cause) {
             return Stream.fail(asError("query", cause))
@@ -723,21 +883,42 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           queryVec: Float32Array,
           namespace: string | undefined,
           limit: number,
+          scope?: MemoryScopeQuery,
         ): { id: string; score: number }[] => {
-          // Fast path: Vectorlite HNSW. The namespace filter is applied on
-          // the JOIN to memory_vectors. We over-fetch slightly when a
-          // namespace is supplied (HNSW returns top-K globally before the
-          // JOIN's WHERE prunes by namespace), then truncate to `limit`.
+          // Fast path: Vectorlite HNSW. The namespace/scope filters are
+          // applied on the JOIN to memory_vectors. We over-fetch when a
+          // namespace or scope is supplied (HNSW returns top-K globally
+          // before the JOIN's WHERE prunes), then truncate to `limit`.
           if (hnswEnabled && hnswByNsStmt && hnswAllStmt) {
             const queryBuf = Buffer.from(
               queryVec.buffer,
               queryVec.byteOffset,
               queryVec.byteLength,
             )
-            const k = namespace ? Math.max(limit * 4, 50) : limit
-            const rows = (namespace
-              ? hnswByNsStmt.all(queryBuf, k, namespace)
-              : hnswAllStmt.all(queryBuf, k)) as {
+            const k =
+              namespace !== undefined || scope !== undefined
+                ? Math.max(limit * 4, 50)
+                : limit
+            const rows = (
+              scope !== undefined
+                ? namespace !== undefined
+                  ? hnswByNsScopeStmt!.all(
+                      queryBuf,
+                      k,
+                      namespace,
+                      scope.subjectId,
+                      scope.observerId,
+                    )
+                  : hnswAllScopeStmt!.all(
+                      queryBuf,
+                      k,
+                      scope.subjectId,
+                      scope.observerId,
+                    )
+                : namespace !== undefined
+                  ? hnswByNsStmt.all(queryBuf, k, namespace)
+                  : hnswAllStmt.all(queryBuf, k)
+            ) as {
               id: string
               distance: number
             }[]
@@ -752,12 +933,22 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
             return scored.slice(0, limit)
           }
 
-          // Fallback: naive in-process cosine over all (or namespace-filtered)
-          // memory_vectors rows. Hit when extension load failed or runtime
-          // is non-bun.
-          const vecRows = (namespace
-            ? selectVecByNsStmt.all(namespace)
-            : selectVecAllStmt.all()) as VecRow[]
+          // Fallback: naive in-process cosine over all (or namespace/scope
+          // filtered) memory_vectors rows. Hit when extension load failed or
+          // runtime is non-bun.
+          const vecRows = (
+            scope !== undefined
+              ? namespace !== undefined
+                ? selectVecByNsScopeStmt.all(
+                    namespace,
+                    scope.subjectId,
+                    scope.observerId,
+                  )
+                : selectVecAllScopeStmt.all(scope.subjectId, scope.observerId)
+              : namespace !== undefined
+                ? selectVecByNsStmt.all(namespace)
+                : selectVecAllStmt.all()
+          ) as VecRow[]
           const scored: { id: string; score: number }[] = []
           for (const vr of vecRows) {
             if (vr.dimension !== queryVec.length) continue
@@ -787,6 +978,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           namespace: string | undefined,
           limit: number,
           matchStyle: "phrase" | "terms",
+          scope?: MemoryScopeQuery,
         ): string[] => {
           // Escape embedded double-quotes per FTS5 quoting rules ("" = ").
           const match =
@@ -796,24 +988,49 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                   .map((w) => `"${w}"`)
                   .join(" OR ")
           if (match.length === 0) return []
-          const rows = (namespace
-            ? ftsByNsStmt.all(match, namespace, limit)
-            : ftsAllStmt.all(match, limit)) as { id: string }[]
+          const rows = (
+            scope !== undefined
+              ? namespace !== undefined
+                ? ftsByNsScopeStmt.all(
+                    match,
+                    namespace,
+                    limit,
+                    scope.subjectId,
+                    scope.observerId,
+                  )
+                : ftsAllScopeStmt.all(
+                    match,
+                    limit,
+                    scope.subjectId,
+                    scope.observerId,
+                  )
+              : namespace !== undefined
+                ? ftsByNsStmt.all(match, namespace, limit)
+                : ftsAllStmt.all(match, limit)
+          ) as { id: string }[]
           return rows.map((r) => r.id)
         }
 
         const search: SqliteVectorBackendApi["search"] = (args) => {
           const mode = args.mode ?? "vec"
           const topK = args.topK ?? 10
+          const scope = args.scope
+          const includeSuperseded = args.includeSuperseded === true
 
-          return Stream.unwrap(
+          const ranked = Stream.unwrap(
             Effect.gen(function* () {
               // bm25: pure lexical rank via FTS5, no embedding call needed
               // (unlike "vec"/"hybrid" below, which both embed the query).
               if (mode === "bm25") {
                 const bm25Ranked = yield* Effect.try({
                   try: () =>
-                    rankByBm25(args.queryText, args.namespace, topK, "terms"),
+                    rankByBm25(
+                      args.queryText,
+                      args.namespace,
+                      topK,
+                      "terms",
+                      scope,
+                    ),
                   catch: (cause) => asError("search.bm25", cause),
                 })
                 // Score = 1/(rank+1), 1-indexed rank from bm25() order. This
@@ -839,7 +1056,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
 
               if (mode === "vec") {
                 const top = yield* Effect.try({
-                  try: () => rankByVec(queryVec, args.namespace, topK),
+                  try: () => rankByVec(queryVec, args.namespace, topK, scope),
                   catch: (cause) => asError("search.scan", cause),
                 })
                 const out: { record: MemoryRecord; score: number }[] = []
@@ -856,7 +1073,8 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
               const candidateLimit = Math.max(topK, 50)
 
               const vecRanked = yield* Effect.try({
-                try: () => rankByVec(queryVec, args.namespace, candidateLimit),
+                try: () =>
+                  rankByVec(queryVec, args.namespace, candidateLimit, scope),
                 catch: (cause) => asError("search.hybrid.vec", cause),
               })
               // "hybrid" keeps the historical exact-phrase BM25 arm; the
@@ -870,6 +1088,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                     args.namespace,
                     candidateLimit,
                     mode === "hybrid-terms" ? "terms" : "phrase",
+                    scope,
                   ),
                 catch: (cause) => asError("search.hybrid.bm25", cause),
               })
@@ -901,6 +1120,17 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
               return Stream.fromIterable(out)
             }),
           )
+          // Superseded records are stale by link, not by content: exclude
+          // them unless the caller explicitly opts in. Post-rank, because
+          // supersession is an explicit rare link, not a bulk visibility
+          // rule — no starvation concern at this cardinality.
+          return includeSuperseded
+            ? ranked
+            : ranked.pipe(
+                Stream.filter(
+                  (hit) => hit.record.supersededBy === undefined,
+                ),
+              )
         }
 
         return {

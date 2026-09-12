@@ -147,11 +147,16 @@ describe.skipIf(!hasBunSqlite)("§4.3 MemoryToolsLayer — structural invariants
 
       const tools = makeMemoryTools(router)
 
-      // Exactly 3 tools.
-      expect(tools).toHaveLength(3)
+      // Exactly 4 tools.
+      expect(tools).toHaveLength(4)
 
       const names = tools.map((t) => (t as unknown as { name: string }).name)
-      expect(names).toEqual(["memory_save", "memory_search", "memory_delete"])
+      expect(names).toEqual([
+        "memory_save",
+        "memory_search",
+        "memory_delete",
+        "memory_supersede",
+      ])
     } finally {
       await runtime.dispose()
     }

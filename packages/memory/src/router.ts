@@ -88,6 +88,8 @@ export interface MemoryRouter {
     readonly namespace?: string
     readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
     readonly scope?: MemoryScopeQuery
+    /** If true, records superseded by a newer record are included. */
+    readonly includeSuperseded?: boolean
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
@@ -154,13 +156,12 @@ export function makeRouter(
 
   const search: MemoryRouter["search"] = (args) => {
     const requestedTopK = args.topK ?? 10
-    // Scope filtering happens after ranking because legacy vector rows have no
-    // scope columns. Over-fetch keeps a few private rows from starving an
-    // otherwise valid result set while preserving backend compatibility.
-    const backendArgs =
-      args.scope !== undefined
-        ? { ...args, topK: Math.max(requestedTopK * 4, 20) }
-        : args
+    // Scope is pushed to the backend, which filters by visibility BEFORE
+    // ranking (memory_vectors carries denormalized scope columns, backfilled
+    // at Layer build — no post-filter starvation). The post-filter below is
+    // kept as a safety net: it is a no-op for conforming backends and
+    // protects against any backend that ignores the scope arg.
+    const backendArgs = args
     const inner = ((): Stream.Stream<
       { readonly record: MemoryRecord; readonly score: number },
       MemoryBackendError

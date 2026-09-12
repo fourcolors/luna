@@ -215,6 +215,7 @@ function formatReembed(result: Awaited<ReturnType<typeof runReembed>>): string {
     lines.push(`Dry run: ${result.staleRows} stale row(s)`)
   } else {
     lines.push(`Re-embedded: ${result.reembedded}`)
+    lines.push(`Backfilled: ${result.backfilled}`)
     lines.push(`Skipped: ${result.skipped}`)
   }
   lines.push(`Scanned: ${result.scannedRows}`)
