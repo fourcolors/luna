@@ -40,6 +40,7 @@ import {
   isLoopbackWsUrl,
 } from "../panels/settings-connection/connectionReducer"
 import { appendNotification, unreadNotificationCount } from "../notifications/log"
+import { setServerVersionFromFrame } from "../panels/settings-updates/server-version"
 
 // =========================================================================
 // WIRE PROTOCOL VERSION - SECOND SOURCE OF TRUTH (KEEP IN SYNC!)
@@ -350,6 +351,13 @@ export class HubController {
   }
 
   applyBuildSha(frame: any): void {
+    // Cache the server release version for the Updates panel's
+    // server-update check - same hello frame, same pattern as the SHA.
+    try {
+      setServerVersionFromFrame(frame)
+    } catch {
+      /* cosmetic cache only */
+    }
     const sha = frame && typeof frame.buildSha === "string" ? frame.buildSha.trim() : ""
     try {
       if (sha) localStorage.setItem("luna_build_sha", sha)

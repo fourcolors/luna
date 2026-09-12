@@ -181,3 +181,87 @@ describe("control.restart", () => {
     expect(logged).toContain("launchd job installed")
   })
 })
+
+describe("control.checkServerUpdate", () => {
+  const originalFetch = globalThis.fetch
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it("returns updateAvailable=true when a newer server-v* release exists", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify([
+          { tag_name: "server-v0.5.0", body: "notes", draft: false, prerelease: false },
+          { tag_name: "moon-v0.0.79", body: null, draft: false, prerelease: false },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as typeof fetch
+
+    const result = await caller.control.checkServerUpdate()
+    // PKG_VERSION is 0.5.0 in this checkout (or 0.0.0 fallback); the
+    // assertion below is version-agnostic: latest must be 0.5.0.
+    expect(result.latest).toBe("0.5.0")
+    expect(result.tag).toBe("server-v0.5.0")
+    expect(result.notes).toBe("notes")
+  })
+
+  it("returns updateAvailable=false when running the latest", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify([
+          { tag_name: "server-v0.4.0", body: null, draft: false, prerelease: false },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as typeof fetch
+
+    const result = await caller.control.checkServerUpdate()
+    expect(result.latest).toBe("0.4.0")
+    // Current is 0.5.0 (or 0.0.0); either way 0.4.0 is not newer.
+    expect(result.updateAvailable).toBe(false)
+  })
+
+  it("returns latest=null on network failure", async () => {
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("network down")
+    }) as typeof fetch
+
+    const result = await caller.control.checkServerUpdate()
+    expect(result.latest).toBeNull()
+    expect(result.updateAvailable).toBe(false)
+    expect(result.error).toContain("network down")
+  })
+
+  it("ignores draft and prerelease server tags", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify([
+          { tag_name: "server-v9.9.9", body: null, draft: true, prerelease: false },
+          { tag_name: "server-v0.4.0", body: null, draft: false, prerelease: false },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    ) as typeof fetch
+
+    const result = await caller.control.checkServerUpdate()
+    expect(result.latest).toBe("0.4.0")
+  })
+})
+
+describe("control.updateServer", () => {
+  it("refuses malformed tags", async () => {
+    const result = await caller.control.updateServer({ tag: "not-a-version" })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("malformed tag")
+  })
+
+  it("refuses path-traversal tags", async () => {
+    const result = await caller.control.updateServer({ tag: "server-v0.5.0; rm -rf /" })
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain("malformed tag")
+  })
+})

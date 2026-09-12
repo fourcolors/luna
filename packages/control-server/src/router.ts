@@ -6,6 +6,8 @@
  *                     darwin, SIGTERM-under-supervisor elsewhere)
  *   control.status  — returns server uptime / startedAt / version
  *   control.version — returns the package version string
+ *   control.checkServerUpdate — checks GitHub for a newer server-v* release
+ *   control.updateServer — triggers luna-update-server to a target ref
  */
 import { initTRPC } from "@trpc/server"
 import os from "node:os"
@@ -45,6 +47,25 @@ const PKG_VERSION = (() => {
 
 /** Service label used in launchctl commands. */
 const CHAT_SERVICE_LABEL = "com.user.luna-chat-server"
+
+/**
+ * Compare two semver strings. Returns negative if a < b, 0 if equal,
+ * positive if a > b. Non-numeric parts are compared as 0.
+ */
+function compareSemver(a: string, b: string): number {
+  const parse = (v: string) =>
+    v.split(".").map((p) => {
+      const n = parseInt(p, 10)
+      return Number.isNaN(n) ? 0 : n
+    })
+  const pa = parse(a)
+  const pb = parse(b)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
 
 /**
  * Build the control-plane router. `buildSha` is the git short-SHA of the
@@ -160,6 +181,168 @@ export const createAppRouter = (buildSha: string = "unknown") =>
     version: t.procedure.query(() => ({
       version: PKG_VERSION,
     })),
+
+    /**
+     * Check GitHub for a newer server-v* release. Compares the running
+     * version (PKG_VERSION) against the latest published server release.
+     *
+     * Returns `{ current, latest, updateAvailable, tag, notes }`. `latest`
+     * is null when the check fails (network error, no releases found);
+     * callers should treat that as "unknown", not "up to date".
+     */
+    checkServerUpdate: t.procedure.query(async () => {
+      const current = PKG_VERSION
+      try {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 15_000)
+        let res: Response
+        try {
+          res = await fetch(
+            "https://api.github.com/repos/fourcolors/luna/releases?per_page=20",
+            {
+              signal: controller.signal,
+              headers: {
+                Accept: "application/vnd.github+json",
+                "User-Agent": "luna-control-server",
+              },
+            },
+          )
+        } finally {
+          clearTimeout(timer)
+        }
+        if (!res.ok) {
+          throw new Error(`GitHub API returned ${res.status}`)
+        }
+        const releases = (await res.json()) as Array<{
+          tag_name: string
+          body: string | null
+          draft: boolean
+          prerelease: boolean
+        }>
+        const serverReleases = releases.filter(
+          (r) =>
+            r.tag_name.startsWith("server-v") &&
+            !r.draft &&
+            !r.prerelease,
+        )
+        if (serverReleases.length === 0) {
+          throw new Error("no server-v* releases found")
+        }
+        // Releases are returned newest-first; the first server-v* is latest.
+        const latest = serverReleases[0]!
+        const latestVersion = latest.tag_name.replace(/^server-v/, "")
+        return {
+          current,
+          latest: latestVersion,
+          tag: latest.tag_name,
+          updateAvailable: compareSemver(latestVersion, current) > 0,
+          notes: latest.body ?? null,
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e)
+        console.error(`control.checkServerUpdate: ${msg}`)
+        return {
+          current,
+          latest: null as string | null,
+          tag: null as string | null,
+          updateAvailable: false,
+          notes: null as string | null,
+          error: msg,
+        }
+      }
+    }),
+
+    /**
+     * Trigger a server update to the given tag (defaults to the latest
+     * server-v* release). Runs `scripts/luna-update-server --ref <tag>`
+     * from the repo root in the background; the script handles readiness
+     * probing and auto-rollback.
+     *
+     * Returns immediately; the update runs detached. Check `control.status`
+     * afterwards to confirm the new version is live.
+     */
+    updateServer: t.procedure
+      .input((val: unknown) => {
+        if (val === undefined || val === null) return {}
+        if (typeof val !== "object" || Array.isArray(val)) {
+          throw new Error("input must be an object")
+        }
+        const tag = (val as Record<string, unknown>)["tag"]
+        if (tag !== undefined && typeof tag !== "string") {
+          throw new Error("tag must be a string")
+        }
+        return { tag: tag as string | undefined }
+      })
+      .mutation(async ({ input }) => {
+        // Resolve the target tag: explicit input, or the latest release.
+        let tag = input.tag
+        if (tag === undefined) {
+          try {
+            const res = await fetch(
+              "https://api.github.com/repos/fourcolors/luna/releases?per_page=20",
+              {
+                headers: {
+                  Accept: "application/vnd.github+json",
+                  "User-Agent": "luna-control-server",
+                },
+              },
+            )
+            if (!res.ok) throw new Error(`GitHub API returned ${res.status}`)
+            const releases = (await res.json()) as Array<{
+              tag_name: string
+              draft: boolean
+              prerelease: boolean
+            }>
+            const latest = releases.find(
+              (r) =>
+                r.tag_name.startsWith("server-v") &&
+                !r.draft &&
+                !r.prerelease,
+            )
+            if (!latest) throw new Error("no server-v* releases found")
+            tag = latest.tag_name
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            return {
+              ok: false as const,
+              message: `could not resolve latest server release: ${msg}`,
+            }
+          }
+        }
+
+        if (!/^server-v\d+\.\d+\.\d+$/.test(tag)) {
+          return {
+            ok: false as const,
+            message: `refusing to update to malformed tag: ${tag}`,
+          }
+        }
+
+        // Locate the updater script relative to the repo root.
+        const repoRoot = join(
+          dirname(fileURLToPath(import.meta.url)),
+          "..",
+          "..",
+          "..",
+        )
+        const updater = join(repoRoot, "scripts", "luna-update-server")
+
+        // Run detached so the tRPC response isn't blocked by the update.
+        // The script logs to its own location; failures are visible via
+        // systemctl/journal, not this response.
+        const { spawn } = await import("node:child_process")
+        const child = spawn(updater, ["--ref", tag], {
+          detached: true,
+          stdio: "ignore",
+          cwd: repoRoot,
+        })
+        child.unref()
+
+        return {
+          ok: true as const,
+          message: `server update to ${tag} started in background`,
+          tag,
+        }
+      }),
   }),
   })
 

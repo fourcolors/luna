@@ -62,6 +62,7 @@ import {
   type UpdateEventName,
   type UpdateState,
 } from "./updates-store"
+import { ServerUpdateSection } from "./ServerUpdateSection"
 
 export const PANEL_TITLE = "Updates"
 
@@ -304,6 +305,8 @@ export function UpdatesPanel({ ctx }: { ctx: PanelCtx }) {
       <div id="update-error" className="panel-status" role="status" hidden={phase !== "error"}>
         {state.errorMessage}
       </div>
+
+      <ServerUpdateSection />
 
       <div className="upd-foot">Checks automatically in the background.</div>
     </div>

@@ -34,6 +34,7 @@ import {
   BOOT_INVOKE_MS,
 } from "../tauriBoot"
 import { buildListThreadsFrame } from "./threadList"
+import { setServerVersionFromFrame } from "../panels/settings-updates/server-version"
 
 /** Max stall-recovery rounds before surfacing "Reattach stalled". 3 covers one
  *  tombstone advance + one validation miss + one final retry. */
@@ -403,6 +404,12 @@ const WebSocketEngine = {
      * nothing changes for older servers. Degrades gracefully.
      */
     applyBuildSha(frame) {
+      // Cache the server release version (frame.serverVersion, e.g. "0.5.0")
+      // for the Updates panel's server-update check - same hello frame,
+      // same localStorage pattern as the build SHA below.
+      try {
+        setServerVersionFromFrame(frame);
+      } catch { /* cosmetic cache only */ }
       const el = DOM.buildSha;
       if (!el) return;
       const sha = frame && typeof frame.buildSha === 'string' ? frame.buildSha.trim() : '';

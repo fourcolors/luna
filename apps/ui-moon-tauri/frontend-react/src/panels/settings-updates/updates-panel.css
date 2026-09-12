@@ -90,3 +90,24 @@
   color: var(--muted);
   margin-top: 14px;
 }
+
+/* Luna server section: divider above, command chip for the host-side
+   update command the copy button places on the clipboard. */
+.updates-panel .upd-server {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border, rgba(128, 128, 128, 0.25));
+}
+
+.updates-panel .upd-cmd {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.74rem;
+  color: var(--text);
+  background: rgba(128, 128, 128, 0.12);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  word-break: break-all;
+  user-select: all;
+}
