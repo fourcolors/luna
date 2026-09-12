@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, vi } from "vitest"
 import {
+  appendMessage,
   clear,
   clearBusy,
   get,
@@ -197,6 +198,51 @@ describe("threadCache", () => {
       clear(ctx, "a")
       expect(get(ctx, "a")).toBeNull()
       expect(get(ctx, "b")).not.toBeNull()
+    })
+  })
+
+  describe("appendMessage", () => {
+    it("appends a live message to the cached entry and bumps throughSeq", () => {
+      const { ctx } = makeCtx()
+      put(ctx, "a", [{ seq: 1, text: "hi" }], 1)
+      appendMessage(ctx, "a", { seq: 2, text: "hello" })
+      const entry = get(ctx, "a")!
+      expect(entry.messages).toHaveLength(2)
+      expect(entry.messages[1]).toEqual({ seq: 2, text: "hello" })
+      expect(entry.throughSeq).toBe(2)
+    })
+
+    it("does not mutate the array a previous paint handed out", () => {
+      const { ctx } = makeCtx()
+      put(ctx, "a", [{ seq: 1 }], 1)
+      const before = get(ctx, "a")!.messages
+      appendMessage(ctx, "a", { seq: 2 })
+      expect(before).toHaveLength(1)
+      expect(get(ctx, "a")!.messages).toHaveLength(2)
+    })
+
+    it("is a no-op when there is no cached entry for the thread", () => {
+      const { ctx } = makeCtx()
+      expect(() => appendMessage(ctx, "missing", { seq: 1 })).not.toThrow()
+      expect(get(ctx, "missing")).toBeNull()
+    })
+
+    it("ignores non-object messages and missing thread ids", () => {
+      const { ctx } = makeCtx()
+      put(ctx, "a", [{ seq: 1 }], 1)
+      appendMessage(ctx, "a", null)
+      appendMessage(ctx, "a", "not-an-object")
+      appendMessage(ctx, "", { seq: 2 })
+      appendMessage(ctx, undefined, { seq: 2 })
+      expect(get(ctx, "a")!.messages).toHaveLength(1)
+    })
+
+    it("keeps the higher throughSeq when the message has no usable seq", () => {
+      const { ctx } = makeCtx()
+      put(ctx, "a", [{ seq: 5 }], 5)
+      appendMessage(ctx, "a", { text: "no seq" })
+      expect(get(ctx, "a")!.throughSeq).toBe(5)
+      expect(get(ctx, "a")!.messages).toHaveLength(2)
     })
   })
 
