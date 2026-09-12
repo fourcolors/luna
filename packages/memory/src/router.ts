@@ -88,6 +88,8 @@ export interface MemoryRouter {
     readonly namespace?: string
     readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
     readonly scope?: MemoryScopeQuery
+    /** If true, records superseded by a newer record are included. */
+    readonly includeSuperseded?: boolean
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
@@ -154,9 +156,11 @@ export function makeRouter(
 
   const search: MemoryRouter["search"] = (args) => {
     const requestedTopK = args.topK ?? 10
-    // Scope filtering happens after ranking because legacy vector rows have no
-    // scope columns. Over-fetch keeps a few private rows from starving an
-    // otherwise valid result set while preserving backend compatibility.
+    // Scope is pushed to the backend. Keyed queries and FTS filter by scope
+    // in SQL before ranking. The HNSW vector path still ranks globally then
+    // prunes by scope (vectorlite limitation), so the 4x over-fetch below
+    // mitigates starvation there. The post-filter is a safety net for
+    // backends that ignore the scope arg entirely.
     const backendArgs =
       args.scope !== undefined
         ? { ...args, topK: Math.max(requestedTopK * 4, 20) }

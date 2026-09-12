@@ -54,6 +54,8 @@ export interface MemoryVectorBackend extends MemoryBackend {
     readonly namespace?: string
     readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
     readonly scope?: MemoryScopeQuery
+    /** If true, records superseded by a newer record are included. */
+    readonly includeSuperseded?: boolean
   }) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
