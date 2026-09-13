@@ -108,7 +108,11 @@ const DREAM_OP_ITEM_SCHEMA: Record<string, unknown> = {
   },
 }
 
-const DREAM_OPS_SCHEMA: Record<string, unknown> = {
+// Exported for tests and for the live schema-acceptance probe, matching
+// WAKE_DIGEST_SCHEMA. A probe that re-declares its own copy of this object
+// proves only that the copy is well-formed — the drift it would miss is
+// exactly the drift that caused the outage.
+export const DREAM_OPS_SCHEMA: Record<string, unknown> = {
   type: "object",
   required: ["ops"],
   additionalProperties: false,
