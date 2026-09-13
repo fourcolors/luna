@@ -67,36 +67,50 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
 ])
 
 /**
- * JSON Schema for the dream op array — passed as the SDK `outputFormat` when
- * structured output is enabled. The model emits a TOP-LEVEL ARRAY of ops; the
- * per-kind required fields differ, so the item schema is permissive (a union of
- * the two shapes) and validateRawOpsArray remains the authoritative validator.
+ * JSON Schema for the dream ops — passed as the SDK `outputFormat` when
+ * structured output is enabled.
+ *
+ * ROOT MUST BE `type: "object"`. The Anthropic API implements structured output
+ * as a synthetic tool, and a tool `input_schema` is rejected at request time
+ * unless its root is an object ("tools.N.custom.input_schema.type: Input should
+ * be 'object'"). An array-rooted schema here 400s before the reasoner ever sees
+ * a response — it killed every dream cycle for 30 days. So the op array is
+ * wrapped in an `ops` envelope and unwrapped at the consumption site.
+ *
+ * The per-kind required fields differ, so the item schema is permissive (a union
+ * of the two shapes) and validateRawOpsArray remains the authoritative validator.
  * The schema's job is to force valid JSON + the array envelope + the kind enum,
  * eliminating the "model wrapped its JSON / emitted a prose preamble" failures;
  * the fine-grained per-kind checks stay in validateRawOpsArray.
  */
+const DREAM_OP_ITEM_SCHEMA: Record<string, unknown> = {
+  type: "object",
+  required: ["kind", "rationale"],
+  properties: {
+    kind: { type: "string", enum: [...VALID_KINDS] },
+    rationale: { type: "string", minLength: 1 },
+    domain: { type: "string" },
+    statement: { type: "string" },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    evidence: { type: "array", items: { type: "string" } },
+    targetId: { type: "string" },
+    before: {},
+    after: {},
+    // skill_improvement fields
+    mode: { type: "string", enum: ["create", "update"] },
+    skillId: { type: ["string", "null"] },
+    title: { type: "string" },
+    detail: { type: ["string", "null"] },
+    prompt: { type: "string" },
+  },
+}
+
 const DREAM_OPS_SCHEMA: Record<string, unknown> = {
-  type: "array",
-  items: {
-    type: "object",
-    required: ["kind", "rationale"],
-    properties: {
-      kind: { type: "string", enum: [...VALID_KINDS] },
-      rationale: { type: "string", minLength: 1 },
-      domain: { type: "string" },
-      statement: { type: "string" },
-      confidence: { type: "number", minimum: 0, maximum: 1 },
-      evidence: { type: "array", items: { type: "string" } },
-      targetId: { type: "string" },
-      before: {},
-      after: {},
-      // skill_improvement fields
-      mode: { type: "string", enum: ["create", "update"] },
-      skillId: { type: ["string", "null"] },
-      title: { type: "string" },
-      detail: { type: ["string", "null"] },
-      prompt: { type: "string" },
-    },
+  type: "object",
+  required: ["ops"],
+  additionalProperties: false,
+  properties: {
+    ops: { type: "array", items: DREAM_OP_ITEM_SCHEMA },
   },
 }
 
@@ -220,6 +234,16 @@ export function buildDreamPrompt(
   // example is enough. The parse path (structured output off, "none" lanes or
   // an explicit rollback) keeps the full field-by-field restatement, since it
   // is the model's ONLY source of the required shape there.
+  // The structured path wraps ops in an object envelope (see DREAM_OPS_SCHEMA);
+  // the parse path keeps the bare array. These MUST agree with the schema or the
+  // model is told one shape and graded against another.
+  const envelopeIntro = structuredOutputEnabled
+    ? 'memory/beliefs/skills below and propose state changes as a STRICT JSON object: {"ops": [ ... ]}.'
+    : "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops."
+  const envelopeRule = structuredOutputEnabled
+    ? '1. Output ONLY a JSON object of the form {"ops": [ ... ]}. No markdown, no prose, no code fences.'
+    : "1. Output ONLY a JSON array. No markdown, no prose, no code fences."
+
   const opShapeRule = structuredOutputEnabled
     ? [
         "2. The op field shape is enforced by the response schema. Example op:",
@@ -236,11 +260,11 @@ export function buildDreamPrompt(
 
   return [
     "You are Luna's nightly Dream reasoner. Reflect over the sessions and current",
-    "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops.",
+    envelopeIntro,
     "",
     "Rules (ALL are load-bearing — violating them corrupts the alignment loop):",
     "",
-    "1. Output ONLY a JSON array. No markdown, no prose, no code fences.",
+    envelopeRule,
     "",
     ...opShapeRule,
     "",
@@ -673,11 +697,21 @@ export const DreamReasonerDefault: Layer.Layer<
         // parsing the text result. structuredOutput is only ever present when
         // the gate is on AND the provider honored outputFormat — otherwise this
         // is exactly the prior parseRawOps(text) path.
+        // DREAM_OPS_SCHEMA is object-rooted ({ ops: [...] }), so unwrap the
+        // envelope before validating. A provider that ignored the envelope and
+        // returned a bare array is accepted too. Anything else falls through as
+        // `undefined`, which validateRawOpsArray rejects loudly rather than
+        // silently yielding zero ops.
+        const unwrapOps = (value: unknown): unknown =>
+          Array.isArray(value)
+            ? value
+            : (value as { readonly ops?: unknown } | null | undefined)?.ops
+
         const opsFromTurn = (
           turn: BrokeredTurnResult,
         ): Effect.Effect<ReadonlyArray<RawOp>, DreamError> =>
           turn.structuredOutput !== undefined
-            ? validateRawOps(turn.structuredOutput)
+            ? validateRawOps(unwrapOps(turn.structuredOutput))
             : parseRawOps(turn.text)
 
         const pass1Turn = yield* runDreamTurn()

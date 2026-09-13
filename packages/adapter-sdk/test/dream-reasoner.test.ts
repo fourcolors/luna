@@ -638,7 +638,7 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
     }
   }
 
-  it("flag ON → injects outputFormat(json_schema, top-level ARRAY) into the SDK options", async () => {
+  it("flag ON → injects outputFormat(json_schema, object envelope) into the SDK options", async () => {
     const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
     const frame = {
       ...makeResultMessage("sid", "uuid-dso"),
@@ -656,8 +656,9 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
       | undefined
     expect(outputFormat).toBeDefined()
     expect(outputFormat!.type).toBe("json_schema")
-    // Dream's schema is intentionally a TOP-LEVEL ARRAY (vs wake's object).
-    expect(outputFormat!.schema?.type).toBe("array")
+    // Root MUST be an object: the Anthropic API rejects an array-rooted
+    // input_schema at request time. Regression guard for the 30-day outage.
+    expect(outputFormat!.schema?.type).toBe("object")
   })
 
   it("flag ON → consumes structured_output EVEN WHEN the text result is unparseable garbage (kills the wrapped-output failure class)", async () => {
@@ -702,7 +703,7 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
       | undefined
     expect(outputFormat).toBeDefined()
     expect(outputFormat!.type).toBe("json_schema")
-    expect(outputFormat!.schema?.type).toBe("array")
+    expect(outputFormat!.schema?.type).toBe("object")
     expect(opts["maxTurns"]).toBe(1)
   })
 
@@ -721,6 +722,78 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
     const opts = sink.last!.options
     expect("outputFormat" in opts).toBe(false)
     expect(opts["maxTurns"]).toBe(1)
+  })
+
+  // ---------------------------------------------------------------------
+  // Regression guards for the 2026-08/09 outage: DREAM_OPS_SCHEMA was
+  // array-rooted, which the Anthropic API rejects at request time because
+  // structured output is implemented as a synthetic tool. Every dream cycle
+  // 400'd for 30 days. Typecheck cannot catch this (the constant is typed
+  // Record<string, unknown>), and the suite actively asserted the broken
+  // shape, so CI stayed green throughout. These exercise the real path.
+  // ---------------------------------------------------------------------
+
+  it("outputFormat schema is an OBJECT envelope with an ops array (array root 400s the API)", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-envelope-shape"),
+      structured_output: { ops: [RAW_BELIEF_OP] },
+    } as unknown as SDKMessage
+
+    await withFlag("1", async () => {
+      await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+      )
+      const outputFormat = sink.last!.options["outputFormat"] as {
+        schema?: {
+          type?: string
+          required?: ReadonlyArray<string>
+          properties?: { ops?: { type?: string; items?: { type?: string } } }
+        }
+      }
+      const schema = outputFormat.schema!
+      expect(schema.type).toBe("object")
+      expect(schema.required).toContain("ops")
+      expect(schema.properties?.ops?.type).toBe("array")
+      expect(schema.properties?.ops?.items?.type).toBe("object")
+    })
+  })
+
+  it("flag ON → unwraps the { ops: [...] } envelope from structured_output", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-envelope"),
+      result: "prose the parser would choke on",
+      structured_output: { ops: [RAW_BELIEF_OP] },
+    } as unknown as SDKMessage
+
+    await withFlag("1", async () => {
+      const ops = await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+      )
+      expect(ops).toHaveLength(1)
+      expect(ops[0]!.kind).toBe("belief_candidate")
+      expect(ops[0]!.targetId).toBe(EXPECTED_ID)
+    })
+  })
+
+  it("flag ON → structured_output missing `ops` FAILS LOUDLY rather than yielding zero ops", async () => {
+    const sink: { last: { options: Record<string, unknown> } | null } = { last: null }
+    const frame = {
+      ...makeResultMessage("sid", "uuid-no-ops"),
+      result: "not json either",
+      structured_output: { notOps: [RAW_BELIEF_OP] },
+    } as unknown as SDKMessage
+
+    await withFlag("1", async () => {
+      // A silent empty result would look like "the dream found nothing",
+      // which is exactly how a broken reduce step hides. It must reject.
+      await expect(
+        Effect.runPromise(
+          runReason(EMPTY_INPUTS, recordingClientWith(sink, frame), FakeMemory()),
+        ),
+      ).rejects.toThrow()
+    })
   })
 
   it("no explicit override, incapable lane (openai, structuredOutput=\"none\") → NO outputFormat", async () => {
