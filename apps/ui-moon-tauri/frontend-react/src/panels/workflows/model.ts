@@ -17,6 +17,7 @@
  * the raw store slice - never mutating the store itself.
  */
 import type { WorkflowGalleryItem } from "@luna/ui-shared/core"
+import { jobStatusClass } from "../job-status.js"
 
 export const MAX_ROWS = 500
 export const MAX_LABEL = 200
@@ -50,17 +51,12 @@ export function fmtRelative(epochMs: unknown): string | null {
  * "errored", "running", "scheduled". The run-status vocabulary
  * (success/failed/waiting/…) is accepted too as belt-and-suspenders for
  * servers that normalize before sending.
+ *
+ * The vocabulary itself now lives in ../job-status.ts, shared with the Briefing
+ * digest — which used to carry its own copy, drifted, and stopped showing
+ * failed jobs entirely. This re-export keeps every existing caller unchanged.
  */
-export function statusClass(rawStatus: unknown): string {
-  const s = String(rawStatus || "").toLowerCase()
-  if (s === "fired" || s === "success" || s === "ok" || s === "completed") return "success"
-  if (s === "errored" || s === "failed" || s === "fail" || s === "error") return "failed"
-  if (s === "running" || s === "started") return "running"
-  if (s === "waiting") return "waiting"
-  if (s === "cancelled" || s === "canceled") return "cancelled"
-  if (!rawStatus || s === "scheduled") return "never"
-  return "queued"
-}
+export const statusClass = (rawStatus: unknown): string => jobStatusClass(rawStatus)
 
 /** Humanized meta copy - "fired" reads as "ok", "errored" as "failed". */
 export function statusLabel(rawStatus: unknown): string | null {
