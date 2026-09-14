@@ -362,6 +362,36 @@ export interface JobTickerOptions {
  *   const tickerL = JobTickerLayer({ tickInterval: Duration.seconds(60) })
  *     .pipe(Layer.provide(Layer.mergeAll(JobsStoreService.SQLite, workerRegistryL)))
  */
+/** Default graceful-shutdown drain window (A1b). */
+export const DEFAULT_SHUTDOWN_DRAIN_MS = 90_000
+
+/**
+ * Resolve the graceful-shutdown drain window (ms).
+ *
+ * Precedence: an explicit `options.shutdownDrainMs` (including `0`, which test
+ * stacks pass to disable the wait) > `LUNA_SCHED_DRAIN_MS` > the 90s default.
+ *
+ * An unset or blank env var MUST fall through to the default. Reading it as
+ * `Number(env ?? "")` did not: `Number("")` is `0`, which is finite and `>= 0`,
+ * so a blank value passed the validity guard and pinned the drain to `0`,
+ * disabling the A1b finalizer in every default deployment (the gate below is
+ * `shutdownDrainMs > 0`). Perversely, a malformed value like "abc" produced
+ * `NaN` and therefore the CORRECT default. Mirrors `readCycleMs` in
+ * account-broker/spend-meter.ts: trim, treat blank as absent, then parse.
+ *
+ * Pure + env-injectable so the default branch is unit-testable.
+ */
+export function resolveShutdownDrainMs(
+  optionValue: number | undefined,
+  env: Record<string, string | undefined> = process.env,
+): number {
+  if (optionValue !== undefined) return optionValue
+  const raw = env["LUNA_SCHED_DRAIN_MS"]?.trim()
+  if (!raw) return DEFAULT_SHUTDOWN_DRAIN_MS
+  const n = Number(raw)
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SHUTDOWN_DRAIN_MS
+}
+
 export const JobTickerLayer = (
   options?: JobTickerOptions,
 ): Layer.Layer<
@@ -396,10 +426,7 @@ export const JobTickerLayer = (
   // its own (resolveMaxAttempts clamps a payload override to [1, 10]).
   const defaultMaxAttempts = options?.defaultMaxAttempts ?? 3
   const tickIntervalMs = Duration.toMillis(tickInterval)
-  const envDrain = Number(process.env["LUNA_SCHED_DRAIN_MS"] ?? "")
-  const shutdownDrainMs =
-    options?.shutdownDrainMs ??
-    (Number.isFinite(envDrain) && envDrain >= 0 ? envDrain : 90_000)
+  const shutdownDrainMs = resolveShutdownDrainMs(options?.shutdownDrainMs)
   // Phase B1 — doctor auto-enqueue config (resolved once at layer build).
   const doctorCfg: DoctorEnqueueConfig = resolveDoctorEnqueueConfig(
     options?.doctor,

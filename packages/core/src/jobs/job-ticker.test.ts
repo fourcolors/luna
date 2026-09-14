@@ -17,7 +17,12 @@ import { Context, Deferred, Effect, Layer, Duration } from "effect"
 import { Clock } from "../clock.js"
 import { JobsStoreService } from "./jobs-store.js"
 import { JobsStoreError, type JobsStoreApi } from "./jobs-store-types.js"
-import { JobTicker, JobTickerLayer } from "./job-ticker.js"
+import {
+  DEFAULT_SHUTDOWN_DRAIN_MS,
+  JobTicker,
+  JobTickerLayer,
+  resolveShutdownDrainMs,
+} from "./job-ticker.js"
 import { CLEAN_SHUTDOWN_MARKER_NAME } from "./job-ticker-reconcile.js"
 import {
   WorkerRegistry,
@@ -2503,5 +2508,51 @@ describe("JobTicker", () => {
         ),
       )
     })
+  })
+})
+
+describe("resolveShutdownDrainMs (A1b graceful-drain window)", () => {
+  // Regression: `Number(process.env[...] ?? "")` made an UNSET var resolve to
+  // `Number("")` === 0 — finite and >= 0, so it passed the validity guard and
+  // pinned the drain to 0. The `shutdownDrainMs > 0` gate then skipped
+  // registering the drain finalizer in EVERY default deployment, so a clean
+  // SIGTERM interrupted in-flight executors immediately and orphaned their
+  // runs in `running` until the next boot's reconcileAfterCrash.
+  it("defaults to 90s when the env var is unset (was 0)", () => {
+    expect(resolveShutdownDrainMs(undefined, {})).toBe(DEFAULT_SHUTDOWN_DRAIN_MS)
+    expect(DEFAULT_SHUTDOWN_DRAIN_MS).toBe(90_000)
+  })
+
+  it("treats a blank or whitespace-only env var as absent", () => {
+    expect(resolveShutdownDrainMs(undefined, { LUNA_SCHED_DRAIN_MS: "" })).toBe(
+      DEFAULT_SHUTDOWN_DRAIN_MS,
+    )
+    expect(
+      resolveShutdownDrainMs(undefined, { LUNA_SCHED_DRAIN_MS: "   " }),
+    ).toBe(DEFAULT_SHUTDOWN_DRAIN_MS)
+  })
+
+  it("honors an explicit option, including 0 (test stacks disable the wait)", () => {
+    expect(resolveShutdownDrainMs(0, { LUNA_SCHED_DRAIN_MS: "30000" })).toBe(0)
+    expect(resolveShutdownDrainMs(5_000, {})).toBe(5_000)
+  })
+
+  it("honors a valid env override, including an explicit 0", () => {
+    expect(
+      resolveShutdownDrainMs(undefined, { LUNA_SCHED_DRAIN_MS: "30000" }),
+    ).toBe(30_000)
+    expect(resolveShutdownDrainMs(undefined, { LUNA_SCHED_DRAIN_MS: "0" })).toBe(
+      0,
+    )
+  })
+
+  it("falls back to the default on a malformed or negative env value", () => {
+    // Note the old inversion: "abc" produced NaN and therefore the CORRECT
+    // default, while unset produced the wrong one.
+    for (const raw of ["abc", "-5", "NaN", "Infinity"]) {
+      expect(
+        resolveShutdownDrainMs(undefined, { LUNA_SCHED_DRAIN_MS: raw }),
+      ).toBe(DEFAULT_SHUTDOWN_DRAIN_MS)
+    }
   })
 })
