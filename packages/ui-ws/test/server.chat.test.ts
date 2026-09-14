@@ -753,7 +753,15 @@ describe("UIWebSocketServer (chat routing)", () => {
           },
           { waitFor: (f) => f.type === "thread-created", thenSend: () => [] },
         ],
-        3,
+        // Frame COUNT is not a safe barrier here: a new-thread turn emits a
+        // variable number of interleaved obs frames, so a fixed budget of 3
+        // could resolve before `thread-created` was among them, making
+        // `created` undefined and this test fail as though the roster had
+        // dropped a valid agent. Use the early-resolve predicate (the reason
+        // driveSequence has one) and keep the count only as a ceiling.
+        8,
+        5000,
+        (f) => f.type === "thread-created",
       )
       const created = frames.find((f) => f.type === "thread-created")
       return created?.type === "thread-created"
