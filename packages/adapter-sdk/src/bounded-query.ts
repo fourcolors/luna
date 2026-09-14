@@ -100,6 +100,98 @@ export type BoundedQueryOutcome =
 // here and core's own `define-worker` boundary (which wraps the reasoner
 // lanes) share one definition. See `isBudgetCeilingCause`.
 
+// ---------------------------------------------------------------------------
+// outputFormat schema contract
+// ---------------------------------------------------------------------------
+
+/**
+ * THE CONTRACT: a JSON Schema handed to the SDK as
+ * `options.outputFormat: { type: "json_schema", schema }` MUST have an OBJECT
+ * root — `schema.type === "object"`, exactly that string.
+ *
+ * WHY: the Anthropic API implements structured output as a SYNTHETIC TOOL. The
+ * schema you pass becomes that tool's `input_schema`, and a tool input schema is
+ * rejected at request time unless its root is an object:
+ *
+ *     400 tools.N.custom.input_schema.type: Input should be 'object'
+ *
+ * The request 400s before the model ever runs, so the failure is total, silent
+ * to typecheck, and indistinguishable at the call site from an outage. An
+ * array-rooted `DREAM_OPS_SCHEMA` killed every nightly dream cycle for 30 days
+ * and 90 consecutive runs before anyone traced the tool index back to a schema
+ * nobody had written as a tool.
+ *
+ * WHY THE CHECK LIVES HERE, at the seam, and not in a test that enumerates the
+ * known schemas: every `outputFormat` caller in the repo funnels through
+ * `runBoundedQuery` (dream-reasoner and wake-reasoner today, via
+ * `runBrokeredReasonerTurn`). A hand-maintained list of schema constants drifts
+ * exactly the way the bug did; the seam cannot. This also fires for an inline
+ * schema literal at a future call site, and it fires through the FAKE SDK,
+ * because the fake shares this seam — so a bad schema goes red in CI rather
+ * than at 03:00 in production.
+ *
+ * ONLY THE ROOT is constrained. Nested `type: ["string", "null"]` unions are
+ * legal and common (wake's digest schema uses them); this never walks the tree.
+ */
+const isObjectRootedOutputSchema = (schema: unknown): boolean =>
+  typeof schema === "object" &&
+  schema !== null &&
+  !Array.isArray(schema) &&
+  (schema as { type?: unknown }).type === "object"
+
+/**
+ * Describes what is wrong with a non-conforming root, for an error message that
+ * points at the schema instead of at a tool index the caller never wrote.
+ */
+const describeSchemaRoot = (schema: unknown): string => {
+  if (schema === null) return "null"
+  if (Array.isArray(schema)) return "an array value"
+  if (typeof schema !== "object") return `a ${typeof schema} value`
+  const t = (schema as { type?: unknown }).type
+  if (t === undefined) return 'no root "type" key'
+  return `root type ${JSON.stringify(t)}`
+}
+
+/**
+ * Thrown ONLY at module-construction time (see `assertObjectRootedOutputSchema`).
+ * The runtime seam never throws this — it returns an `error` outcome instead.
+ */
+export class InvalidOutputFormatSchemaError extends Error {
+  readonly _tag = "InvalidOutputFormatSchemaError"
+  constructor(label: string, schema: unknown) {
+    super(
+      `${label}: outputFormat JSON Schema must have an object root ` +
+        `(schema.type === "object"), but has ${describeSchemaRoot(schema)}. ` +
+        `The Anthropic API sends structured output as a synthetic tool, and a ` +
+        `tool input_schema with a non-object root is rejected with ` +
+        `"tools.N.custom.input_schema.type: Input should be 'object'". ` +
+        `Wrap the payload in an object envelope and unwrap it at the ` +
+        `consumption site.`,
+    )
+    this.name = "InvalidOutputFormatSchemaError"
+  }
+}
+
+/**
+ * Construction-time assertion. Call at MODULE SCOPE immediately after declaring
+ * a schema destined for `outputFormat`, so a bad schema fails at import.
+ *
+ * That is deliberately loud: every module holding such a schema is imported by
+ * its own test file, so CI cannot go green on a malformed one. Failing at import
+ * is strictly better than failing nightly in a job nobody is watching.
+ *
+ * This is the ONLY place in this module that throws. The seam check inside
+ * `runBoundedQuery` uses the predicate directly and returns an outcome.
+ */
+export function assertObjectRootedOutputSchema(
+  schema: unknown,
+  label: string,
+): void {
+  if (!isObjectRootedOutputSchema(schema)) {
+    throw new InvalidOutputFormatSchemaError(label, schema)
+  }
+}
+
 /** A frame in the detached producer→consumer channel. */
 type Frame =
   | { readonly _tag: "msg"; readonly msg: SDKMessage }
@@ -128,6 +220,32 @@ export function runBoundedQuery(
   timeoutMs: number = DEFAULT_QUERY_TIMEOUT_MS,
 ): Effect.Effect<BoundedQueryOutcome, never> {
   return Effect.gen(function* () {
+    // Seam guard — see `assertObjectRootedOutputSchema` above for the full why.
+    // A non-object-rooted outputFormat schema is a DETERMINISTIC 400 from the
+    // provider: the request never reaches the model, and retrying cannot help.
+    // Reject it here, before the subprocess is spawned.
+    //
+    // CRITICAL — this returns an outcome, it does NOT throw. A throw inside this
+    // `Effect.gen` becomes an Effect DEFECT, and `defect` is a member of
+    // RETRYABLE_WORKER_ERROR_REASONS in core's job-ticker-executor. Throwing
+    // would therefore convert a permanent, un-retryable schema bug into 3
+    // retries per fire, every fire, forever — the exact amplification that made
+    // the dream outage noisier without making it any more visible.
+    const outputFormat = params.options?.outputFormat as
+      | { type?: unknown; schema?: unknown }
+      | undefined
+    if (outputFormat !== undefined && outputFormat !== null) {
+      if (!isObjectRootedOutputSchema(outputFormat.schema)) {
+        return {
+          _tag: "error",
+          cause: new InvalidOutputFormatSchemaError(
+            "runBoundedQuery(options.outputFormat.schema)",
+            outputFormat.schema,
+          ),
+        } as const
+      }
+    }
+
     const abort = new AbortController()
 
     // Inject the kill-switch while keeping the caller's prompt + every option

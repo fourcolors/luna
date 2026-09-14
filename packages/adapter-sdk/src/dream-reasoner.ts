@@ -47,7 +47,10 @@ import type {
   SkillImprovementAfter,
 } from "@luna/core"
 import { SDKClient } from "./sdk-client.js"
-import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import {
+  DEFAULT_QUERY_TIMEOUT_MS,
+  assertObjectRootedOutputSchema,
+} from "./bounded-query.js"
 import {
   resolveReasonerModel,
   runBrokeredReasonerTurn,
@@ -105,7 +108,11 @@ const DREAM_OP_ITEM_SCHEMA: Record<string, unknown> = {
   },
 }
 
-const DREAM_OPS_SCHEMA: Record<string, unknown> = {
+// Exported for tests and for the live schema-acceptance probe, matching
+// WAKE_DIGEST_SCHEMA. A probe that re-declares its own copy of this object
+// proves only that the copy is well-formed — the drift it would miss is
+// exactly the drift that caused the outage.
+export const DREAM_OPS_SCHEMA: Record<string, unknown> = {
   type: "object",
   required: ["ops"],
   additionalProperties: false,
@@ -113,6 +120,12 @@ const DREAM_OPS_SCHEMA: Record<string, unknown> = {
     ops: { type: "array", items: DREAM_OP_ITEM_SCHEMA },
   },
 }
+
+// Fail at IMPORT if the object root above is ever lost. This module is imported
+// by dream-reasoner.test.ts, so CI cannot go green on a malformed schema — which
+// is the whole point: the array-rooted version of this constant 400'd every
+// nightly dream run for 30 days without a single test noticing.
+assertObjectRootedOutputSchema(DREAM_OPS_SCHEMA, "DREAM_OPS_SCHEMA")
 
 // ---------------------------------------------------------------------------
 // Raw op shape from the model's JSON output

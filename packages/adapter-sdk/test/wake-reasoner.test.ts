@@ -570,6 +570,11 @@ describe("WakeReasonerDefault — structured output flag ON (end-to-end)", () =>
     expect(outputFormat).toBeDefined()
     expect(outputFormat!.type).toBe("json_schema")
     expect(outputFormat!.schema).toBe(WAKE_DIGEST_SCHEMA)
+    // Identity alone is NOT enough: this assert passed throughout the 30-day
+    // dream outage because it only proves "the constant got wired", never "the
+    // constant is well-formed". The Anthropic API sends structured output as a
+    // synthetic tool, whose input_schema must have an object root.
+    expect((outputFormat!.schema as { type?: unknown }).type).toBe("object")
   })
 
   it("flag ON → consumes structured_output EVEN WHEN the text result is unparseable garbage (kills the wrapped-output failure class)", async () => {
@@ -622,6 +627,8 @@ describe("WakeReasonerDefault — structured output flag ON (end-to-end)", () =>
     expect(outputFormat).toBeDefined()
     expect(outputFormat!.type).toBe("json_schema")
     expect(outputFormat!.schema).toBe(WAKE_DIGEST_SCHEMA)
+    // Shape, not just identity — see the note on the sibling assert above.
+    expect((outputFormat!.schema as { type?: unknown }).type).toBe("object")
     expect(opts["maxTurns"]).toBe(1)
   })
 

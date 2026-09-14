@@ -30,7 +30,10 @@ import type {
   WakeReasonerApi,
 } from "@luna/core"
 import { SDKClient } from "./sdk-client.js"
-import { DEFAULT_QUERY_TIMEOUT_MS } from "./bounded-query.js"
+import {
+  DEFAULT_QUERY_TIMEOUT_MS,
+  assertObjectRootedOutputSchema,
+} from "./bounded-query.js"
 import {
   resolveReasonerModel,
   runBrokeredReasonerTurn,
@@ -72,6 +75,11 @@ export const WAKE_DIGEST_SCHEMA: Record<string, unknown> = {
     },
   },
 }
+
+// Fail at IMPORT if the object root above is ever lost. Nested `type: [...]`
+// unions (picked_action_id, goal_slug) stay legal — only the ROOT is checked.
+// See assertObjectRootedOutputSchema in bounded-query.ts for why.
+assertObjectRootedOutputSchema(WAKE_DIGEST_SCHEMA, "WAKE_DIGEST_SCHEMA")
 
 // ---------------------------------------------------------------------------
 // Prompt builder (pure, exported for unit tests)
