@@ -19,6 +19,7 @@ import {
 } from "./outcome-health-predicate.js"
 import {
   handleDoctorWorkflowFailure,
+  isDoctorExemptKind,
   isDoctorWorkflowJob,
   maybeEnqueueDoctor,
   type DoctorEnqueueConfig,
@@ -122,6 +123,28 @@ export const defaultRetryBackoffMs = (attempt: number): number => {
  */
 const MIN_RESOLVED_TIMEOUT_MS = 1_000
 
+/**
+ * Fail-streak alerting bucket — the 90-consecutive-failures/30-day `dream`
+ * incident. `maybeEnqueueDoctor` never fires for doctor-EXEMPT kinds
+ * (`isDoctorExemptKind`: `dream`/`wake` — see doctor-enqueue.ts), which
+ * means `failStreak` climbs on every tick with NO consumer ever reading it.
+ * This buckets the streak into a doubling sequence starting at `threshold`
+ * (e.g. 5, 10, 20, 40, 80, ...) so the fail-streak note in the branch below
+ * RE-NOTIFIES as the situation worsens instead of firing once and going
+ * silent — a job dead for 30 days must not look identical, in the daily
+ * brief, to a job that failed twice. Returns 0 (no bucket) below threshold;
+ * callers gate on `newFailStreak >= threshold` before using the bucket, so
+ * 0 is never fingerprinted into a real note.
+ */
+export const computeFailStreakBucket = (
+  streak: number,
+  threshold: number,
+): number => {
+  if (threshold <= 0 || streak < threshold) return 0
+  let bucket = threshold
+  while (bucket * 2 <= streak) bucket *= 2
+  return bucket
+}
 
 /** Config + collaborators `makeExecutor` closes over. */
 export interface ExecutorDeps {
@@ -135,11 +158,17 @@ export interface ExecutorDeps {
   readonly defaultMaxAttempts: number
   readonly doctorCfg: DoctorEnqueueConfig
   /**
-   * ADR 0001 Phase 2 — outcome-health alerting. Injected from the
-   * JobTickerLayer so the executor stays typed Effect<void> (R=never).
-   * Called only on successful dispatches that carry a `health` predicate.
-   * Fires at-most-once per (jobId, outcomeState) via recordIfChanged dedupe.
-   * A missing / undefined dep silently skips predicate evaluation.
+   * Notify-only alerting rail. Injected from the JobTickerLayer so the
+   * executor stays typed Effect<void> (R=never). A missing / undefined dep
+   * silently skips every notification below.
+   *
+   * TWO call sites, deliberately disjoint:
+   *   1. ADR 0001 Phase 2 outcome-health — on SUCCESSFUL dispatches that carry
+   *      a `health` predicate. At-most-once per (jobId, outcomeState).
+   *   2. Fail-streak alerting — on FAILED dispatches of doctor-EXEMPT kinds,
+   *      which get no doctor rail at all. Re-notifies per streak bucket.
+   *
+   * Neither can fail a run: both are wrapped so an alerting fault is swallowed.
    */
   readonly noteApi?: {
     readonly recordIfChanged: (
@@ -413,6 +442,66 @@ export const makeExecutor = (
           doctorCfg,
           finishedAt,
         ).pipe(Effect.catchDefect(() => Effect.void))
+
+        // Fail-streak alerting for doctor-EXEMPT kinds (dream/wake). These
+        // kinds short-circuit `maybeEnqueueDoctor` above at `exempt_kind`
+        // and NEVER get the doctor rail — the 90-consecutive-failures/
+        // 30-day dream incident this whole branch exists to close. A
+        // non-exempt kind already has the doctor rail as its signal, so
+        // gating on `isDoctorExemptKind` here is what prevents double-
+        // notifying it.
+        //
+        // Notify-only: rides the existing agent-notes/daily-brief rail
+        // (`recordIfChanged` → `obs_notes_recent` → daily-brief-install.ts)
+        // rather than inventing a new alerting surface, and deliberately
+        // does NOT add a doctor finding — these kinds are exempt from
+        // doctor by design and this note does not change that.
+        //
+        // CRITICAL (ADR 0002): the note `kind` is PER-JOB
+        // (`job-fail-streak:${job.id}`), not shared. `recordIfChanged`
+        // dedupes by comparing only the MOST RECENT note of a given
+        // `kind` — with one shared kind, two concurrently-failing jobs
+        // would alternate and neither would ever suppress, producing an
+        // unbounded note stream. A per-job kind sidesteps that entirely.
+        if (
+          deps.noteApi &&
+          isDoctorExemptKind(job.kind) &&
+          newFailStreak >= doctorCfg.failStreakThreshold
+        ) {
+          const { noteApi } = deps
+          const bucket = computeFailStreakBucket(
+            newFailStreak,
+            doctorCfg.failStreakThreshold,
+          )
+          const truncatedErr = errMsg.slice(0, 300)
+          const summary =
+            `[fail-streak] job "${job.id}" (kind=${job.kind}) has failed ` +
+            `${newFailStreak} times consecutively. This kind is doctor-` +
+            `exempt, so no auto-heal will run — this note is the only ` +
+            `signal. Last error: ${truncatedErr}`
+          yield* Effect.promise(() =>
+            noteApi
+              .recordIfChanged(
+                {
+                  sessionId: "system",
+                  kind: `job-fail-streak:${job.id}`,
+                  summary,
+                  payload: {
+                    jobId: job.id,
+                    kind: job.kind,
+                    failStreak: newFailStreak,
+                    bucket,
+                    error: truncatedErr,
+                  },
+                },
+                { fingerprint: `${job.id}:${bucket}` },
+              )
+              .catch(() => undefined),
+          ).pipe(
+            Effect.catch(() => Effect.void),
+            Effect.catchDefect(() => Effect.void),
+          )
+        }
       }
     }
     // recordRunEnd closes the job_runs row but does NOT touch jobs.last_status,
