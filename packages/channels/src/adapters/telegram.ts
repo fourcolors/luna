@@ -1184,6 +1184,50 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
       return result
     })
 
+
+  /**
+   * Turn a FINAL send that did not land into a defect.
+   *
+   * delivery.ts's `deliverFinalChunks` stops at the first chunk whose
+   * `adapter.deliver` Exit is a failure, logs TRUNCATED REPLY and posts the
+   * user-visible truncation marker. But `makeRealTransport` converts every
+   * transport/HTTP error into a VALUE (`{ ok: false, description }`) and
+   * `deliver()` is typed `Effect<void>` with no error channel, so without
+   * this Telegram's deliver ALWAYS exits Success. The stop-at-first-failure
+   * loop was therefore structurally dead on Telegram: a failed middle chunk
+   * vanished while chunks after it still landed, and the user got a reply
+   * that looked complete with its middle silently missing — verbatim the
+   * multi-chunk-loss incident delivery.ts was written to prevent.
+   *
+   * Discord already had this via sendFinalClassified/dieMessageOnly; this is
+   * Telegram's equivalent. A defect is exactly enough, because the loop
+   * inspects the Exit and types.ts's frozen deliver() signature has nowhere
+   * else to carry the failure.
+   *
+   * Exempt by design: PARTIAL (streaming) edits, which are best-effort
+   * progress where a dropped update costs nothing, and Telegram's benign
+   * "message is not modified" no-op edit response.
+   */
+  const failIfFinalSendLost = (
+    result: TelegramApiResult,
+    method: string,
+    opts: {
+      readonly isPartial: boolean
+      readonly chunkIndex: number
+      readonly totalChunks: number
+    },
+  ): Effect.Effect<void> => {
+    if (opts.isPartial || result.ok) return Effect.void
+    const description = result.description ?? ""
+    if (description.includes("message is not modified")) return Effect.void
+    const code = result.error_code === undefined ? "" : `${String(result.error_code)} `
+    return Effect.die(
+      new Error(
+        `telegram ${method} failed for final chunk ${String(opts.chunkIndex + 1)}/${String(opts.totalChunks)}: ${code}${description.length > 0 ? description : "unknown error"}`,
+      ),
+    )
+  }
+
   /**
    * Build the forever-running getUpdates polling loop.
    *
@@ -1648,12 +1692,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             typeof inboundMessageIdStandalone === "number"
               ? { reply_parameters: { message_id: inboundMessageIdStandalone } }
               : {}
-          yield* sendFormatted(
+          const standaloneResult = yield* sendFormatted(
             transport,
             "sendMessage",
             { chat_id: chatId, ...threadParams, ...replyParamsStandalone },
             content,
           )
+          yield* failIfFinalSendLost(standaloneResult, "sendMessage", opts)
           return
         }
 
@@ -1693,12 +1738,13 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
         // Continuation chunks of a long final answer (chunkIndex > 0) are
         // always their own fresh messages — never edits of the placeholder.
         if (opts.chunkIndex > 0) {
-          yield* sendFormatted(
+          const continuationResult = yield* sendFormatted(
             transport,
             "sendMessage",
             { chat_id: chatId, ...threadParams, ...keyboardParams },
             content,
           )
+          yield* failIfFinalSendLost(continuationResult, "sendMessage", opts)
           return
         }
 
@@ -1717,16 +1763,18 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
             const sent = result.result as TelegramMessage
             sentMessageIds.set(turnKey, sent.message_id)
           }
+          yield* failIfFinalSendLost(result, "sendMessage", opts)
         } else {
           // Edit the existing message in place (stream-edit progress or the
           // finalization pass). Telegram 400 "message is not modified" is
           // silently ignored; delivery.ts wraps deliver in catchCause.
-          yield* sendFormatted(
+          const editResult = yield* sendFormatted(
             transport,
             "editMessageText",
             { chat_id: chatId, message_id: existingMsgId, ...keyboardParams },
             content,
           )
+          yield* failIfFinalSendLost(editResult, "editMessageText", opts)
         }
       })
     },

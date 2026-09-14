@@ -17,6 +17,7 @@ import {
   Fiber,
   Layer,
   Option,
+  Exit,
   PubSub,
   Redacted,
   Ref,
@@ -2774,5 +2775,106 @@ describe("forum-topic session scoping", () => {
 
     // Two topics → two distinct threads (not one shared group thread).
     expect(getCreateCount()).toBe(2)
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Final-send failures must SURFACE so delivery.ts can stop the chunk loop      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * THE TRAP THIS BLOCK EXISTS TO CATCH (the Discord-side twin of this comment
+ * lives in discord-adapter.test.ts): making delivery.ts's finalize loop
+ * stop-at-first-failure is a NO-OP on Telegram by itself.
+ *
+ * `makeRealTransport` converts every transport/HTTP error into a VALUE
+ * (`{ ok: false, description }`), and `deliver()` is typed `Effect<void>` with
+ * no error channel. So Telegram's deliver used to ALWAYS exit Success, for
+ * every failure class, and `deliverFinalChunks`' `Exit.isFailure` test could
+ * never fire: a failed middle chunk vanished while the chunks after it still
+ * landed, and the user got a reply that looked complete with its middle
+ * silently missing. A delivery.ts test driven by a scripted fake adapter
+ * passes happily while the REAL adapter stays broken — which is why these
+ * tests drive the real one.
+ */
+describe("deliver: a failed FINAL send surfaces as an Exit failure", () => {
+  it("non-ok sendMessage on a final chunk fails the effect (delivery.ts can stop)", async () => {
+    const { transport } = makeFakeTransport([], {
+      sendMessage: [{ ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" }],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-final-fail", httpTransport: transport })
+    const target = makeDeliveryTarget("777", "u-final-fail")
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        adapter.deliver(target, "chunk", makeDeliverOpts({ isPartial: false, isFinal: true, chunkIndex: 0, totalChunks: 2 })),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it("non-ok sendMessage on a CONTINUATION chunk (chunkIndex > 0) also fails", async () => {
+    const { transport } = makeFakeTransport([], {
+      sendMessage: [{ ok: false, error_code: 400, description: "Bad Request: message is too long" }],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-cont-fail", httpTransport: transport })
+    const target = makeDeliveryTarget("778", "u-cont-fail")
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        adapter.deliver(target, "chunk 2", makeDeliverOpts({ isPartial: false, isFinal: false, chunkIndex: 1, totalChunks: 3 })),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+  })
+
+  it("EXEMPT: a non-ok PARTIAL edit stays silent — streaming progress is best-effort", async () => {
+    const { transport } = makeFakeTransport([], {
+      sendMessage: [{ ok: false, error_code: 500, description: "Internal Server Error" }],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-partial-ok", httpTransport: transport })
+    const target = makeDeliveryTarget("779", "u-partial-ok")
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false, chunkIndex: 0, totalChunks: 1 })),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(false)
+  })
+
+  it("EXEMPT: 'message is not modified' on a final edit stays benign", async () => {
+    const { transport } = makeFakeTransport([], {
+      sendMessage: [{ ok: true, result: { message_id: 42, chat: { id: 780, type: "private" }, date: 0, from: { id: 1 } } }],
+      editMessageText: [{ ok: false, error_code: 400, description: "Bad Request: message is not modified" }],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-notmod", httpTransport: transport })
+    const target = makeDeliveryTarget("780", "u-notmod")
+
+    // Open the turn so the final delivery takes the editMessageText branch.
+    await Effect.runPromise(
+      adapter.deliver(target, "…", makeDeliverOpts({ isPartial: true, isFinal: false, chunkIndex: 0, totalChunks: 1 })),
+    )
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        adapter.deliver(target, "done", makeDeliverOpts({ isPartial: false, isFinal: true, chunkIndex: 0, totalChunks: 1 })),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(false)
+  })
+
+  it("CONTROL: a clean final send still succeeds", async () => {
+    const { transport } = makeFakeTransport([], {
+      sendMessage: [{ ok: true, result: { message_id: 7, chat: { id: 781, type: "private" }, date: 0, from: { id: 1 } } }],
+    })
+    const adapter = makeTelegramAdapter({ id: "tg-clean", httpTransport: transport })
+    const target = makeDeliveryTarget("781", "u-clean")
+
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        adapter.deliver(target, "all good", makeDeliverOpts({ isPartial: false, isFinal: true, chunkIndex: 0, totalChunks: 1 })),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(false)
   })
 })
