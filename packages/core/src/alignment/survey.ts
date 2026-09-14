@@ -293,7 +293,11 @@ export class Survey extends Context.Service<Survey, SurveyApi>()("luna/Survey") 
             .map((rec) => ({
               id: `bv-${rec.id}-${now}`,
               kind: "belief_validation" as const,
-              prompt: readBelief(rec).statement,
+              // Prefer the plain-English rewrite; fall back to the full
+              // statement. The fallback is the honest failure mode: a long,
+              // precise question is worse to read but never misrepresents the
+              // belief, which a truncation would.
+              prompt: readBelief(rec).question ?? readBelief(rec).statement,
               ref: rec.id,
               beliefId: rec.id,
             }))

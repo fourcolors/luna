@@ -83,14 +83,83 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
  * eliminating the "model wrapped its JSON / emitted a prose preamble" failures;
  * the fine-grained per-kind checks stay in validateRawOpsArray.
  */
+/**
+ * The closed set of belief domains. `domain` is a ROUTING GATE, not a label:
+ * core's alignment/survey.ts surveys the operator only about `user` / `process`
+ * beliefs (claims about him), and leaves the rest to evidence. A gate keyed on
+ * free text is not a gate, so this is enum-enforced in the schema above.
+ *
+ * Derived from the values the model actually produced over 60 live beliefs:
+ * user 20, infrastructure 29, process 6, system 4, engineering 1.
+ */
+const BELIEF_DOMAINS = [
+  "user", // about the operator: preferences, circumstances, habits
+  "process", // about how the operator wants work done: rules, conventions
+  "infrastructure", // about machines, services, deploys
+  "system", // about Luna's own internals
+  "engineering", // about code, libraries, tooling
+] as const
+
+/**
+ * Hard ceiling on the human-facing question. The point is that it is readable
+ * at a glance; a long "simple" sentence is the same failure in plainer words.
+ */
+const QUESTION_MAX_CHARS = 120
+
+/**
+ * Markers of engineer-facing text. A "question" containing any of these was not
+ * rewritten for a human, and showing it would reproduce the exact complaint
+ * this field exists to fix: file paths, code spans, identifiers, thread ids.
+ */
+const TECHNICAL_MARKERS = [
+  "`", // code span
+  "()", // call syntax
+  "::",
+  "/", // file paths, urls
+  "_", // snake_case / thr_ / usr_ identifiers
+  "{",
+  "}",
+  "<",
+  ">",
+]
+
+/**
+ * Coerce the model's `question` into something worth showing a human, or return
+ * undefined so the caller falls back to `statement`.
+ *
+ * TOTAL BY CONSTRUCTION — every branch returns, nothing throws. A malformed
+ * question is a cosmetic miss (the operator sees the long statement, exactly as
+ * today); a thrown error would fail the whole chunk and stall the dream.
+ */
+export function sanitizeQuestion(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined
+  const q = raw.trim()
+  if (q.length === 0) return undefined
+  // Over-long is a silent truncation risk; prefer the honest full statement.
+  if (q.length > QUESTION_MAX_CHARS) return undefined
+  if (TECHNICAL_MARKERS.some((m) => q.includes(m))) return undefined
+  return q
+}
+
 const DREAM_OP_ITEM_SCHEMA: Record<string, unknown> = {
   type: "object",
   required: ["kind", "rationale"],
   properties: {
     kind: { type: "string", enum: [...VALID_KINDS] },
     rationale: { type: "string", minLength: 1 },
-    domain: { type: "string" },
+    // `domain` decides WHO gets asked to validate a belief: the operator is
+    // surveyed only about claims whose subject is him (see SURVEYABLE_DOMAINS
+    // in core's alignment/survey.ts). A routing gate cannot be free text — an
+    // invented label silently routes a belief nowhere — so the API enforces
+    // the closed set. Server-side validation stays permissive on purpose, so a
+    // lane without structured output still works.
+    domain: { type: "string", enum: [...BELIEF_DOMAINS] },
     statement: { type: "string" },
+    // The human-facing rewrite of `statement`, used verbatim as the survey
+    // question. Separate from `statement` because the two have different
+    // readers: `statement` is injected into the system prompt where precision
+    // matters, `question` is read by a person in about three seconds.
+    question: { type: "string", maxLength: QUESTION_MAX_CHARS },
     confidence: { type: "number", minimum: 0, maximum: 1 },
     evidence: { type: "array", items: { type: "string" } },
     targetId: { type: "string" },
@@ -123,6 +192,8 @@ interface RawBeliefCandidateOp {
   readonly kind: "belief_candidate"
   readonly domain: string
   readonly statement: string
+  /** Plain-English rewrite for the survey. Absent when unusable — see sanitizeQuestion. */
+  readonly question?: string
   readonly confidence: number
   readonly evidence?: ReadonlyArray<string>
   readonly rationale: string
@@ -276,6 +347,27 @@ export function buildDreamPrompt(
     "     evidence (array of 'session:id#msg_id' strings), rationale (string).",
     "   - targetId and before/after are COMPUTED by the system — do NOT supply them.",
     "",
+    `   - domain MUST be one of: ${BELIEF_DOMAINS.join(" | ")}`,
+    "     This is not a label, it decides WHO validates the belief. Use 'user' for a",
+    "     claim about the operator himself (his preferences, habits, circumstances)",
+    "     and 'process' for how he wants work done. Those are the ONLY two the",
+    "     operator is ever asked about; everything else is checked against evidence",
+    "     instead. Putting a claim about the operator under 'system' hides it from",
+    "     the only person who can confirm it.",
+    "",
+    "   - question (REQUIRED for domain=user and domain=process; omit otherwise):",
+    "     `statement` rewritten for the operator to answer in THREE SECONDS.",
+    "       * Address him as 'you'. Statement is third-person; the question is not.",
+    `       * Hard limit ${QUESTION_MAX_CHARS} characters. Shorter is better.`,
+    "       * Plain words only. No file paths, code, backticks, ids, or jargon.",
+    "       * State the claim so 'yes' and 'no' both mean something. Not a summary.",
+    "     GOOD: 'Do you want PRs opened against master instead of dev?'",
+    "     GOOD: 'Do you usually work late at night?'",
+    "     BAD:  'Operator exhibits a demonstrated preference for master-targeted PRs",
+    "            under the squash-merge workflow.' (third person, jargon, not a question)",
+    "     A question that breaks these rules is DISCARDED and the operator is shown",
+    "     the raw statement instead — which is the problem this field exists to fix.",
+    "",
     "5. For kind=memory_dedup|memory_staleness|memory_contradiction:",
     "   - Required fields: targetId (the memory record id), rationale (string).",
     "   - Optional: before (current state), after (desired state or null for delete).",
@@ -349,6 +441,20 @@ function validateRawOpsArray(raw: unknown): ReadonlyArray<RawOp> {
             domain,
             statement,
             confidence,
+            // NEVER throws. See sanitizeQuestion — a bad question degrades to
+            // undefined (the survey falls back to `statement`); it must not be
+            // able to fail the op, because a thrown error here fails the whole
+            // chunk, which is never committed, which re-runs against the same
+            // window forever. That is the exact shape of the 30-dead-nights
+            // outage documented above DREAM_OPS_SCHEMA.
+            // Conditional spread, not `question: sanitizeQuestion(...)`: the repo
+            // runs `exactOptionalPropertyTypes`, so an explicit `undefined` is
+            // not assignable to an optional field. Omitting the key also keeps
+            // a discarded question byte-identical to one that was never emitted.
+            ...(() => {
+              const q = sanitizeQuestion(op["question"])
+              return q !== undefined ? { question: q } : {}
+            })(),
             evidence: Array.isArray(evidence) ? (evidence as ReadonlyArray<string>) : [],
             rationale,
           } satisfies RawBeliefCandidateOp
@@ -466,10 +572,16 @@ function materializeOp(
   mem: import("@luna/memory").MemoryRouter,
 ): Effect.Effect<DreamOp, DreamError> {
   if (raw.kind === "belief_candidate") {
-    const { domain, statement, confidence, evidence, rationale } = raw
+    const { domain, statement, question, confidence, evidence, rationale } = raw
+    // NB: the id is derived from (domain, statement) only — `question` is
+    // presentation and must not change a belief's identity, or a reworded
+    // question would fork a duplicate belief.
     const id = deriveBeliefId(domain, statement)
     const after: MemoryRecord = makeBeliefRecord({
       statement,
+      // Conditional spread for exactOptionalPropertyTypes — see the same
+      // pattern in validateRawOpsArray.
+      ...(question !== undefined ? { question } : {}),
       confidence,
       domain,
       evidence: evidence ?? [],
