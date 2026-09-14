@@ -201,6 +201,40 @@ const makeFailingQuery = (): Query => {
   } as Partial<Query>) as Query
 }
 
+// A query that emits ONE stream_event delta (setting inFlightTurnId, the
+// trigger condition handleAdapterFailure must clean up) and THEN fails
+// before any assistant/result message — modelling a 429 / inactivity-
+// watchdog / subprocess-death failure mid-stream, as opposed to
+// `makeFailingQuery` above which fails before any stream_event at all.
+const makeFailingQueryAfterDelta = (params: {
+  readonly sessionId: string
+  readonly deltaUuid: string
+  readonly deltaText: string
+}): Query => {
+  async function* gen(): AsyncGenerator<SDKMessage, void> {
+    yield {
+      type: "stream_event",
+      session_id: params.sessionId,
+      uuid: params.deltaUuid,
+      event: {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: params.deltaText },
+      },
+    } as unknown as SDKMessage
+    throw new Error("adapter stream boom after delta")
+  }
+  const it = gen()
+  return Object.assign(it, {
+    interrupt: async () => {},
+    setPermissionMode: async () => {},
+    setModel: async () => {},
+    applyFlagSettings: async () => {},
+    setMaxThinkingTokens: async () => {},
+    supplyToolPermissionResponse: async () => {},
+    mcpServerStatus: async () => ({}),
+  } as Partial<Query>) as Query
+}
+
 const makeStreamingQuery = (params: {
   readonly prompt: AsyncIterable<SDKUserMessage>
   readonly sessionId: string
@@ -420,6 +454,124 @@ describe("ChatService (Tier-2 sim)", () => {
       },
     ])
   })
+
+  it(
+    "an adapter stream failure AFTER a stream_event delta resets inFlightTurnId " +
+      "so the next turn's deltas get their own turnId and no leaked dead text",
+    async () => {
+      const SESSION_ID = "thr-leak"
+      let turn = 0
+      const fakeLayer = SDKClient.fake((p) => {
+        turn += 1
+        // Turn 1 sets inFlightTurnId via one stream_event delta, then the
+        // stream fails terminally (no assistant/result) — the exact gap
+        // `handleAdapterFailure` must close. Turn 2 streams normally; if
+        // the Refs were not reset, turn 2's first delta takes the
+        // `existingTurn !== null` branch in handleSdkMessage and gets
+        // published under turn 1's DEAD turnId with turn 1's leftover
+        // text prepended.
+        if (turn === 1) {
+          return makeFailingQueryAfterDelta({
+            sessionId: SESSION_ID,
+            deltaUuid: "dead-delta-1",
+            deltaText: "DEAD",
+          })
+        }
+        return makeStreamingQuery({
+          prompt: p.prompt as AsyncIterable<SDKUserMessage>,
+          sessionId: SESSION_ID,
+        })
+      })
+      const provider: ThreadToolsProvider = {
+        decorate: () => ({
+          mcpServers: {},
+          systemPrompt: "base identity",
+          onBound: () => {},
+          // A bound recallMemory routes the thread through the per-turn
+          // finite query path where handleAdapterFailure fires per turn.
+          recallMemory: () => Effect.succeed(null),
+        }),
+      }
+      const layer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(
+            fakeLayer,
+            baseLayer,
+            Layer.succeed(ThreadToolsProviderTag, provider),
+          ),
+        ),
+      )
+
+      const frames = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            const sub = chat.subscribe(thread.id)
+            // snapshot, user-accepted, assistant-delta(dead), assistant-error,
+            // user-accepted, assistant-delta("O"), assistant-delta("OK"),
+            // assistant-done, turn-complete = 9 frames.
+            const fiber = yield* Effect.forkChild(
+              sub.pipe(Stream.take(9), Stream.runCollect),
+            )
+            // Let the forked subscriber attach to the PubSub before any send
+            // fires — Stream.unwrap only opens PubSub.subscribe lazily on
+            // first pull.
+            yield* Effect.sleep("30 millis")
+            yield* chat.send(thread.id, "first user text")
+            yield* Effect.sleep("150 millis")
+            yield* chat.send(thread.id, "second user text")
+            yield* Effect.sleep("150 millis")
+            const chunk = yield* Fiber.join(fiber)
+            return Array.from(chunk)
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(frames.map((f) => f.type)).toEqual([
+        "snapshot",
+        "user-accepted",
+        "assistant-delta",
+        "assistant-error",
+        "user-accepted",
+        "assistant-delta",
+        "assistant-delta",
+        "assistant-done",
+        "turn-complete",
+      ])
+
+      const deadDelta = frames[2] as Extract<
+        ChatFrame,
+        { type: "assistant-delta" }
+      >
+      expect(deadDelta.turnId).toBe("dead-delta-1")
+      expect(deadDelta.text).toBe("DEAD")
+
+      const secondTurnDeltas = frames
+        .filter((f) => f.type === "assistant-delta")
+        .slice(1) as Array<Extract<ChatFrame, { type: "assistant-delta" }>>
+      expect(secondTurnDeltas).toHaveLength(2)
+      // The regression: without the Ref reset, both of these carry
+      // turnId "dead-delta-1" and text "DEADO" / "DEADOK".
+      for (const d of secondTurnDeltas) {
+        expect(d.turnId).not.toBe("dead-delta-1")
+        expect(d.turnId).toBe("delta-1")
+        expect(d.text).not.toContain("DEAD")
+      }
+      expect(secondTurnDeltas.map((d) => d.text)).toEqual(["O", "OK"])
+
+      const errorFrame = frames[3] as Extract<
+        ChatFrame,
+        { type: "assistant-error" }
+      >
+      // The error frame should carry the real dead turn's id (not null) so
+      // the client can close the exact bubble it opened.
+      expect(errorFrame.turnId).toBe("dead-delta-1")
+    },
+    { timeout: 10_000 },
+  )
 
   it("a hung recall hook is bounded by the timeout and degrades to the original payload", async () => {
     const prev = process.env["LUNA_CHAT_RECALL_TIMEOUT_MS"]

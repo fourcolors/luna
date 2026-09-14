@@ -829,15 +829,34 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             message,
             context: { threadId: id },
           })
+          // Read inFlightTurnId BEFORE clearing it (mirrors the interrupt
+          // path at chat-service.ts's `interrupt()`), both to publish the
+          // real turnId on the error frame — so the client can close the
+          // exact bubble it opened instead of guessing from its own
+          // locally-tracked "active" turn — and so the Ref reset below is
+          // ordered the same way everywhere this state is torn down.
+          const turnId = yield* Ref.get(inFlightTurnId)
           yield* PubSub.publish(pubsub, {
             type: "assistant-error",
             threadId: id,
-            turnId: null,
+            turnId,
             error: {
               kind: "sdk",
               message,
             },
           })
+          // Clear the in-flight turn state AFTER the error frame reads
+          // turnId. A failed adapter stream is terminal for the in-flight
+          // turn but emits no `assistant`/`result` message (the other three
+          // terminal paths that reset these Refs), so without this reset
+          // inFlightTurnId stays permanently non-null: the NEXT turn's
+          // first delta takes the "existing turn" branch in
+          // handleSdkMessage and gets published under the DEAD turn's id
+          // with the dead turn's partial text prepended, and the thread
+          // becomes permanently un-reapable (isThreadIdleReapable requires
+          // inFlightTurnId === null), leaking its ThreadEntry + subprocess.
+          yield* Ref.set(inFlightTurnId, null)
+          yield* Ref.set(inFlightText, "")
           // A failed adapter stream is terminal for the in-flight turn but
           // emits no `result`, so drain its observation seed here — exactly
           // as the interrupt path does. Without this poll the pendingTurns
