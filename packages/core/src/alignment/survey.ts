@@ -12,8 +12,14 @@
  * Drives belief activation per spec-delta #7:
  *   proposed + confirmed → activateBelief  (climbs the trust ladder, ≤20 cap)
  *   proposed + rejected  → retireBelief
- *   proposed + corrected → stays proposed  (awaits Dream's re-proposal with the fix)
+ *   proposed + corrected → retireBelief     (see applyActivationPolicy)
  *   active               → recordValidation only, no re-cap
+ *
+ * SELECTION (what the operator is actually asked): only PROPOSED beliefs whose
+ * `domain` is about the operator himself, that have never been asked before,
+ * strongest-first. See `SURVEYABLE_DOMAINS` and `pendingSurvey` for the why —
+ * the short version is that asking someone to validate claims about the agent's
+ * own internals produces agreement, not signal.
  *
  * IDEMPOTENCY (spec-delta #5 / T4's flag):
  * The verdict's own `at` (if supplied) is used as the stable timestamp anchor
@@ -56,6 +62,7 @@ import { MemoryRouterTag } from "@luna/memory"
 import type { MemoryBackendError } from "../errors.js"
 import { AlignmentStore } from "./alignment-store.js"
 import { updateEwma, nextSurveyAt, signalValueForVerdict } from "./cadence.js"
+import { rankByStrength } from "../beliefs/scoring.js"
 import { AlignmentError, EWMA_ELIGIBLE } from "./types.js"
 import type { AlignmentSignal, PendingSurvey, SurveyItem, SurveyVerdict } from "./types.js"
 
@@ -109,10 +116,22 @@ export class Survey extends Context.Service<Survey, SurveyApi>()("luna/Survey") 
           if (status !== "proposed") return // active/retired → recordValidation only, no ladder action
           if (verdict === "confirmed") {
             yield* writer.activateBelief(beliefId) // climbs the ladder (≤20 cap + eviction)
-          } else if (verdict === "rejected") {
+          } else if (verdict === "rejected" || verdict === "corrected") {
+            // `corrected` retires too. It USED to leave the belief `proposed`,
+            // "awaiting Dream's re-proposal with the fix" — but no such path
+            // exists: the dream is never shown belief text, so it cannot know a
+            // belief was corrected, let alone re-propose it amended. The belief
+            // therefore stayed proposed and was re-selected, UNCHANGED, at the
+            // next survey. Live data shows the result: a belief marked
+            // `corrected`, re-asked, and then `confirmed` on the second pass —
+            // the operator wearing down rather than the system learning.
+            //
+            // Retiring is honest and lossless: the record and its full
+            // validationHistory persist for audit, nothing re-surfaces
+            // unchanged, and if the underlying fact is still true the dream
+            // re-derives it from new sessions on its own evidence.
             yield* writer.retireBelief(beliefId)
           }
-          // corrected → stays proposed (awaits Dream's re-proposal with the fix)
         })
 
       const processVerdict = (v: SurveyVerdict) =>
@@ -189,6 +208,22 @@ export class Survey extends Context.Service<Survey, SurveyApi>()("luna/Survey") 
         store.getEwma.pipe(Effect.map((ewma) => nextSurveyAt(ewma, lastSurveyAt)))
 
       const BELIEFS_PER_SURVEY = 3 // D-LOCK-3
+
+      /**
+       * The domains whose subject is the OPERATOR, and which he is therefore the
+       * only correct authority on. Everything else the dream writes is about the
+       * agent's own machinery, where the operator has no vantage point and the
+       * right validator is evidence, not a modal.
+       *
+       * Allow-list, not deny-list, on purpose: `domain` is a free-form string
+       * the dream model invents per op (no enum in the schema, validated only as
+       * a non-empty string), so a deny-list would leak every label the model
+       * decides to coin next. Anything unrecognised is simply not surveyed.
+       *
+       * Live distribution over the 60 most recent beliefs:
+       *   user 20, infrastructure 29, process 6, system 4, engineering 1.
+       */
+      const SURVEYABLE_DOMAINS: ReadonlySet<string> = new Set(["user", "process"])
       const TASK_QUALITY_PROMPT = "How aligned have I been with what you wanted lately?"
 
       const pendingSurvey = (now: number) =>
@@ -217,8 +252,43 @@ export class Survey extends Context.Service<Survey, SurveyApi>()("luna/Survey") 
           }
 
           // Up to 3 PROPOSED beliefs (D-LOCK-3). Overflow rolls to next survey.
-          const proposed = yield* writer.listByStatus("proposed")
-          const beliefItems: ReadonlyArray<SurveyItem> = proposed
+          //
+          // WHAT CHANGED AND WHY. This used to be `proposed.slice(0, 3)` in raw
+          // store order: unsorted, unfiltered, every domain. The operator's
+          // report was that he could not tell what most items even were, so he
+          // agreed with all of them. That is the worst possible outcome — a
+          // validation loop that rubber-stamps does not merely fail to produce
+          // signal, it manufactures false confidence and then feeds it into
+          // every system prompt via the trust ladder.
+          //
+          // Measured cause, over the 60 most recent beliefs: only 20 were about
+          // the operator. The other 40 were the agent's own findings
+          // (infrastructure 29, process 6, system 4, engineering 1) — bun:sqlite
+          // behaviour, PR pipelines, cron internals. Nobody can validate a claim
+          // about a subsystem's internals from three seconds and a modal, and it
+          // was never reasonable to ask.
+          //
+          // Three filters, in order:
+          const beliefItems: ReadonlyArray<SurveyItem> = rankByStrength(
+            (yield* writer.listByStatus("proposed"))
+              // 1. SUBJECT. Only ask about claims whose subject is the operator:
+              //    his preferences, his circumstances, his rules. `domain` is
+              //    model-assigned free text, so this is a deliberate allow-list
+              //    (unknown/new domain values are NOT surveyed) rather than a
+              //    deny-list that a newly-invented label could slip through.
+              .filter((rec) => SURVEYABLE_DOMAINS.has(readBelief(rec).domain))
+              // 2. ASKED-ONCE. Never re-ask a belief that already carries a
+              //    verdict. Combined with the corrected→retire change above,
+              //    this closes the re-ask loop completely: one question, one
+              //    answer, one outcome.
+              //    `readBelief` is a cast, so an older record may carry no
+              //    history array at all; treat that as "never asked".
+              .filter((rec) => (readBelief(rec).validationHistory ?? []).length === 0),
+            now,
+          )
+            // 3. STRONGEST FIRST. Ask the highest-strength candidates rather
+            //    than whatever the store happened to return first, so a limited
+            //    number of questions buys the most signal.
             .slice(0, BELIEFS_PER_SURVEY)
             .map((rec) => ({
               id: `bv-${rec.id}-${now}`,
