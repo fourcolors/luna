@@ -1113,9 +1113,17 @@ describe("JobTicker", () => {
   it("Seam 4: bounded concurrency — a failing post-dispatch store write on one job does not block a sibling's in-flight dispatch from closing", async () => {
     const SLEEP_MS = 60
     const finished: string[] = []
+    // Structural concurrency probe: how many workers were simultaneously
+    // inside their sleep. See the maxInFlight assertion below for why this
+    // replaced a wall-clock measurement.
+    let inFlight = 0
+    let maxInFlight = 0
     const worker: Worker = (_p, ctx) =>
       Effect.gen(function* () {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
         yield* Effect.sleep(Duration.millis(SLEEP_MS))
+        inFlight -= 1
         finished.push(ctx.jobId)
         return { outputText: "ok" }
       })
@@ -1152,7 +1160,6 @@ describe("JobTicker", () => {
       yield* real.record({ id: "steady", kind: "wake", spec: "*/5 * * * *", payload: { label: "s" } })
       yield* real.setV2Fields("steady", { schedule: "*/5 * * * *", nextRunAt: 0 })
 
-      const startedAt = Date.now()
       yield* Effect.gen(function* () {
         const ticker = yield* JobTicker
         yield* ticker.drain
@@ -1174,12 +1181,21 @@ describe("JobTicker", () => {
           ),
         ),
       )
-      const elapsedMs = Date.now() - startedAt
-
-      // TRUE concurrency: two ~SLEEP_MS workers finish in ~SLEEP_MS wall-clock,
-      // not ~2*SLEEP_MS — a regression to sequential-only dispatch (or a
-      // fail-fast interruption cutting the run short) would show up here.
-      expect(elapsedMs).toBeLessThan(SLEEP_MS * 1.8)
+      // TRUE concurrency, measured STRUCTURALLY: both workers were inside
+      // their sleep at the same instant. A regression to sequential-only
+      // dispatch (or a fail-fast interruption cutting the run short) pins
+      // maxInFlight at 1 and still fails here.
+      //
+      // This replaces `expect(Date.now() - startedAt).toBeLessThan(SLEEP_MS *
+      // 1.8)`, which was the single most frequent flake on CI's vitest HARD
+      // gate (reddened PRs #636 and #638; both went green on a no-code-change
+      // rerun). That assertion gave a 108ms wall-clock budget to work that
+      // takes ~60ms of sleep plus Layer construction, leaving only ~48ms of
+      // headroom before the sequential case (~120ms) — on a loaded
+      // single-runner CI box the parallel path routinely blew it while being
+      // perfectly concurrent. The property under test is overlap, not
+      // duration, so assert overlap directly and depend on no timing at all.
+      expect(maxInFlight).toBe(2)
       expect(finished.sort()).toEqual(["flaky", "steady"])
 
       // "steady"'s run closed successfully DESPITE "flaky"'s recordRunEnd

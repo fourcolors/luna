@@ -215,13 +215,34 @@ describe("F1 — Gateway→Harness→Cost→UI", () => {
             ts: new Date().toISOString(),
           })
 
-          // Allow propagation for cost subscriber.
-          yield* Effect.sleep(Duration.millis(80))
-
+          // Joining the UI fiber already blocks until BOTH events land
+          // (Stream.take(2)), and obs.subscribeEvents is an EAGER PubSub
+          // subscription taken before any emit, so no event can be missed.
+          // Cost buckets are therefore settled by the time this returns.
           const uiEvents = yield* Fiber.join(uiFiber)
           const sessionBucket = yield* cost.getBucket("session", "s-f1")
           const wfBucket = yield* cost.getBucket("workflow", "wf-f1")
-          const responses = yield* Ref.get(responsesRef)
+
+          // The gateway's REPLY, however, is written after the handler
+          // returns and has no such barrier. This used to be covered by a
+          // fixed `Effect.sleep(80 millis)` before the reads above, which
+          // made `responses.length >= 1` a wall-clock bet: on a loaded
+          // single-runner CI box 80ms was not always enough, and this test
+          // was one of the two standing flakes on the vitest HARD gate.
+          // Poll with a bound instead — it returns as soon as the reply
+          // lands (fast machines pay ~0ms) and tolerates a slow one, while
+          // staying well inside the enclosing 5s defensive timeout.
+          const waitForResponse = (
+            attemptsLeft: number,
+          ): Effect.Effect<readonly GatewayResponse[]> =>
+            Effect.gen(function* () {
+              const current = yield* Ref.get(responsesRef)
+              if (current.length > 0 || attemptsLeft <= 0) return current
+              yield* Effect.sleep(Duration.millis(5))
+              return yield* waitForResponse(attemptsLeft - 1)
+            })
+          // 400 * 5ms = 2s ceiling, vs the 5s outer timeout.
+          const responses = yield* waitForResponse(400)
 
           return { uiEvents, sessionBucket, wfBucket, responses }
         }).pipe(
