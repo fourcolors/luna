@@ -287,7 +287,7 @@ describe("ALIGNMENT LOOP — end-to-end proof: survey verdict closes the cycle",
     expect(status).toBe("retired")
   })
 
-  it("[A7b] corrected verdict → belief stays proposed (records validation, no promotion)", async () => {
+  it("[A7b] corrected verdict → belief is RETIRED (never re-asked unchanged)", async () => {
     const b = proposed("Operator likes emoji")
 
     const out = await Effect.runPromise(
@@ -316,7 +316,13 @@ describe("ALIGNMENT LOOP — end-to-end proof: survey verdict closes the cycle",
       ),
     )
 
-    expect(out.status).toBe("proposed") // NOT promoted
-    expect(out.historyLen).toBe(1) // validation was recorded
+    // Behaviour change: `corrected` used to leave the belief proposed, which
+    // meant it was re-selected UNCHANGED at every later survey — the dream is
+    // never shown belief text, so the "Dream re-proposes it with the fix" path
+    // it was waiting on does not exist. Retiring ends the loop without losing
+    // anything: the record and its history persist, and the dream re-derives
+    // the fact from new sessions if it is still true.
+    expect(out.status).toBe("retired") // NOT promoted, and not re-asked
+    expect(out.historyLen).toBe(1) // validation was still recorded
   })
 })

@@ -145,7 +145,17 @@ describe("Survey.processVerdict — activation policy (spec-delta #7)", () => {
     expect(status).toBe("retired")
   })
 
-  it("corrected leaves a proposed belief proposed (records validation only, no promotion)", async () => {
+  it("corrected RETIRES a proposed belief (it used to stay proposed and be re-asked forever)", async () => {
+    // BEHAVIOUR CHANGE. "Needs tweak" previously left the belief `proposed`,
+    // nominally "awaiting Dream's re-proposal with the fix". No such path
+    // exists: the dream is never shown belief text, so it cannot know a belief
+    // was corrected. The belief was therefore re-selected UNCHANGED at the next
+    // survey, and live data shows one going corrected -> confirmed on the second
+    // pass: the operator giving up, not the system learning.
+    //
+    // Retiring is lossless. The record and its full validationHistory persist
+    // for audit, and if the fact is still true the dream re-derives it from new
+    // sessions on its own evidence.
     const b = proposed("correct me")
     const out = await Effect.runPromise(
       provide(
@@ -161,7 +171,8 @@ describe("Survey.processVerdict — activation policy (spec-delta #7)", () => {
         FakeMemory([b]),
       ),
     )
-    expect(out.status).toBe("proposed")
+    expect(out.status).toBe("retired")
+    // The verdict is still recorded — retiring does not discard the audit trail.
     expect(out.history).toBe(1)
   })
 
@@ -329,8 +340,12 @@ describe("Survey.nextSurvey", () => {
 // Survey.pendingSurvey (D-LOCK-2/3/4)
 // ──────────────────────────────────────────────────────────────────────────────
 describe("Survey.pendingSurvey (D-LOCK-2/3/4)", () => {
-  const proposed = (statement: string) =>
-    makeBeliefRecord({ statement, confidence: 0.7, domain: "comms", status: "proposed", now: 0 })
+  // "user" is a SURVEYABLE domain — a claim about the operator, which he is the
+  // right authority on. These tests previously used "comms", which is not
+  // surveyable; they were updated rather than deleted, and the exclusion is now
+  // asserted explicitly in its own describe block below.
+  const proposed = (statement: string, domain = "user") =>
+    makeBeliefRecord({ statement, confidence: 0.7, domain, status: "proposed", now: 0 })
 
   it("cold start (no task_quality rows): survey is DUE and includes a task_quality item", async () => {
     const out = await Effect.runPromise(
@@ -361,7 +376,10 @@ describe("Survey.pendingSurvey (D-LOCK-2/3/4)", () => {
   })
 
   it("caps proposed beliefs at 3 (D-LOCK-3); overflow rolls to next survey (all stay proposed — read-only)", async () => {
-    const beliefs = ["a", "b", "c", "d", "e"].map(proposed)
+    // NB: `.map(proposed)` would pass the array INDEX as the second argument
+    // (now `domain`), so each belief would get a numeric domain and be filtered
+    // out. Call with one argument explicitly.
+    const beliefs = ["a", "b", "c", "d", "e"].map((s) => proposed(s))
     const out = await Effect.runPromise(
       provide(
         Effect.gen(function* () {
@@ -392,6 +410,121 @@ describe("Survey.pendingSurvey (D-LOCK-2/3/4)", () => {
     )
     expect(out!.items).toHaveLength(1)
     expect(out!.items[0]?.kind).toBe("task_quality")
+  })
+
+  // ────────────────────────────────────────────────────────────────────────
+  // Signal quality: who gets asked what.
+  //
+  // The operator reported that he could not tell what most survey items even
+  // were, so he agreed with all of them. A rubber-stamped loop is worse than no
+  // loop: it manufactures false confidence and feeds it into every system
+  // prompt. Measured over the 60 most recent beliefs, only 20 were about the
+  // operator; 40 were the agent's own internals. These tests pin the fix.
+  // ────────────────────────────────────────────────────────────────────────
+
+  it("EXCLUDES agent-internal domains — nobody can validate bun:sqlite behaviour from a modal", async () => {
+    const beliefs = [
+      proposed("chat-server is pinned 10 commits behind", "infrastructure"),
+      proposed("the ticker dispatches inline", "system"),
+      proposed("vitest is the CI gate", "engineering"),
+      proposed("comms belief", "comms"),
+    ]
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory(beliefs),
+      ),
+    )
+    // Task-quality only. The agent-internal beliefs are simply not asked about.
+    expect(out!.items.filter((i) => i.kind === "belief_validation")).toHaveLength(0)
+    expect(out!.items).toHaveLength(1)
+  })
+
+  it("INCLUDES the operator's own domains (user, process)", async () => {
+    const beliefs = [
+      proposed("operator prefers direct reports", "user"),
+      proposed("operator wants PRs against master", "process"),
+      proposed("the blob mirror is degraded", "infrastructure"),
+    ]
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory(beliefs),
+      ),
+    )
+    const asked = out!.items.filter((i) => i.kind === "belief_validation")
+    expect(asked).toHaveLength(2)
+    expect(asked.map((i) => i.prompt).sort()).toEqual([
+      "operator prefers direct reports",
+      "operator wants PRs against master",
+    ])
+  })
+
+  it("an unrecognised domain is NOT surveyed (allow-list, not deny-list)", async () => {
+    // `domain` is free text the dream model invents per op. A deny-list would
+    // leak every new label it coins; an allow-list fails closed.
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([proposed("a freshly invented label", "vibes")]),
+      ),
+    )
+    expect(out!.items.filter((i) => i.kind === "belief_validation")).toHaveLength(0)
+  })
+
+  it("NEVER re-asks a belief that already carries a verdict (the rubber-stamp loop)", async () => {
+    const asked = makeBeliefRecord({
+      statement: "already answered once",
+      confidence: 0.9, // high strength, so it would otherwise rank FIRST
+      domain: "user",
+      status: "proposed",
+      now: 0,
+    })
+    const answered = {
+      ...asked,
+      content: {
+        ...readBelief(asked),
+        validationHistory: [{ at: 1, verdict: "corrected" as const, via: "survey" as const }],
+      },
+    }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([answered, proposed("never asked", "user")]),
+      ),
+    )
+    const items = out!.items.filter((i) => i.kind === "belief_validation")
+    expect(items).toHaveLength(1)
+    expect(items[0]?.prompt).toBe("never asked")
+  })
+
+  it("asks the STRONGEST candidates first, not raw store order", async () => {
+    const mk = (s: string, confidence: number) =>
+      makeBeliefRecord({ statement: s, confidence, domain: "user", status: "proposed", now: 0 })
+    // Deliberately inserted weakest-first: raw store order would surface "weak".
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([mk("weak", 0.1), mk("mid", 0.5), mk("strong", 0.95), mk("weakest", 0.05)]),
+      ),
+    )
+    const prompts = out!.items.filter((i) => i.kind === "belief_validation").map((i) => i.prompt)
+    expect(prompts).toEqual(["strong", "mid", "weak"])
   })
 
   it("not due: returns null when now < lastSurveyAt + interval", async () => {
