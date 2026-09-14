@@ -217,12 +217,21 @@ describe("artifacts-only ui-ws server (live)", () => {
     expect(pinned(bSaw).some((x) => x.id === "shared:0")).toBe(true)
 
     // Out-of-band agent edit → the changes hook broadcasts an updated head to all.
-    const beforeA = a.frames.filter((f) => f.type === "artifact-list").length
+    // Wait for the frame that actually CARRIES the edit, not merely for "one
+    // more artifact-list than before": A's own pin above also broadcasts a
+    // list back to A, so a count-based barrier can be satisfied by that
+    // earlier frame and leave `latest` pointing at the pre-edit head (content
+    // still "x"). Matching on the edited content is content-addressed and
+    // cannot resolve early.
     await activeRig.editSeed()
     await a.waitFor(
       (f) =>
         f.type === "artifact-list" &&
-        a.frames.filter((x) => x.type === "artifact-list").length > beforeA,
+        (
+          pinned(f).find((x) => x.id === "seed:0") as
+            | { content?: string }
+            | undefined
+        )?.content === "edited",
     )
     const latest = [...a.frames].reverse().find((f) => f.type === "artifact-list")!
     const seed = pinned(latest).find((x) => x.id === "seed:0") as
