@@ -11,6 +11,7 @@
  * from rendering - BriefingPanel.tsx is the only consumer.
  */
 import type { WorkflowGalleryItem } from "@luna/ui-shared/core"
+import { jobStatusClass, jobIsSettled, jobNeedsAttention } from "../job-status.js"
 
 export type StatusDotClass = "waiting" | "failed" | "success" | "running" | "cancelled" | "queued"
 
@@ -51,10 +52,10 @@ export function attentionMeta(
   wf: Pick<WorkflowGalleryItem, "lastStatus" | "lastRun">,
   now: number = Date.now(),
 ): string | null {
-  const s = wf.lastStatus ? String(wf.lastStatus).toLowerCase() : ""
+  const cls = jobStatusClass(wf.lastStatus)
   const parts: string[] = []
-  if (s === "waiting") parts.push("Waiting for input")
-  else if (s === "failed" || s === "error") parts.push("Failed")
+  if (cls === "waiting") parts.push("Waiting for input")
+  else if (cls === "failed") parts.push("Failed")
   if (wf.lastRun) {
     const rel = relativeTime(wf.lastRun, now)
     if (rel) parts.push(rel)
@@ -63,14 +64,12 @@ export function attentionMeta(
 }
 
 export function statusDotClass(status: string | null | undefined): StatusDotClass | null {
+  // A job with no status at all renders no dot — unchanged, and NOT the same
+  // thing as jobStatusClass's "never" (which also covers "scheduled").
   if (!status) return null
-  const s = String(status).toLowerCase()
-  if (s === "waiting") return "waiting"
-  if (s === "failed" || s === "error") return "failed"
-  if (s === "success" || s === "ok" || s === "completed") return "success"
-  if (s === "running" || s === "started") return "running"
-  if (s === "cancelled") return "cancelled"
-  return "queued"
+  const cls = jobStatusClass(status)
+  // Briefing has no "never" swatch; "scheduled" has always shown as queued here.
+  return cls === "never" ? "queued" : cls
 }
 
 export interface BriefingSections {
@@ -94,14 +93,13 @@ export function groupWorkflows(workflows: ReadonlyArray<WorkflowGalleryItem>): B
   const scheduled: WorkflowGalleryItem[] = []
 
   for (const wf of workflows) {
-    const s = wf.lastStatus ? String(wf.lastStatus).toLowerCase() : null
-    const isWaiting = s === "waiting"
-    const isFailed = s === "failed" || s === "error"
-    const isSuccess = s === "success" || s === "ok" || s === "completed"
-    const isCancelled = s === "cancelled"
-
-    if (isWaiting || isFailed) attention.push(wf)
-    else if (isSuccess || isCancelled) recent.push(wf)
+    // THE 30-DAY BUG LIVED HERE. These two predicates used to inline their own
+    // copy of the status vocabulary, which knew "failed"/"error" but not the
+    // "fired"/"errored" the backend actually writes. A real job therefore
+    // matched NEITHER, and fell out of the digest altogether rather than
+    // landing in the wrong section — silent, not merely wrong.
+    if (jobNeedsAttention(wf.lastStatus)) attention.push(wf)
+    else if (jobIsSettled(wf.lastStatus)) recent.push(wf)
 
     if (wf.schedule) scheduled.push(wf)
   }

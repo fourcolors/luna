@@ -56,6 +56,9 @@ describe("attentionMeta", () => {
   it("error status also reads as Failed", () => {
     expect(attentionMeta({ lastStatus: "error", lastRun: null }, NOW)).toBe("Failed")
   })
+  it("REGRESSION: 'errored' — the value the backend actually writes — reads as Failed", () => {
+    expect(attentionMeta({ lastStatus: "errored", lastRun: 0 }, NOW)).toBe("Failed")
+  })
 })
 
 describe("statusDotClass", () => {
@@ -72,6 +75,17 @@ describe("statusDotClass", () => {
     expect(statusDotClass("queued")).toBe("queued")
     expect(statusDotClass(null)).toBeNull()
     expect(statusDotClass(undefined)).toBeNull()
+  })
+
+  it("REGRESSION: the backend's own vocabulary now classifies correctly", () => {
+    // Before the shared classifier these both fell through to "queued" — a
+    // neutral dot on a job that had been dead for a month.
+    expect(statusDotClass("errored")).toBe("failed")
+    expect(statusDotClass("fired")).toBe("success")
+  })
+
+  it("'scheduled' still shows as queued (Briefing has no 'never' swatch)", () => {
+    expect(statusDotClass("scheduled")).toBe("queued")
   })
 })
 
@@ -93,6 +107,32 @@ describe("groupWorkflows", () => {
     const { attention, recent } = groupWorkflows([d, c, b, a])
     expect(attention.map((w) => w.id)).toEqual(["b", "a"])
     expect(recent.map((w) => w.id)).toEqual(["c", "d"])
+  })
+
+  it("REGRESSION: an 'errored' job lands in attention — the exact 30-day-invisible dream case", () => {
+    // dream-luna's lastStatus was "errored" for 90 consecutive failed runs.
+    // Before the fix it matched neither branch below and appeared in NO
+    // section of the digest at all.
+    const dead = wf({ id: "dream-luna", lastStatus: "errored", lastRun: NOW - 86400_000 })
+    const { attention, recent } = groupWorkflows([dead])
+    expect(attention.map((w) => w.id)).toEqual(["dream-luna"])
+    expect(recent).toHaveLength(0)
+  })
+
+  it("REGRESSION: a 'fired' job lands in recent — the success half was broken too", () => {
+    const ok = wf({ id: "wake-luna", lastStatus: "fired", lastRun: NOW - 1000 })
+    const { attention, recent } = groupWorkflows([ok])
+    expect(recent.map((w) => w.id)).toEqual(["wake-luna"])
+    expect(attention).toHaveLength(0)
+  })
+
+  it("a running or unstarted job stays out of both sections (unchanged)", () => {
+    const { attention, recent } = groupWorkflows([
+      wf({ id: "r", lastStatus: "running" }),
+      wf({ id: "n", lastStatus: null }),
+    ])
+    expect(attention).toHaveLength(0)
+    expect(recent).toHaveLength(0)
   })
 
   it("puts any workflow with a schedule into scheduled, sorted by soonest nextRunAt (null last)", () => {
