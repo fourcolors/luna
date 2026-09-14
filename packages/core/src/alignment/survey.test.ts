@@ -527,6 +527,45 @@ describe("Survey.pendingSurvey (D-LOCK-2/3/4)", () => {
     expect(prompts).toEqual(["strong", "mid", "weak"])
   })
 
+  it("shows the plain-English `question` when present", async () => {
+    const b = makeBeliefRecord({
+      statement:
+        "Operator exhibits a demonstrated preference for master-targeted pull requests under the squash-merge workflow, per repeated corrections.",
+      question: "Do you want PRs opened against master?",
+      confidence: 0.8,
+      domain: "process",
+      status: "proposed",
+      now: 0,
+    })
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([b]),
+      ),
+    )
+    const item = out!.items.find((i) => i.kind === "belief_validation")
+    expect(item?.prompt).toBe("Do you want PRs opened against master?")
+  })
+
+  it("falls back to the full statement when there is no question", async () => {
+    // Every belief written before the field existed, plus any whose question
+    // failed validation. Long and precise beats short and wrong.
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const survey = yield* Survey
+          return yield* survey.pendingSurvey(5000)
+        }),
+        FakeMemory([proposed("a statement with no question", "user")]),
+      ),
+    )
+    const item = out!.items.find((i) => i.kind === "belief_validation")
+    expect(item?.prompt).toBe("a statement with no question")
+  })
+
   it("not due: returns null when now < lastSurveyAt + interval", async () => {
     const out = await Effect.runPromise(
       provide(

@@ -23,7 +23,26 @@ export interface BeliefOutreachRights {
 
 /** Structured `content` of a belief MemoryRecord (spec §5.1). */
 export interface BeliefContent {
+  /**
+   * The durable, precise claim. This is what gets injected into the system
+   * prompt, so it is written for a reader who needs the detail.
+   */
   readonly statement: string
+  /**
+   * The same claim rewritten for a human to answer in about three seconds —
+   * short, second person, no identifiers or paths. Used verbatim as the survey
+   * question.
+   *
+   * SEPARATE FROM `statement` on purpose. The two have different readers, and
+   * collapsing them forces a bad trade: simplify `statement` and the injected
+   * belief loses precision; show `statement` to the operator and he cannot tell
+   * what he is agreeing to, which is the reported failure.
+   *
+   * OPTIONAL, and optional forever: absent on every belief written before this
+   * field existed, and deliberately absent whenever the model's attempt fails
+   * validation. Readers MUST fall back to `statement`.
+   */
+  readonly question?: string
   readonly confidence: number // 0–1, set by Dream
   readonly status: BeliefStatus
   readonly domain: string
@@ -56,6 +75,7 @@ export function deriveBeliefId(domain: string, statement: string): string {
 /** Construct a belief MemoryRecord. Defaults: status "proposed", no validation. */
 export function makeBeliefRecord(input: {
   statement: string
+  question?: string
   confidence: number
   domain: string
   evidence?: ReadonlyArray<string>
@@ -65,6 +85,10 @@ export function makeBeliefRecord(input: {
 }): MemoryRecord {
   const content: BeliefContent = {
     statement: input.statement,
+    // Omit the key entirely when absent rather than storing `question: undefined`,
+    // so records written before this field existed and records whose question
+    // failed validation are byte-identical.
+    ...(input.question !== undefined ? { question: input.question } : {}),
     confidence: input.confidence,
     status: input.status ?? "proposed",
     domain: input.domain,
