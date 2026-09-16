@@ -434,13 +434,15 @@ describe("luna chat app", () => {
     expect(approveLocalCommand).not.toHaveBeenCalled()
     expect(received).toContainEqual({
       type: "local-shell-capability",
-      threadId: "thr_danger",
+      // No threadId: a capability registers the machine for the whole
+      // connection, not for one thread.
       enabled: true,
       approvalMode: "auto",
       clientId: expect.any(String),
       // Addressable name for this machine, added when several clients became
       // able to share one thread. Host-derived, so not pinned to a literal.
       label: expect.any(String),
+      sandbox: false,
       platform: process.platform,
       cwd: approvedRoot,
       roots: [],
@@ -682,11 +684,11 @@ describe("luna chat app", () => {
     await expect(waitFor(done)).resolves.toEqual({ exitCode: 0 })
     expect(received).toContainEqual({
       type: "local-shell-capability",
-      threadId: "thr_1",
       enabled: false,
       approvalMode: "prompt",
       clientId: expect.any(String),
       label: expect.any(String),
+      sandbox: false,
       platform: process.platform,
       cwd: process.cwd(),
       roots: [],

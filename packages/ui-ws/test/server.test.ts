@@ -377,22 +377,27 @@ describe("UIWebSocketServer", () => {
     }
   })
 
+  const capabilityFrame = (extra: Record<string, unknown> = {}) => ({
+    type: "local-shell-capability" as const,
+    enabled: true,
+    approvalMode: "auto" as const,
+    clientId: "cli_1",
+    label: "laptop",
+    sandbox: false,
+    platform: "darwin",
+    cwd: "/work",
+    roots: ["/work"],
+    fullAccess: false,
+    ...extra,
+  })
+
   it("advertises and accepts local shell capability when bridge is configured", async () => {
     const bridge = createLocalShellBridge()
     rig = await startRig(undefined, { localShellBridge: bridge })
     const frames = await exchangeFrames(
       rig.url,
       { authorization: `Bearer ${TOKEN}` },
-      [
-        {
-          type: "local-shell-capability",
-          threadId: "thr_1",
-          enabled: true,
-          clientId: "cli_1",
-          platform: "darwin",
-          cwd: "/work",
-        },
-      ],
+      [capabilityFrame()],
       2,
     )
 
@@ -400,217 +405,116 @@ describe("UIWebSocketServer", () => {
     if (frames[0]?.type === "hello") {
       expect(frames[0].capabilities.localShell).toBe(true)
     }
+    // The status answers the CLIENT, not a thread: a capability registers a
+    // machine for the whole connection.
     expect(frames[1]).toMatchObject({
       type: "local-shell-status",
-      threadId: "thr_1",
+      clientId: "cli_1",
       enabled: true,
       accepted: true,
     })
   })
 
-  it("keeps accepted local shell client tracked when another client disables same thread", async () => {
+  it("accepts a second machine alongside the first instead of refusing it", async () => {
     const bridge = createLocalShellBridge()
     rig = await startRig(undefined, { localShellBridge: bridge })
-    await exchangeFrames(
+    const frames = await exchangeFrames(
       rig.url,
       { authorization: `Bearer ${TOKEN}` },
       [
-        {
-          type: "local-shell-capability",
-          threadId: "thr_1",
-          enabled: true,
-          clientId: "cli_1",
-          platform: "darwin",
-          cwd: "/work",
-        },
-        {
-          type: "local-shell-capability",
-          threadId: "thr_1",
-          enabled: false,
-          clientId: "cli_2",
-          platform: "darwin",
-          cwd: "/work",
-        },
+        capabilityFrame(),
+        capabilityFrame({ clientId: "cli_2", label: "desktop" }),
       ],
       3,
     )
 
-    await rig.shutdown()
-
-    expect(bridge.getCapability("thr_1")).toBeNull()
+    // Both accepted. The second used to be refused with "already attached",
+    // which is what made one machine unreachable while the other held the slot.
+    expect(frames[1]).toMatchObject({ accepted: true, clientId: "cli_1" })
+    expect(frames[2]).toMatchObject({ accepted: true, clientId: "cli_2" })
+    expect(bridge.listTargets().map((t) => t.label)).toEqual([
+      "desktop",
+      "laptop",
+    ])
   })
 
-  it("logs a warning when a local shell attach is refused", async () => {
-    // A refused attach changes no server state, so before this line existed it
-    // produced no record anywhere: the client that never got the shell looked
-    // exactly like the one that did.
+  it("drops a result whose clientId this connection never registered", async () => {
+    // With several machines attached, a result frame is the one place a client
+    // could answer somebody else's command. The server trusts the connection's
+    // own registration, never the clientId written in the frame.
     const bridge = createLocalShellBridge()
     rig = await startRig(undefined, { localShellBridge: bridge })
 
-    // Swap console.warn directly rather than via a mocking helper: these
-    // suites can run under runners whose `vi` shim is a subset of vitest's.
-    const warnings: string[] = []
-    const originalWarn = console.warn
-    console.warn = (...args: unknown[]) => {
-      warnings.push(args.map((a) => String(a)).join(" "))
+    let accepted = 0
+    const realAccept = bridge.acceptResult.bind(bridge)
+    ;(bridge as { acceptResult: typeof bridge.acceptResult }).acceptResult = (
+      frame,
+      from,
+    ) => {
+      accepted += 1
+      realAccept(frame, from)
     }
 
-    try {
-      await exchangeFrames(
-        rig.url,
-        { authorization: `Bearer ${TOKEN}` },
-        [
-          {
-            type: "local-shell-capability",
-            threadId: "thr_1",
-            enabled: true,
-            clientId: "cli_first",
-            platform: "linux",
-            cwd: "/root/luna",
-          },
-          {
-            type: "local-shell-capability",
-            threadId: "thr_1",
-            enabled: true,
-            clientId: "cli_second",
-            platform: "darwin",
-            cwd: "/Users/sterling",
-          },
-        ],
-        3,
-      )
-    } finally {
-      console.warn = originalWarn
-    }
-
-    const refusal = warnings.find((w) => w.includes("local-shell attach refused"))
-    expect(refusal).toBeDefined()
-    expect(refusal).toContain("thr_1")
-    expect(refusal).toContain("cli_second")
-
-    // The incumbent keeps the slot; this change is about visibility, not arity.
-    expect(bridge.getCapability("thr_1")?.clientId).toBe("cli_first")
-  })
-
-  it("fires onLocalShellRelease when a client disables its local shell", async () => {
-    const bridge = createLocalShellBridge()
-    const released: Array<string> = []
-    rig = await startRig(undefined, {
-      localShellBridge: bridge,
-      onLocalShellRelease: (threadId) => {
-        released.push(threadId)
-      },
-    })
     await exchangeFrames(
       rig.url,
       { authorization: `Bearer ${TOKEN}` },
       [
+        capabilityFrame(),
         {
-          type: "local-shell-capability",
-          threadId: "thr_release",
-          enabled: true,
-          clientId: "cli_release",
-          platform: "darwin",
-          cwd: "/work",
-        },
-        {
-          type: "local-shell-capability",
-          threadId: "thr_release",
-          enabled: false,
-          clientId: "cli_release",
-          platform: "darwin",
-          cwd: "/work",
+          type: "local-shell-result",
+          requestId: "lsh_nonexistent",
+          threadId: "thr_1",
+          clientId: "cli_somebody_else",
+          approved: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          durationMs: 1,
+          timedOut: false,
         },
       ],
-      3,
+      2,
     )
-    expect(released).toContain("thr_release")
+
+    // The frame never reached the bridge at all.
+    expect(accepted).toBe(0)
   })
 
-  it("fires onLocalShellRelease for active threads when the client disconnects", async () => {
-    const bridge = createLocalShellBridge()
-    const released: Array<string> = []
-    rig = await startRig(undefined, {
-      localShellBridge: bridge,
-      onLocalShellRelease: (threadId) => {
-        released.push(threadId)
-      },
-    })
-    await exchangeFrames(
-      rig.url,
-      { authorization: `Bearer ${TOKEN}` },
-      [
-        {
-          type: "local-shell-capability",
-          threadId: "thr_disco_a",
-          enabled: true,
-          clientId: "cli_disco",
-          platform: "darwin",
-          cwd: "/work",
-        },
-        {
-          type: "local-shell-capability",
-          threadId: "thr_disco_b",
-          enabled: true,
-          clientId: "cli_disco",
-          platform: "darwin",
-          cwd: "/work",
-        },
-      ],
-      3,
-    )
-    // exchangeFrames closes the socket once it has all requested frames.
-    // The server's close finalizer drains asynchronously - poll until it
-    // has (deadline-bounded), instead of guessing with a fixed sleep (the
-    // same race family the hello-gate fix in this file eliminates).
-    await pollUntil(
-      () => released.includes("thr_disco_a") && released.includes("thr_disco_b"),
-      2000,
-    )
-    expect(released).toEqual(expect.arrayContaining(["thr_disco_a", "thr_disco_b"]))
-  })
-
-  it("keeps multi-thread local shell client tracked after disabling one thread", async () => {
+  it("removes only the machine that disabled itself", async () => {
     const bridge = createLocalShellBridge()
     rig = await startRig(undefined, { localShellBridge: bridge })
     await exchangeFrames(
       rig.url,
       { authorization: `Bearer ${TOKEN}` },
       [
-        {
-          type: "local-shell-capability",
-          threadId: "thr_1",
-          enabled: true,
-          clientId: "cli_1",
-          platform: "darwin",
-          cwd: "/work",
-        },
-        {
-          type: "local-shell-capability",
-          threadId: "thr_2",
-          enabled: true,
-          clientId: "cli_1",
-          platform: "darwin",
-          cwd: "/work",
-        },
-        {
-          type: "local-shell-capability",
-          threadId: "thr_1",
-          enabled: false,
-          clientId: "cli_1",
-          platform: "darwin",
-          cwd: "/work",
-        },
+        capabilityFrame(),
+        capabilityFrame({ clientId: "cli_2", label: "desktop" }),
+        capabilityFrame({ enabled: false }),
       ],
       4,
     )
 
-    expect(bridge.getCapability("thr_1")).toBeNull()
-    expect(bridge.getCapability("thr_2")?.clientId).toBe("cli_1")
+    expect(bridge.listTargets().map((t) => t.label)).toEqual(["desktop"])
+  })
 
-    await rig.shutdown()
+  it("removes every machine this connection registered when it disconnects", async () => {
+    const bridge = createLocalShellBridge()
+    rig = await startRig(undefined, { localShellBridge: bridge })
+    await exchangeFrames(
+      rig.url,
+      { authorization: `Bearer ${TOKEN}` },
+      [
+        capabilityFrame(),
+        capabilityFrame({ clientId: "cli_2", label: "desktop" }),
+      ],
+      3,
+    )
 
-    expect(bridge.getCapability("thr_2")).toBeNull()
+    // exchangeFrames closes the socket once it has all requested frames. The
+    // server's close finalizer drains asynchronously, so poll rather than
+    // guessing with a fixed sleep.
+    await pollUntil(() => bridge.listTargets().length === 0, 2000)
+    expect(bridge.listTargets()).toEqual([])
   })
 
   it("hello frame advertises configured kinds", async () => {

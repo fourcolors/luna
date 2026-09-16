@@ -52,7 +52,10 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     expect(second.systemPromptAddendum).toBe(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM)
   })
 
-  it("does not let one thread binding route commands to another thread", async () => {
+  it("stamps each command with its own thread, even though one machine serves every thread", async () => {
+    // Clients are no longer per thread: one machine serves them all. What must
+    // still hold is that a command carries the thread it was issued from, so a
+    // result can only ever be matched back to that thread.
     const bridge = createLocalShellBridge()
 
     const config = await Effect.runPromise(
@@ -65,64 +68,61 @@ describe("LocalShellToolsLayer - structural invariants", () => {
     first.bindSession("thr_1")
     second.bindSession("thr_2")
 
-    const sentByThread1: unknown[] = []
-    const sentByThread2: unknown[] = []
+    const sent: Array<{ requestId: string; threadId: string }> = []
     bridge.setCapability(
       {
         type: "local-shell-capability",
-        threadId: "thr_1",
         enabled: true,
+        approvalMode: "auto",
         clientId: "cli_1",
+        label: "only-machine",
+        sandbox: false,
         platform: "test",
         cwd: "/one",
+        roots: ["/one"],
+        fullAccess: false,
       },
-      (frame) => sentByThread1.push(frame),
-    )
-    bridge.setCapability(
-      {
-        type: "local-shell-capability",
-        threadId: "thr_2",
-        enabled: true,
-        clientId: "cli_2",
-        platform: "test",
-        cwd: "/two",
-      },
-      (frame) => sentByThread2.push(frame),
+      (frame) => sent.push(frame as { requestId: string; threadId: string }),
     )
 
-    const firstTool = ((first.server as unknown as {
-      instance?: {
-        _registeredTools?: Record<string, unknown>
+    const toolOf = (binding: typeof first) =>
+      ((binding.server as unknown as {
+        instance?: { _registeredTools?: Record<string, unknown> }
+      }).instance?._registeredTools?.["local_shell_run"]) as {
+        handler: (
+          args: { command: string; target?: string; cwd?: string; timeout_ms?: number },
+          extra: unknown,
+        ) => Promise<unknown>
       }
-    }).instance?._registeredTools?.["local_shell_run"]) as {
-      handler: (args: { command: string; cwd?: string; timeout_ms?: number }, extra: unknown) => Promise<unknown>
-    }
-    const pending = firstTool.handler(
-      { command: "pwd", timeout_ms: 100 },
-      undefined,
-    )
 
-    expect(sentByThread1).toHaveLength(1)
-    expect(sentByThread1[0]).toMatchObject({
-      type: "local-shell-request",
-      threadId: "thr_1",
-      command: "pwd",
-    })
-    expect(sentByThread2).toHaveLength(0)
+    const answer = (i: number) =>
+      bridge.acceptResult(
+        {
+          type: "local-shell-result",
+          requestId: sent[i]!.requestId,
+          threadId: sent[i]!.threadId,
+          clientId: "cli_1",
+          approved: true,
+          exitCode: 0,
+          stdout: "",
+          stderr: "",
+          durationMs: 1,
+          timedOut: false,
+        },
+        "cli_1",
+      )
 
-    const request = sentByThread1[0] as { requestId: string }
-    bridge.acceptResult({
-      type: "local-shell-result",
-      requestId: request.requestId,
-      threadId: "thr_1",
-      approved: true,
-      exitCode: 0,
-      stdout: "/one",
-      stderr: "",
-      durationMs: 1,
-      timedOut: false,
-    })
-    await pending
+    const p1 = toolOf(first).handler({ command: "pwd", timeout_ms: 100 }, undefined)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ threadId: "thr_1", command: "pwd" })
+    answer(0)
+    await p1
+
+    const p2 = toolOf(second).handler({ command: "pwd", timeout_ms: 100 }, undefined)
+    expect(sent).toHaveLength(2)
+    expect(sent[1]).toMatchObject({ threadId: "thr_2", command: "pwd" })
+    answer(1)
+    await p2
   })
 
   it("buildLocalShellMcpServer returns type='sdk' and name='local_shell'", () => {
@@ -168,12 +168,25 @@ describe("LocalShellToolsService - prompt invariants", () => {
       "mcp__local_shell__local_shell_run",
     )
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("fully qualified")
-    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("approval")
-    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("trusted container session")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("approved")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).not.toContain(
       "Every command requires explicit user approval",
     )
-    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("unavailable")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("attached")
     expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("denied")
+  })
+
+  it("LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM teaches the multi-machine rules", () => {
+    // The model cannot use an argument nobody told it about, and it will read a
+    // wrong-host result as a missing file unless it is told to check ranOn.
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("target")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("targetRequired")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("ranOn")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("local_shell_list_roots")
+    // The unattended-origin rule is a safety property, not a nicety.
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("unattendedThread")
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM.toLowerCase()).toContain("sandbox")
+    // There must be no suggestion of a default machine.
+    expect(LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM).toContain("no default")
   })
 })
