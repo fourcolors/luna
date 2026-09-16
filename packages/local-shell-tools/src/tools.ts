@@ -1,27 +1,44 @@
 import { Effect } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
-import { capabilityRoots, type LocalShellBridge } from "@luna/ui-ws"
+import type { LocalShellBridge } from "@luna/ui-ws"
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 120_000
 const LOCAL_SHELL_TOOL_DISCOVERY = {
   alwaysLoad: true,
   searchHint:
-    "Local shell command tool for running commands through an attached Luna terminal client when machine access is enabled.",
+    "Local shell command tool for running commands on an attached machine when machine access is enabled.",
 } as const
+
+/** What the tools need to know about the thread they are bound to. */
+export interface LocalShellSessionRef {
+  readonly threadId: string
+  readonly threadTags: ReadonlyArray<string>
+}
 
 const runShape = {
   command: z
     .string()
     .min(1)
-    .describe("Shell command to request from the attached Luna terminal client."),
+    .describe("Shell command to run on the target machine."),
+  target: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Which attached machine to run on, by its label (see local_shell_list_roots). " +
+        "Optional ONLY when exactly one machine is attached. When more than one is " +
+        "attached this is REQUIRED — there is deliberately no default, because " +
+        "guessing the machine is how a destructive command lands on the wrong one.",
+    ),
   cwd: z
     .string()
     .min(1)
     .optional()
     .describe(
-      "Optional working directory for the command. Defaults to the terminal client's current directory.",
+      "Optional working directory for the command. Defaults to the target's own cwd. " +
+        "Pass one explicitly when the command is destructive.",
     ),
   timeout_ms: z
     .number()
@@ -34,24 +51,25 @@ const runShape = {
 
 export const makeLocalShellTools = (
   bridge: LocalShellBridge,
-  currentThreadId: () => string | null,
+  currentSession: () => LocalShellSessionRef | null,
 ) => {
   const run = defineTool({
     name: "local_shell_run",
     description:
-      "Request execution of a shell command in the user's attached Luna terminal client. " +
-      "The terminal client may ask the user for approval or run the command in an auto-approved attached session. " +
-      "Use this only when local machine execution is needed for the current task. " +
-      "The result carries `ranOn`, identifying the client that actually served the command " +
-      "(clientId, platform, effective cwd, roots, fullAccess). Read it before concluding that " +
-      "a missing file or repo is absent: the binding can change between calls, so a result from " +
-      "an unexpected `ranOn.platform` means you ran on the wrong machine, not that the path is gone.",
+      "Run a shell command on one of the machines attached to this thread. " +
+      "Several machines can be attached at once (for example a desktop client and " +
+      "the server's own container), so pass `target` with the machine's label " +
+      "whenever more than one is attached. " +
+      "The result carries `ranOn`, identifying the machine that actually served the " +
+      "command (label, clientId, platform, effective cwd, roots, fullAccess). Read it " +
+      "before concluding that a missing file or repo is absent: an unexpected " +
+      "`ranOn.label` means you asked the wrong machine, not that the path is gone.",
     inputSchema: runShape,
     ...LOCAL_SHELL_TOOL_DISCOVERY,
     handler: (args) =>
       Effect.gen(function* () {
-        const threadId = currentThreadId()
-        if (!threadId) {
+        const session = currentSession()
+        if (!session) {
           return yield* Effect.fail(
             new ToolError({
               tool: "local_shell_run",
@@ -73,8 +91,10 @@ export const makeLocalShellTools = (
         const outcome = yield* Effect.tryPromise({
           try: () =>
             bridge.request({
-              threadId,
+              threadId: session.threadId,
+              threadTags: session.threadTags,
               command: args.command,
+              ...(args.target !== undefined ? { target: args.target } : {}),
               ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
               timeoutMs: args.timeout_ms ?? DEFAULT_TIMEOUT_MS,
             }),
@@ -95,8 +115,7 @@ export const makeLocalShellTools = (
           durationMs: result.durationMs,
           timedOut: result.timedOut,
           // Which machine actually ran this. Without it, a command that ran on
-          // the wrong host is indistinguishable from a missing file, because
-          // the binding for a thread can change with no in-band signal.
+          // the wrong host is indistinguishable from a missing file.
           ranOn: outcome.dispatchedTo,
         } as const
       }),
@@ -105,17 +124,17 @@ export const makeLocalShellTools = (
   const listRoots = defineTool({
     name: "local_shell_list_roots",
     description:
-      "List the working-directory roots the attached Luna terminal client currently exposes. " +
-      "Call this before running local commands so you pass a `cwd` inside an attached root: " +
-      "commands whose working directory is inside a root are auto-approved by the client, while " +
-      "commands outside every root may be denied or require explicit user approval. " +
-      "`fullAccess: true` means the client allows any working directory (no scope gate).",
+      "List every machine currently attached to this thread, with the label you pass " +
+      "as `target` to local_shell_run, its platform, and the working-directory roots it " +
+      "exposes. Call this before running commands, especially before anything " +
+      "destructive. `fullAccess: true` means that machine allows any working directory. " +
+      "When two or more machines are listed, `target` is required on every run.",
     inputSchema: {},
     ...LOCAL_SHELL_TOOL_DISCOVERY,
     handler: () =>
       Effect.gen(function* () {
-        const threadId = currentThreadId()
-        if (!threadId) {
+        const session = currentSession()
+        if (!session) {
           return yield* Effect.fail(
             new ToolError({
               tool: "local_shell_list_roots",
@@ -124,19 +143,19 @@ export const makeLocalShellTools = (
             }),
           )
         }
-        const capability = bridge.getCapability(threadId)
-        if (capability === null || !capability.enabled) {
-          return { attached: false, roots: [], fullAccess: false } as const
-        }
-        const scope = capabilityRoots(capability)
+        const targets = bridge.listTargets(session.threadTags)
         return {
-          attached: true,
-          roots: scope.roots,
-          fullAccess: scope.fullAccess,
-          // Default working directory — use this as `cwd` when no root is
-          // attached (roots is empty); commands there may still require approval.
-          cwd: capability.cwd,
-          platform: capability.platform,
+          attached: targets.length > 0,
+          targets,
+          /** True when `target` must be supplied on every local_shell_run call. */
+          targetRequired: targets.length > 1,
+          /**
+           * Unattended threads (forked children, channel-originated) can only
+           * ever reach the server's own sandbox, never a personal machine.
+           */
+          unattendedThread: session.threadTags.some(
+            (t) => t === "forked-from-parent" || t === "channel",
+          ),
         } as const
       }),
   })

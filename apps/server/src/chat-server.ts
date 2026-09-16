@@ -682,13 +682,12 @@ export const buildAvailableModels = (env: NodeJS.ProcessEnv = process.env): Arra
 
 const localShellBridge = createLocalShellBridge()
 
-// Per-thread sandbox re-attach closures. Module scope (single-process boot)
-// so both the ThreadToolsProvider (which registers a reattacher in onBound)
-// and the WS server (which calls it via onLocalShellRelease) can share it.
-// The container sandbox owns the local-shell slot at thread creation; an
-// attached CLI with --local-shell takes over (`replaceable: true`); when it
-// releases, we re-run the original attach so the agent keeps local_shell.
-const sandboxReattachers = new Map<string, () => void>()
+// The sandbox re-attach machinery that used to live here is gone. It existed
+// only because the bridge held ONE slot per thread, so an attached CLI had to
+// preempt the container and something had to put the container back afterwards.
+// Bindings coexist now: the sandbox registers once at boot (below) and stays
+// registered, which also removes the map that grew one retained closure per
+// thread for the lifetime of the process.
 
 // PRD Part B: bridge between skillRegistryL's hot-load fiber (buildBaseLayer)
 // and the ui-ws broadcast hook (buildServerLayer wires it via
@@ -743,10 +742,6 @@ const replaceMcpToolPolicy = (entries: ReadonlyMap<string, McpGateEntry>): void 
 // marker case alone; a mounted server's own policy is never touched by
 // connector liveness.
 let isLiveConnectorMount: ((slug: string) => boolean) | null = null
-const reattachSandbox = (threadId: string): void => {
-  const reattach = sandboxReattachers.get(threadId)
-  if (reattach !== undefined) reattach()
-}
 
 /** How often the belief-injection holder refreshes from the MemoryRouter (ms).
  *  30 s in production; callers may pass a smaller value for smoke tests. */
@@ -957,6 +952,24 @@ export const ThreadToolsProviderLayer = (
           ? "enabled"
           : `disabled (${sandboxLocalShell.reason})`,
       )
+      // Register the container shell ONCE, for every thread, for the life of
+      // the process. It used to attach per thread in onBound and be re-attached
+      // whenever another client let go; bindings coexist now, so neither is
+      // needed. Registering here also makes it reachable from threads nobody
+      // has opened in a UI, which is the only shell an unattended thread gets.
+      if (sandboxLocalShell.enabled) {
+        attachSandboxLocalShell({
+          bridge: localShellBridge,
+          label: sandboxLocalShell.profileName || "sandbox",
+          cwd: sandboxLocalShell.sandboxRoot,
+          sandboxRoot: sandboxLocalShell.sandboxRoot,
+          env: process.env,
+        })
+        console.log(
+          "[luna/boot] sandbox local shell registered as target:",
+          sandboxLocalShell.profileName || "sandbox",
+        )
+      }
 
       // Phase 3 D5 → T3b: live belief-injection refresh holder.
       //
@@ -1152,7 +1165,10 @@ export const ThreadToolsProviderLayer = (
               : {}),
             onBound: (sessionId: string) => {
               obsThreadTools.bindSession(sessionId)
-              localShellThreadTools.bindSession(sessionId)
+              // Thread tags ride along so the bridge can refuse a personal
+              // machine for an unattended thread (forked child, or one created
+              // from an inbound channel message).
+              localShellThreadTools.bindSession(sessionId, opts.tags ?? [])
               secretThreadTools.bindSession(sessionId)
               suggestedActionThreadTools.bindSession(sessionId)
               // Fork-loop guard: threads tagged forked-from-parent cannot re-propose.
@@ -1160,18 +1176,6 @@ export const ThreadToolsProviderLayer = (
                 sessionId,
                 opts.tags !== undefined ? { tags: opts.tags } : {},
               )
-              if (sandboxLocalShell.enabled) {
-                const reattach = () =>
-                  attachSandboxLocalShell({
-                    bridge: localShellBridge,
-                    threadId: sessionId,
-                    cwd: sandboxLocalShell.sandboxRoot,
-                    sandboxRoot: sandboxLocalShell.sandboxRoot,
-                    env: process.env,
-                  })
-                reattach()
-                sandboxReattachers.set(sessionId, reattach)
-              }
               console.log(
                 "[luna/thread] session bound:",
                 sessionId,
@@ -1179,12 +1183,6 @@ export const ThreadToolsProviderLayer = (
               )
             },
             onUnbound: (sessionId: string) => {
-              // Symmetric teardown for onBound (thread scope close). Without
-              // this, `sandboxReattachers` — a module-scope Map — grows one
-              // retained closure per historical thread for the process
-              // lifetime, an unbounded leak on a long-lived server.
-              // delete() on an absent key (sandbox disabled) is a safe no-op.
-              sandboxReattachers.delete(sessionId)
               localShellThreadTools.clearSession(sessionId)
               forkThreadTools.clearSession(sessionId)
             },
@@ -4786,7 +4784,6 @@ const buildServerLayer = (
         threadForks: threadForksHandle, // #221 conversation forking: propose/accept
         vaultService: vaultWsHandle, // Vault V1: registry CRUD (values never cross down)
         localShellBridge,
-        onLocalShellRelease: reattachSandbox,
         // Wrapped so a Settings-form token ALSO lands in the Vault registry
         // (source 'manual'). The wrap never changes the handler's result.
         registerOpToken: async (input) => {

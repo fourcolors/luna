@@ -74,42 +74,71 @@ export function createLocalShell(ctx: LocalShellCtx) {
       } catch (e) {
         Logger.error('Failed to invoke get_platform via Tauri:', e);
       }
+      try {
+        // The label is how the agent ADDRESSES this machine. It must tell two
+        // of the operator's own machines apart, which the platform string
+        // cannot: two Macs are both "macos".
+        State.localShell.label = await window.__TAURI__.core.invoke('get_host_label');
+      } catch (e) {
+        Logger.warn('get_host_label failed; falling back to platform as label:', e);
+      }
     },
-    // Tell the server this client's current scope. Sent when a thread becomes
-    // active and on every scope change. Harmless to re-send (server keys on
-    // clientId); an enabled:false frame releases the server's slot.
+    // Tell the server this client's scope. Sent ONCE PER CONNECTION and on every
+    // scope change — deliberately NOT per active thread.
+    //
+    // This used to send `threadId: State.activeThreadId`, which tied the binding
+    // to whichever thread the operator was looking at. That made this machine
+    // unreachable from every other thread, so reaching it meant clicking the
+    // right thread first. Omitting threadId means "serves any thread on this
+    // connection", which is what an app-global shell scope actually is.
     sendCapability() {
-      if (!State.activeThreadId) return;
       const ls = State.localShell;
       WebSocketEngine.send({
         type: 'local-shell-capability',
-        threadId: State.activeThreadId,
         enabled: ls.enabled,
         // Moon executes commands directly via local_shell_exec without a
-      // per-command prompt UI. 'prompt' was a false claim; 'auto' is honest.
-      approvalMode: 'auto',
+        // per-command prompt UI. 'prompt' was a false claim; 'auto' is honest.
+        approvalMode: 'auto',
         clientId: ls.clientId,
+        label: ls.label || ls.platform,
+        sandbox: false,
         platform: ls.platform,
-        cwd: ls.roots[0] || '/',
+        // Never advertise '/': a cwd-less command would then run at the
+        // filesystem root. Prefer an attached root.
+        cwd: ls.roots[0] || ls.homeDir || '',
         roots: ls.roots,
         fullAccess: ls.fullAccess
       });
-      Logger.info(`local-shell capability sent (enabled=${ls.enabled}, fullAccess=${ls.fullAccess}, roots=${ls.roots.length})`);
+      Logger.info(`local-shell capability sent (label=${ls.label || ls.platform}, enabled=${ls.enabled}, fullAccess=${ls.fullAccess}, roots=${ls.roots.length})`);
     },
     // Run a server-requested command, ALWAYS replying with a result frame so the
     // server bridge never hangs on a pending request.
     async handleRequest(frame) {
+      const ls = State.localShell;
       const reply = (res) => WebSocketEngine.send(Object.assign({
         type: 'local-shell-result',
         requestId: frame.requestId,
-        threadId: frame.threadId
+        threadId: frame.threadId,
+        // Names the responder so the server can refuse a result from a client
+        // it did not dispatch to. Several machines can be attached at once.
+        clientId: ls.clientId
       }, res));
       const denied = (stderr) => reply({
         approved: false, exitCode: null, stdout: '', stderr, durationMs: 0, timedOut: false
       });
 
-      const ls = State.localShell;
       if (!ls.enabled) return denied('local shell disabled');
+
+      // Defence in depth. The server already refuses to resolve a personal
+      // machine for an unattended thread, but this client owns the actual
+      // machine, so it makes the same judgement itself rather than trusting
+      // the server alone. A forked child or a thread created from an inbound
+      // channel message has nobody watching it.
+      const tags = Array.isArray(frame.threadTags) ? frame.threadTags : [];
+      if (tags.includes('forked-from-parent') || tags.includes('channel')) {
+        Logger.warn(`local-shell refused an unattended-origin request (tags=${tags.join(',')})`);
+        return denied('refused: unattended thread may not run commands on this machine');
+      }
       const approved = ls.fullAccess || this.withinRoots(frame.cwd ?? null, ls.roots);
       if (!approved) return denied('command outside attached scope');
       if (!(window.__TAURI__ && window.__TAURI__.core)) {

@@ -30,6 +30,7 @@
     "allow-get-panel-last-thread",
     "allow-set-panel-last-thread",
     "allow-get-platform",
+    "allow-get-host-label",
     "allow-close-widget",
     "allow-updater",
     "allow-hub-event",

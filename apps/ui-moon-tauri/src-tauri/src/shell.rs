@@ -212,6 +212,30 @@ pub(crate) fn get_platform() -> String {
     std::env::consts::OS.to_string()
 }
 
+/// Short host label used to ADDRESS this machine, e.g. "mr-macbook-pro".
+///
+/// Several machines can be attached to one thread at once, and the agent picks
+/// between them by label, so the label has to distinguish two of the operator's
+/// own machines. The platform string cannot: two Macs would both be "macos".
+/// Falls back to the platform when the host name is unavailable.
+#[tauri::command]
+pub(crate) fn get_host_label() -> String {
+    let raw = std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    // Strip the domain and any trailing ".local" so the label stays short.
+    let short = raw.split('.').next().unwrap_or("").trim().to_lowercase();
+    if short.is_empty() {
+        std::env::consts::OS.to_string()
+    } else {
+        short
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

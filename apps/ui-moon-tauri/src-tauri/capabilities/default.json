@@ -32,6 +32,7 @@
     "allow-set-panel-route",
     "allow-local-shell-exec",
     "allow-get-platform",
+    "allow-get-host-label",
     "allow-notify",
     "allow-updater",
     "allow-voice-status",

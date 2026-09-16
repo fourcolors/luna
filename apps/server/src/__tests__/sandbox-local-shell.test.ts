@@ -95,7 +95,9 @@ describe("sandbox local shell", () => {
     })
     // The sandbox binding identifies itself, so a command served by the
     // container is distinguishable from one served by a desktop client.
-    expect(outcome.dispatchedTo.clientId).toBe("server_sandbox_thr_1")
+    // Registered once for the whole process, so the id carries no thread.
+    expect(outcome.dispatchedTo.clientId).toBe("server_sandbox")
+    expect(outcome.dispatchedTo.sandbox).toBe(true)
     expect(outcome.dispatchedTo.cwd).toBe(root)
   })
 

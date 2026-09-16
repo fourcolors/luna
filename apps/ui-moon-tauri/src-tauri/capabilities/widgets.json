@@ -22,6 +22,7 @@
     "allow-load-connection",
     "allow-migrate-legacy-connection",
     "allow-get-platform",
+    "allow-get-host-label",
     "allow-close-widget",
     "allow-open-widget",
     "allow-collapse-to-moon",

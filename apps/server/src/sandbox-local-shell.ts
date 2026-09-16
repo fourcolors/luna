@@ -33,7 +33,8 @@ export interface ResolveSandboxLocalShellOptions {
 
 export interface SandboxLocalShellOptions {
   readonly bridge: LocalShellBridge
-  readonly threadId: string
+  /** Label the agent addresses this machine by. Defaults to "sandbox". */
+  readonly label?: string
   readonly cwd: string
   readonly sandboxRoot: string
   readonly env?: Record<string, string | undefined>
@@ -184,11 +185,18 @@ const signalChild = (
   }
 }
 
+/**
+ * A result before the responder's identity is stamped on. `clientId` is added
+ * by the one place that knows it, so the executor cannot claim to be somebody
+ * else and the field can never be silently omitted.
+ */
+type SandboxResult = Omit<LocalShellResultFrame, "clientId">
+
 const deniedResult = (
   request: LocalShellRequestFrame,
   stderr: string,
   startedAt: number,
-): LocalShellResultFrame => ({
+): SandboxResult => ({
   type: "local-shell-result",
   requestId: request.requestId,
   threadId: request.threadId,
@@ -202,8 +210,8 @@ const deniedResult = (
 
 export const executeSandboxLocalShellRequest = async (
   request: LocalShellRequestFrame,
-  options: Omit<SandboxLocalShellOptions, "bridge" | "threadId">,
-): Promise<LocalShellResultFrame> => {
+  options: Omit<SandboxLocalShellOptions, "bridge">,
+): Promise<SandboxResult> => {
   const startedAt = Date.now()
   const cwd = request.cwd ?? options.cwd
   const timeoutMs = request.timeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -217,7 +225,7 @@ export const executeSandboxLocalShellRequest = async (
     )
   }
 
-  return await new Promise<LocalShellResultFrame>((resolve) => {
+  return await new Promise<SandboxResult>((resolve) => {
     const child = spawn(request.command, {
       shell: true,
       cwd,
@@ -274,40 +282,57 @@ export const executeSandboxLocalShellRequest = async (
   })
 }
 
+/**
+ * Register the server's own container shell ONCE, for every thread.
+ *
+ * It used to be attached per thread and re-attached whenever another client
+ * let go, because the bridge held a single slot per thread. Bindings coexist
+ * now, so there is one registration for the life of the process: no per-thread
+ * clientId, no reattach closures, and no map that grew one dead entry per
+ * thread that had ever existed.
+ */
 export const attachSandboxLocalShell = (
   options: SandboxLocalShellOptions,
 ): void => {
-  const clientId =
-    `${options.clientIdPrefix ?? "server_sandbox"}_${options.threadId}`
+  const label = options.label ?? "sandbox"
+  const clientId = options.clientIdPrefix ?? "server_sandbox"
   const send: SendLocalShellFrame = (frame) => {
     if (frame.type !== "local-shell-request") return
     void executeSandboxLocalShellRequest(frame, options)
-      .then((result) => options.bridge.acceptResult(result))
+      .then((result) => options.bridge.acceptResult({ ...result, clientId }, clientId))
       .catch((error) => {
-        options.bridge.acceptResult({
-          type: "local-shell-result",
-          requestId: frame.requestId,
-          threadId: frame.threadId,
-          approved: true,
-          exitCode: null,
-          stdout: "",
-          stderr: error instanceof Error ? error.message : String(error),
-          durationMs: 0,
-          timedOut: false,
-        })
+        options.bridge.acceptResult(
+          {
+            type: "local-shell-result",
+            requestId: frame.requestId,
+            threadId: frame.threadId,
+            clientId,
+            approved: true,
+            exitCode: null,
+            stdout: "",
+            stderr: error instanceof Error ? error.message : String(error),
+            durationMs: 0,
+            timedOut: false,
+          },
+          clientId,
+        )
       })
   }
 
   options.bridge.setCapability(
     {
       type: "local-shell-capability",
-      threadId: options.threadId,
+      // No threadId: this client serves every thread, which is what makes it
+      // reachable from background jobs and from threads nobody has opened.
       enabled: true,
       approvalMode: "auto",
-      replaceable: true,
+      sandbox: true,
+      label,
       clientId,
       platform: process.platform,
       cwd: options.cwd,
+      roots: [options.sandboxRoot],
+      fullAccess: false,
     },
     send,
   )

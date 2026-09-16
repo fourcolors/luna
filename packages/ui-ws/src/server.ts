@@ -571,14 +571,6 @@ export interface UIWebSocketServerConfig {
    */
   readonly localShellBridge?: LocalShellBridge | null
   /**
-   * Fired when a local-shell client releases its slot — either by sending
-   * `local-shell-capability { enabled: false }` or by disconnecting. Used
-   * by the chat-server to re-attach its container-sandbox executor so the
-   * agent doesn't lose `mcp__local_shell__*` access when an attached CLI
-   * disables its own local-shell.
-   */
-  readonly onLocalShellRelease?: (threadId: string) => void
-  /**
    * Optional Survey handle (Phase 3 D3). When provided, the server:
    *   - Pushes a `survey-request` frame after `hello` if a survey is due
    *     (connection-time due-check — fire-and-forget, like account-list).
@@ -1721,27 +1713,20 @@ export const startUIWebSocketServer = (
           ),
         )
 
-        const localShellClients = yield* Ref.make<ReadonlyMap<string, string>>(
-          new Map(),
+        // The shell clientIds THIS connection registered. Keyed by client, not
+        // by thread: a client's shell scope is a property of the client, so one
+        // registration serves every thread on the connection. On teardown we
+        // drop exactly those clients. Nothing is "released" back to anyone —
+        // registrations coexist now, so there is no handoff to restore.
+        const localShellClientIds = yield* Ref.make<ReadonlySet<string>>(
+          new Set(),
         )
-        const onLocalShellRelease = config.onLocalShellRelease
         if (localShellBridge !== null) {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
-              const clients = yield* Ref.get(localShellClients)
-              const releasedThreads = new Set<string>()
-              for (const [threadId, clientId] of clients) {
+              const owned = yield* Ref.get(localShellClientIds)
+              for (const clientId of owned) {
                 localShellBridge.removeClient(clientId)
-                releasedThreads.add(threadId)
-              }
-              if (onLocalShellRelease !== undefined) {
-                for (const threadId of releasedThreads) {
-                  try {
-                    onLocalShellRelease(threadId)
-                  } catch {
-                    // Callback failures must not poison connection teardown.
-                  }
-                }
               }
             }),
           )
@@ -2130,43 +2115,23 @@ export const startUIWebSocketServer = (
                       send(ws, out)
                     })
                     send(ws, status)
-                    if (!status.accepted) {
-                      // A refused attach used to change no state and produce no
-                      // record anywhere, so a client that never got the shell
-                      // looked identical to one that did.
-                      console.warn(
-                        `[ui-ws] local-shell attach refused for ${frame.threadId} ` +
-                          `(clientId=${frame.clientId}): ${status.message}`,
-                      )
-                    }
-                    if (status.accepted) {
-                      yield* Ref.update(localShellClients, (clients) => {
-                        const next = new Map(clients)
-                        if (frame.enabled) {
-                          next.set(frame.threadId, frame.clientId)
-                        } else if (next.get(frame.threadId) === frame.clientId) {
-                          next.delete(frame.threadId)
-                        }
-                        return next
-                      })
-                      // Notify the chat-server when a client vacates so it can
-                      // re-attach its container-sandbox executor (otherwise the
-                      // agent loses local-shell access until the next thread).
-                      if (!frame.enabled && onLocalShellRelease !== undefined) {
-                        try {
-                          onLocalShellRelease(frame.threadId)
-                        } catch {
-                          // Callback failures must not poison message handling.
-                        }
-                      }
-                      // Smart bar: re-push since the cwd/roots just changed.
-                      sendSmartBarFor(frame.threadId)
-                    }
+                    yield* Ref.update(localShellClientIds, (owned) => {
+                      const next = new Set(owned)
+                      if (frame.enabled) next.add(frame.clientId)
+                      else next.delete(frame.clientId)
+                      return next
+                    })
                     return
                   }
                   case "local-shell-result": {
                     if (localShellBridge !== null) {
-                      localShellBridge.acceptResult(frame)
+                      // Identity the TRANSPORT vouches for. A frame naming a
+                      // clientId this connection never registered is dropped:
+                      // with several machines attached, that is one of them
+                      // trying to answer another's pending command.
+                      const owned = yield* Ref.get(localShellClientIds)
+                      if (!owned.has(frame.clientId)) return
+                      localShellBridge.acceptResult(frame, frame.clientId)
                     }
                     return
                   }
