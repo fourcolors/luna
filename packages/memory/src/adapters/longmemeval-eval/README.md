@@ -74,3 +74,9 @@ Exit 2 = Ollama / embedder blocker (honest stop, no invented scores).
 ## Results
 
 See `RESULTS.md` + committed `smoke-results.json`.
+
+Completed smoke (seed 42, 15 Qs, local Ollama `nomic-embed-text` +
+`llama3.2:1b`, $0, 3.6 min): overall F1 **0.196**, contains-gold **0.133**,
+turn-level evidence **67.9%**, session-level evidence **100%**. Retrieval
+is fine on the oracle haystack; the 1B reader is the bottleneck. Official
+GPT-4o judge was not run.
