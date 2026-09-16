@@ -150,6 +150,17 @@ fn run_loopback_accept_loop(
         }
         match listener.accept() {
             Ok((mut stream, _)) => {
+                // The listener is non-blocking and on some platforms the
+                // ACCEPTED socket inherits that. A read that is merely NOT
+                // READY YET then returns WouldBlock, and `unwrap_or(0)` turned
+                // that into an EMPTY request, which parses as NotRedirect, so
+                // the loop kept listening for a request that had already
+                // arrived. Nothing ever set `cancel`, so it span for as long as
+                // the process lived: observed as an 81-minute CI hang in a job
+                // that normally takes one minute. Wait briefly for the bytes
+                // instead of guessing that silence means "not the redirect".
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
                 let mut buf = [0u8; 4096];
                 let n = stream.read(&mut buf).unwrap_or(0);
                 let req = String::from_utf8_lossy(&buf[..n]);
@@ -382,6 +393,11 @@ mod tests {
 
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.write_all(request).unwrap();
+        // Bound the read. Without this a server that never answers blocks the
+        // whole test binary forever rather than failing it.
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
 
         // Read to EOF *or* a connection reset. The accept loop writes its
         // response and drops the socket; on macOS that surfaces to the reader
@@ -400,10 +416,23 @@ mod tests {
                 Ok(n) => raw.extend_from_slice(&chunk[..n]),
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => break,
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                // The read deadline above. Stop reading and let the assertions
+                // judge whatever arrived, instead of blocking forever.
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break
+                }
                 Err(e) => panic!("loopback read failed: {e}"),
             }
         }
         let response = String::from_utf8_lossy(&raw).into_owned();
+        // Tell the accept loop to stop BEFORE joining it. It only returns on
+        // Captured or Declined; a NotRedirect keeps it listening, and this
+        // helper never signalled it, so `join()` was an unbounded wait on a
+        // thread that had no reason to exit.
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         handle.join().unwrap();
 
         let outcome = result.lock().unwrap().take();
