@@ -36,9 +36,37 @@ interface RegisteredClient {
   readonly send: SendLocalShellFrame
 }
 
+/**
+ * Who actually ran a command. Snapshotted at DISPATCH time, not at result
+ * time: the binding for a thread can be replaced while a request is in
+ * flight, and a result that named the *current* binding rather than the one
+ * it was sent to would misreport history — the precise failure this field
+ * exists to prevent.
+ */
+// Declared as a `type`, not an `interface`, deliberately: this value is
+// returned straight out of the `local_shell_run` MCP tool, whose output must
+// satisfy a JSON index signature. TypeScript gives object *type aliases* an
+// implicit index signature but never gives interfaces one, so an interface
+// here fails to typecheck at the tool boundary.
+export type LocalShellDispatchIdentity = {
+  readonly clientId: string
+  readonly platform: string
+  /** Effective working directory: the request's `cwd` if it set one, else the client's. */
+  readonly cwd: string
+  readonly roots: ReadonlyArray<string>
+  readonly fullAccess: boolean
+}
+
+/** A completed request plus the identity of the client that served it. */
+export interface LocalShellRequestOutcome {
+  readonly result: LocalShellResultFrame
+  readonly dispatchedTo: LocalShellDispatchIdentity
+}
+
 interface PendingRequest {
   readonly threadId: string
-  readonly resolve: (frame: LocalShellResultFrame) => void
+  readonly dispatchedTo: LocalShellDispatchIdentity
+  readonly resolve: (outcome: LocalShellRequestOutcome) => void
   readonly reject: (error: Error) => void
   readonly timer: ReturnType<typeof setTimeout>
 }
@@ -55,7 +83,7 @@ export interface LocalShellBridge {
     readonly command: string
     readonly cwd?: string
     readonly timeoutMs: number
-  }) => Promise<LocalShellResultFrame>
+  }) => Promise<LocalShellRequestOutcome>
   readonly acceptResult: (frame: LocalShellResultFrame) => void
 }
 
@@ -142,12 +170,21 @@ export const createLocalShellBridge = (): LocalShellBridge => {
     readonly command: string
     readonly cwd?: string
     readonly timeoutMs: number
-  }): Promise<LocalShellResultFrame> => {
+  }): Promise<LocalShellRequestOutcome> => {
     const client = clients.get(input.threadId)
     if (!client) {
       return Promise.reject(
         new Error(`local shell unavailable for ${input.threadId}`),
       )
+    }
+
+    const scope = capabilityRoots(client.capability)
+    const dispatchedTo: LocalShellDispatchIdentity = {
+      clientId: client.capability.clientId,
+      platform: client.capability.platform,
+      cwd: input.cwd ?? client.capability.cwd,
+      roots: scope.roots,
+      fullAccess: scope.fullAccess,
     }
 
     const requestId = `lsh_${randomUUID()}`
@@ -160,6 +197,7 @@ export const createLocalShellBridge = (): LocalShellBridge => {
 
       pending.set(requestId, {
         threadId: input.threadId,
+        dispatchedTo,
         resolve,
         reject,
         timer,
@@ -183,7 +221,7 @@ export const createLocalShellBridge = (): LocalShellBridge => {
 
     clearTimeout(entry.timer)
     pending.delete(frame.requestId)
-    entry.resolve(frame)
+    entry.resolve({ result: frame, dispatchedTo: entry.dispatchedTo })
   }
 
   return { setCapability, removeClient, getCapability, request, acceptResult }

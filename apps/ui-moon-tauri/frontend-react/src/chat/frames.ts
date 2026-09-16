@@ -545,6 +545,27 @@ export function createFrames(ctx: FramesCtx) {
     LocalShell.handleRequest(frame);
   });
 
+  // The server answers every capability frame with a status. Until this
+  // handler existed nothing listened for it, and unregistered frame types are
+  // dropped by MoonFrames.dispatch — so a refused attach was invisible to the
+  // operator AND to the agent, which then read "wrong machine" as "file does
+  // not exist".
+  MoonFrames.register('local-shell-status', (frame) => {
+    if (!frame) return;
+    if (frame.accepted) {
+      Logger.info(
+        `local-shell attach accepted for ${frame.threadId} (enabled=${frame.enabled})`
+      );
+      return;
+    }
+    const reason = (frame.message || 'another client is already attached to this thread.');
+    Logger.warn(`local-shell attach REFUSED for ${frame.threadId}: ${reason}`);
+    ChatEngine.appendMessage(
+      'assistant',
+      `⚠️ Machine access was refused for this thread: ${reason}`
+    );
+  });
+
   MoonFrames.register('assistant-delta', (frame) => {
     // Any thread with live deltas is "busy" for the sidebar pulse —
     // including background threads you switched away from.

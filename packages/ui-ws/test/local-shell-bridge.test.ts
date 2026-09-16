@@ -187,9 +187,150 @@ describe("local shell bridge", () => {
     })
 
     await expect(pending).resolves.toMatchObject({
-      stdout: "/work",
-      exitCode: 0,
+      result: { stdout: "/work", exitCode: 0 },
     })
+  })
+
+  it("reports the identity of the client that served the request", async () => {
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_mac",
+        platform: "darwin",
+        cwd: "/work",
+        roots: ["/work", "/tmp"],
+        fullAccess: false,
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const pending = bridge.request({
+      threadId: "thr_1",
+      command: "pwd",
+      timeoutMs: 2_000,
+    })
+    const req = sent[0] as { requestId: string }
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: req.requestId,
+      threadId: "thr_1",
+      approved: true,
+      exitCode: 0,
+      stdout: "/work",
+      stderr: "",
+      durationMs: 3,
+      timedOut: false,
+    })
+
+    const outcome = await pending
+    expect(outcome.dispatchedTo).toEqual({
+      clientId: "cli_mac",
+      platform: "darwin",
+      cwd: "/work",
+      roots: ["/work", "/tmp"],
+      fullAccess: false,
+    })
+  })
+
+  it("reports the request's own cwd as the effective cwd", async () => {
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_1",
+        platform: "linux",
+        cwd: "/root/luna",
+        fullAccess: true,
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const pending = bridge.request({
+      threadId: "thr_1",
+      command: "pwd",
+      cwd: "/root/luna/worktrees/x",
+      timeoutMs: 2_000,
+    })
+    const req = sent[0] as { requestId: string }
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: req.requestId,
+      threadId: "thr_1",
+      approved: true,
+      exitCode: 0,
+      stdout: "",
+      stderr: "",
+      durationMs: 1,
+      timedOut: false,
+    })
+
+    const outcome = await pending
+    expect(outcome.dispatchedTo.cwd).toBe("/root/luna/worktrees/x")
+    expect(outcome.dispatchedTo.platform).toBe("linux")
+  })
+
+  it("snapshots dispatch identity so a mid-flight rebind cannot rewrite it", async () => {
+    // The whole point of the field: the binding can be replaced while a
+    // command is in flight. The result must name the client it was SENT to,
+    // not whoever happens to hold the slot when the result lands.
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "server_sandbox_thr_1",
+        platform: "linux",
+        cwd: "/root/luna",
+        replaceable: true,
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const pending = bridge.request({
+      threadId: "thr_1",
+      command: "hostname",
+      timeoutMs: 2_000,
+    })
+    const req = sent[0] as { requestId: string }
+
+    // A second client takes the slot before the result comes back.
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "cli_mac",
+        platform: "darwin",
+        cwd: "/Users/sterling",
+      },
+      () => {},
+    )
+    expect(bridge.getCapability("thr_1")?.clientId).toBe("cli_mac")
+
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: req.requestId,
+      threadId: "thr_1",
+      approved: true,
+      exitCode: 0,
+      stdout: "luna-stable",
+      stderr: "",
+      durationMs: 2,
+      timedOut: false,
+    })
+
+    const outcome = await pending
+    expect(outcome.dispatchedTo.clientId).toBe("server_sandbox_thr_1")
+    expect(outcome.dispatchedTo.platform).toBe("linux")
   })
 
   it("rejects request when no client is enabled", async () => {

@@ -92,6 +92,7 @@ describe("local shell tools", () => {
       stderr: string
       durationMs: number
       timedOut: boolean
+      ranOn: unknown
     }>((await pending) as ToolCallResult)
     expect(parsed).toEqual({
       approved: true,
@@ -100,6 +101,13 @@ describe("local shell tools", () => {
       stderr: "",
       durationMs: 4,
       timedOut: false,
+      ranOn: {
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/tmp",
+        roots: ["/work"],
+        fullAccess: false,
+      },
     })
   })
 
@@ -150,6 +158,7 @@ describe("local shell tools", () => {
       stderr: string
       durationMs: number
       timedOut: boolean
+      ranOn: unknown
     }>((await pending) as ToolCallResult)
     expect(parsed).toEqual({
       approved: false,
@@ -158,7 +167,63 @@ describe("local shell tools", () => {
       stderr: "denied by user",
       durationMs: 2,
       timedOut: false,
+      ranOn: {
+        clientId: "cli_1",
+        platform: "darwin",
+        cwd: "/work",
+        roots: ["/work"],
+        fullAccess: false,
+      },
     })
+  })
+
+  it("local_shell_run names the machine it ran on, so a wrong-host result is not read as a missing file", async () => {
+    const bridge = createLocalShellBridge()
+    const sent: unknown[] = []
+    bridge.setCapability(
+      {
+        type: "local-shell-capability",
+        threadId: "thr_1",
+        enabled: true,
+        clientId: "moon_abc",
+        platform: "macos",
+        cwd: "/",
+        roots: [],
+        fullAccess: true,
+      },
+      (frame) => sent.push(frame),
+    )
+
+    const [runTool] = makeLocalShellTools(bridge, () => "thr_1")
+    const pending = runTool.handler(
+      { command: "ls /root/luna", cwd: undefined, timeout_ms: undefined },
+      undefined,
+    )
+    const request = sent[0] as { readonly requestId: string }
+
+    bridge.acceptResult({
+      type: "local-shell-result",
+      requestId: request.requestId,
+      threadId: "thr_1",
+      approved: true,
+      exitCode: 1,
+      stdout: "",
+      stderr: "ls: /root/luna: No such file or directory",
+      durationMs: 5,
+      timedOut: false,
+    })
+
+    const parsed = parseTextResult<{
+      stderr: string
+      ranOn: { clientId: string; platform: string; fullAccess: boolean }
+    }>((await pending) as ToolCallResult)
+
+    // The stderr alone says "no such file". ranOn is what makes it legible as
+    // "you asked the wrong machine".
+    expect(parsed.stderr).toContain("No such file")
+    expect(parsed.ranOn.platform).toBe("macos")
+    expect(parsed.ranOn.clientId).toBe("moon_abc")
+    expect(parsed.ranOn.fullAccess).toBe(true)
   })
 
   it("local_shell_run defaults omitted timeout_ms to 120000", async () => {
