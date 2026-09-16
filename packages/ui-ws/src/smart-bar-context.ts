@@ -71,10 +71,15 @@ const defaultGitCommandRunner: GitCommandRunner = (
 })
 
 const resolveGitCwd = (context: SmartBarContext): string => {
-  const capability = context.localShellBridge?.getCapability(context.threadId)
-  if (capability !== null && capability !== undefined) {
-    const roots = capability.roots ?? [capability.cwd]
-    if (roots.length > 0 && roots[0]) return roots[0]
+  // git runs HERE, on the server, so prefer the sandbox target's root: any
+  // other target's roots are paths on somebody else's machine, which resolve to
+  // nothing (or, worse, to an unrelated local directory) when run server-side.
+  const targets = context.localShellBridge?.listTargets() ?? []
+  const sandbox = targets.find((t) => t.sandbox)
+  const chosen = sandbox ?? (targets.length === 1 ? targets[0] : undefined)
+  if (chosen !== undefined) {
+    const root = chosen.roots[0] ?? chosen.cwd
+    if (root) return root
   }
   return process.env["LUNA_REPO_ROOT"]?.trim() || process.cwd()
 }

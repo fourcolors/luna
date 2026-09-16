@@ -64,6 +64,15 @@ export function createFrames(ctx: FramesCtx) {
     // handler, NOT here — so this version check is purely additive and
     // does not gate or regress the existing hello behavior.
     WebSocketEngine.checkProtocolVersion(frame);
+    // Register this machine's shell ONCE PER CONNECTION, here, rather than
+    // when a thread becomes active. The binding belongs to the client, not to
+    // whichever thread the operator happens to be looking at, so registering on
+    // hello is what makes this machine reachable from every thread — including
+    // ones never opened in this window — and what makes it come back by itself
+    // after a reconnect.
+    void Promise.resolve(LocalShell.refreshPlatform()).then(() => {
+      LocalShell.sendCapability();
+    });
     // Additive: show the server's build short-SHA when advertised.
     WebSocketEngine.applyBuildSha(frame);
     // Additive: cache the advertised model ids for the settings.connection
@@ -554,12 +563,12 @@ export function createFrames(ctx: FramesCtx) {
     if (!frame) return;
     if (frame.accepted) {
       Logger.info(
-        `local-shell attach accepted for ${frame.threadId} (enabled=${frame.enabled})`
+        `local-shell attach accepted (clientId=${frame.clientId}, enabled=${frame.enabled})`
       );
       return;
     }
-    const reason = (frame.message || 'another client is already attached to this thread.');
-    Logger.warn(`local-shell attach REFUSED for ${frame.threadId}: ${reason}`);
+    const reason = frame.message || 'the server gave no reason.';
+    Logger.warn(`local-shell attach REFUSED (clientId=${frame.clientId}): ${reason}`);
     ChatEngine.appendMessage(
       'assistant',
       `⚠️ Machine access was refused for this thread: ${reason}`

@@ -178,6 +178,13 @@ export function createState() {
           roots: [] as string[],
           fullAccess,
           platform: 'unknown',
+          // How the agent addresses THIS machine when several are attached to
+          // one thread. Filled from the host name at startup; the platform is
+          // only a fallback, since two Macs would both be "macos".
+          label: '',
+          // Advertised as the default cwd when no root is attached, so a
+          // cwd-less command never runs at the filesystem root.
+          homeDir: '',
           clientId: 'moon_' + ((window.crypto && crypto.randomUUID)
             ? crypto.randomUUID().replace(/-/g, '')
             : Math.random().toString(36).slice(2))

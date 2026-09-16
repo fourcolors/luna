@@ -438,6 +438,9 @@ describe("luna chat app", () => {
       enabled: true,
       approvalMode: "auto",
       clientId: expect.any(String),
+      // Addressable name for this machine, added when several clients became
+      // able to share one thread. Host-derived, so not pinned to a literal.
+      label: expect.any(String),
       platform: process.platform,
       cwd: approvedRoot,
       roots: [],
@@ -683,6 +686,7 @@ describe("luna chat app", () => {
       enabled: false,
       approvalMode: "prompt",
       clientId: expect.any(String),
+      label: expect.any(String),
       platform: process.platform,
       cwd: process.cwd(),
       roots: [],

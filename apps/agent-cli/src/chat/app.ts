@@ -1,4 +1,4 @@
-import { homedir } from "node:os"
+import { homedir, hostname } from "node:os"
 import { join, posix as pathPosix, resolve as resolvePath } from "node:path"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
@@ -109,15 +109,26 @@ const sendLocalShellCapability = (
   if (threadId === null) return
   client.send({
     type: "local-shell-capability",
-    threadId,
     enabled: localShell.enabled,
     approvalMode: localShell.approvalMode,
     clientId: localShell.clientId,
+    // How the agent addresses this machine when several are attached.
+    label: localShellLabel(),
+    sandbox: false,
     platform: localShell.platform,
     cwd: localShell.cwd,
     roots: localShell.roots,
     fullAccess: localShell.fullAccess,
   })
+}
+
+/** Short host name, used as the addressable label for this machine. */
+const localShellLabel = (): string => {
+  try {
+    return (hostname().split(".")[0] ?? "").toLowerCase() || process.platform
+  } catch {
+    return process.platform
+  }
 }
 
 const deniedLocalShellResult = (

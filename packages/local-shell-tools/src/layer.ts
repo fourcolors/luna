@@ -6,13 +6,16 @@ import type {
   McpSdkServerConfigWithInstance,
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk"
-import { makeLocalShellTools } from "./tools.js"
+import { makeLocalShellTools, type LocalShellSessionRef } from "./tools.js"
 
 export interface LocalShellToolsSessionConfig {
   readonly serverName: "local_shell"
   readonly server: McpSdkServerConfigWithInstance
   readonly systemPromptAddendum: string
-  readonly bindSession: (sessionId: string) => void
+  readonly bindSession: (
+    sessionId: string,
+    threadTags?: ReadonlyArray<string>,
+  ) => void
   readonly clearSession: (sessionId: string) => void
 }
 
@@ -27,23 +30,26 @@ export class LocalShellToolsService extends Context.Service<
 
 export const LOCAL_SHELL_SYSTEM_PROMPT_ADDENDUM =
   "You have one local shell MCP server (`local_shell`) with tools " +
-  "`mcp__local_shell__local_shell_run(command, cwd?, timeout_ms?)` and " +
+  "`mcp__local_shell__local_shell_run(command, target?, cwd?, timeout_ms?)` and " +
   "`mcp__local_shell__local_shell_list_roots()`. Use these fully qualified MCP tool names " +
-  "exactly; do not call the bare names. They operate on the current thread's local shell " +
-  "binding. The binding may be Operator's attached Luna terminal client or an auto-approved " +
-  "Luna container sandbox. " +
-  "The client may attach one or more working-directory roots (specific folders) and/or grant " +
-  "full-machine access. Call `local_shell_list_roots` first to see what is attached, then pass " +
-  "a `cwd` inside one of the attached roots: commands whose working directory is inside a root " +
-  "are auto-approved by the client. A command outside every attached root may be denied " +
-  "outright (e.g. in the desktop widget) or require explicit per-command approval (e.g. the " +
-  "terminal client); when `fullAccess` is true the client allows any working directory. A " +
-  "trusted container session may advertise auto approval; in that mode commands run inside the " +
-  "attached container without a per-command prompt. " +
-  "If the local shell client is unavailable, no session is bound, or the user denied " +
-  "approval, report that the command could not run and do not claim local execution " +
-  "succeeded. Non-zero exit codes, stdout, stderr, and timeouts are returned as command " +
-  "results so you can explain what happened."
+  "exactly; do not call the bare names. " +
+  "MORE THAN ONE MACHINE CAN BE ATTACHED TO A THREAD AT ONCE — typically Operator's " +
+  "desktop client and the server's own container. Call `local_shell_list_roots` FIRST: it " +
+  "returns every attached machine with the `label` you pass as `target`, its platform, and " +
+  "its working-directory roots. When it reports `targetRequired: true` you MUST pass " +
+  "`target` on every run; there is deliberately no default, and a `target` that is not " +
+  "attached is an error rather than a fallback to some other machine. " +
+  "Every result carries `ranOn`, naming the machine that actually served the command. READ " +
+  "IT. If a path looks missing, check `ranOn.label` before concluding the file is absent — " +
+  "asking the wrong machine and the file being gone produce identical output otherwise. " +
+  "Commands run inside a machine's attached roots are auto-approved; outside them a client " +
+  "may deny or prompt, unless it reports `fullAccess: true`. " +
+  "Unattended threads (forked children, and threads created from an inbound channel " +
+  "message) can reach ONLY the server's own sandbox, never a personal machine; " +
+  "`list_roots` reports that as `unattendedThread: true`. " +
+  "If no machine is attached, or the user denied approval, report that the command could " +
+  "not run and do not claim local execution succeeded. Non-zero exit codes, stdout, stderr " +
+  "and timeouts are returned as results so you can explain what happened."
 
 export interface LocalShellToolsLayerOptions {
   readonly bridge: LocalShellBridge
@@ -52,18 +58,21 @@ export interface LocalShellToolsLayerOptions {
 const createLocalShellToolsConfig = (
   bridge: LocalShellBridge,
 ): LocalShellToolsSessionConfig => {
-  const sessionCell: { value: string | null } = { value: null }
-  const currentThreadId = () => sessionCell.value
-  const bindSession = (sessionId: string) => {
-    sessionCell.value = sessionId
+  const sessionCell: { value: LocalShellSessionRef | null } = { value: null }
+  const currentSession = () => sessionCell.value
+  const bindSession = (
+    sessionId: string,
+    threadTags?: ReadonlyArray<string>,
+  ) => {
+    sessionCell.value = { threadId: sessionId, threadTags: threadTags ?? [] }
   }
   const clearSession = (sessionId: string) => {
-    if (sessionCell.value === sessionId) {
+    if (sessionCell.value?.threadId === sessionId) {
       sessionCell.value = null
     }
   }
 
-  const tools = makeLocalShellTools(bridge, currentThreadId)
+  const tools = makeLocalShellTools(bridge, currentSession)
   const server = buildLocalShellMcpServer(tools)
 
   return {

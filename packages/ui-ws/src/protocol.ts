@@ -1045,11 +1045,23 @@ export interface LocalShellRequestFrame {
   readonly command: string
   readonly cwd?: string
   readonly timeoutMs?: number
+  /**
+   * Tags of the thread this command came from. The server already refuses to
+   * resolve a non-sandbox client for an unattended thread; this lets a client
+   * make the same judgement locally rather than trusting the server alone,
+   * which matters because the client is the side that owns the real machine.
+   */
+  readonly threadTags?: ReadonlyArray<string>
 }
 
+/**
+ * Server's answer to a capability frame. It carries no threadId because a
+ * capability is not about a thread: it registers a machine for the whole
+ * connection.
+ */
 export interface LocalShellStatusFrame {
   readonly type: "local-shell-status"
-  readonly threadId: string
+  readonly clientId: string
   readonly enabled: boolean
   readonly accepted: boolean
   readonly message: string
@@ -1728,39 +1740,58 @@ export interface InterruptFrame {
   readonly threadId: string
 }
 
+/**
+ * A client announcing the machine it can run commands on.
+ *
+ * There is NO threadId: a client's shell scope belongs to the client, and it
+ * serves every thread on its connection. Tying it to a thread is what used to
+ * make a machine unreachable from every thread but the one in view.
+ */
 export interface LocalShellCapabilityFrame {
   readonly type: "local-shell-capability"
-  readonly threadId: string
   readonly enabled: boolean
-  readonly approvalMode?: "prompt" | "auto"
-  readonly replaceable?: boolean
+  readonly approvalMode: "prompt" | "auto"
   readonly clientId: string
-  readonly platform: string
   /**
-   * Back-compat default working directory. Always present (= `roots[0]` when a
-   * client attaches multiple roots, else the single attached directory). Older
-   * clients send only this; newer clients also send `roots`/`fullAccess`.
+   * Human-readable name used to ADDRESS this machine, e.g. a host name or a
+   * server profile. Targets are chosen by label, never by clientId, which is an
+   * opaque per-connection uuid. Several live clients may share a label (a
+   * reconnect, or a second window); the newest one serves.
    */
+  readonly label: string
+  /**
+   * True only for the server's own in-process container sandbox, which confines
+   * cwd to a sandbox root and strips secret-shaped env vars. It is the only
+   * binding an unattended thread (forked, or channel-originated) may reach.
+   */
+  readonly sandbox: boolean
+  readonly platform: string
+  /** Default working directory for a command that does not name one. */
   readonly cwd: string
   /**
-   * The set of attached folders the client exposes to the server (absolute
-   * paths). When omitted, treat as `[cwd]` (a single-root client). Use
-   * `capabilityRoots()` from "./local-shell-bridge.js" to normalize.
+   * Attached folders this client exposes (absolute paths). May be empty, which
+   * means nothing is attached: auto-approval is opt-in, so an empty list with
+   * `fullAccess: false` denies.
    */
-  readonly roots?: ReadonlyArray<string>
+  readonly roots: ReadonlyArray<string>
   /**
-   * Full-machine access — the client lets the server run commands in any
-   * working directory (semantically root `/`). When true, `roots` is advisory
-   * (the agent may still be told about attached folders) but no scope gate
-   * applies. When omitted, treat as `false`.
+   * Full-machine access: the client allows any working directory, and `roots`
+   * becomes advisory rather than a gate.
    */
-  readonly fullAccess?: boolean
+  readonly fullAccess: boolean
 }
 
 export interface LocalShellResultFrame {
   readonly type: "local-shell-result"
   readonly requestId: string
   readonly threadId: string
+  /**
+   * The responding client's own id. NOT trusted on its own: the server honours
+   * it only when this connection actually registered that clientId, which stops
+   * one attached machine answering another's pending command now that several
+   * can be attached at once.
+   */
+  readonly clientId: string
   readonly approved: boolean
   readonly exitCode: number | null
   readonly stdout: string

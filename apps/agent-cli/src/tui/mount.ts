@@ -1,4 +1,4 @@
-import { homedir } from "node:os"
+import { homedir, hostname as osHostname } from "node:os"
 import { appendFileSync } from "node:fs"
 import { render, useRenderer } from "@opentui/solid"
 import type { CliRenderer } from "@opentui/core"
@@ -195,10 +195,20 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     if (threadId === null) return
     client.send({
       type: "local-shell-capability",
-      threadId,
       enabled: localShell.enabled,
       approvalMode: localShell.approvalMode,
       clientId: localShell.clientId,
+      sandbox: false,
+      // How the agent addresses this machine when several are attached to one
+      // thread. Host name, so two of the operator's machines stay distinct.
+      label:
+        (() => {
+          try {
+            return (osHostname().split(".")[0] ?? "").toLowerCase() || process.platform
+          } catch {
+            return process.platform
+          }
+        })(),
       platform: localShell.platform,
       cwd: localShell.cwd,
       roots: localShell.roots,

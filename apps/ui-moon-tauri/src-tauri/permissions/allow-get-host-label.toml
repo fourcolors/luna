@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-get-host-label"
+description = "Allows reading this machine's short host name, used as the label the agent addresses it by when several machines are attached to one thread"
+
+[permission.commands]
+allow = [
+  "get_host_label"
+]
