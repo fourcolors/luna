@@ -1,0 +1,374 @@
+{
+  "blocked": false,
+  "officialSplit": "longmemeval_oracle.json",
+  "subsetRule": "seeded Fisher–Yates (seed=42) then first 15 (no cherry-pick)",
+  "seed": 42,
+  "questionIds": [
+    "gpt4_2f8be40d",
+    "e5ba910e_abs",
+    "545bd2b5",
+    "9d25d4e0",
+    "gpt4_b5700ca9",
+    "16c90bf4",
+    "gpt4_b4a80587",
+    "b759caee",
+    "gpt4_65aabe59",
+    "19b5f2b3_abs",
+    "195a1a1b",
+    "gpt4_e05b82a6",
+    "b9cfe692",
+    "58470ed2",
+    "08e075c7"
+  ],
+  "ingestedTurns": 315,
+  "scored": [
+    {
+      "questionId": "gpt4_2f8be40d",
+      "question": "How many weddings have I attended in this year?",
+      "questionType": "multi-session",
+      "abstention": false,
+      "groundTruth": "I attended three weddings. The couples were Rachel and Mike, Emily and Sarah, and Jen and Tom.",
+      "prediction": "I think there might be some confusion! I'm a large language model, I don't have personal experiences or memories, so I haven't attended any weddings. I'm here to provide information and help with your questions.\n\nHowever, I can tell you that it's great that you're thinking about planning a post-wedding celebration! It's a wonderful way to extend the joy and love of your special day to a wider circle of friends and family.\n\nIf you have any more questions or need help with planning your post-wedding celebration, feel free to ask!",
+      "f1": 0.0625,
+      "containsGold": 0
+    },
+    {
+      "questionId": "e5ba910e_abs",
+      "question": "What is the total cost of my recently purchased headphones and the iPad?",
+      "questionType": "multi-session",
+      "abstention": true,
+      "groundTruth": "(unanswerable — expects abstention)",
+      "prediction": "No information available.",
+      "f1": 1,
+      "containsGold": 1
+    },
+    {
+      "questionId": "545bd2b5",
+      "question": "How much screen time have I been averaging on Instagram per day?",
+      "questionType": "single-session-user",
+      "abstention": false,
+      "groundTruth": "2 hours",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "9d25d4e0",
+      "question": "How many pieces of jewelry did I acquire in the last two months?",
+      "questionType": "multi-session",
+      "abstention": false,
+      "groundTruth": "3",
+      "prediction": "You acquired 5 pieces of jewelry in the last two months.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "gpt4_b5700ca9",
+      "question": "How many days ago did I attend the Maundy Thursday service at the Episcopal Church?",
+      "questionType": "temporal-reasoning",
+      "abstention": false,
+      "groundTruth": "4 days.",
+      "prediction": "2023/04/10 (Mon) 07:43",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "16c90bf4",
+      "question": "I'm looking back at our previous conversation about the Seco de Cordero recipe from Ancash. You mentioned using a light or medium-bodied beer, but I was wondering if you could remind me what type of beer you specifically recommended?",
+      "questionType": "single-session-assistant",
+      "abstention": false,
+      "groundTruth": "I recommended using a Pilsner or Lager for the recipe.",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "gpt4_b4a80587",
+      "question": "Which event happened first, the road trip to the coast or the arrival of the new prime lens?",
+      "questionType": "temporal-reasoning",
+      "abstention": false,
+      "groundTruth": "The arrival of the new prime lens",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "b759caee",
+      "question": "I was looking back at our previous conversation about buying unique engagement rings directly from designers. Can you remind me of the Instagram handle of the UK-based designer who works with unusual gemstones?",
+      "questionType": "single-session-assistant",
+      "abstention": false,
+      "groundTruth": "@jessica_poole_jewellery",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "gpt4_65aabe59",
+      "question": "Which device did I set up first, the smart thermostat or the mesh network system?",
+      "questionType": "temporal-reasoning",
+      "abstention": false,
+      "groundTruth": "Smart thermostat",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "19b5f2b3_abs",
+      "question": "How long was I in Korea for?",
+      "questionType": "single-session-user",
+      "abstention": true,
+      "groundTruth": "(unanswerable — expects abstention)",
+      "prediction": "No information available.",
+      "f1": 1,
+      "containsGold": 1
+    },
+    {
+      "questionId": "195a1a1b",
+      "question": "Can you suggest some activities that I can do in the evening?",
+      "questionType": "single-session-preference",
+      "abstention": false,
+      "groundTruth": "The user would prefer suggestions that involve relaxing activities that can be done in the evening, preferably before 9:30 pm. They would not prefer suggestions that involve using their phone or watching TV, as these activities have been affecting their sleep quality.",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "gpt4_e05b82a6",
+      "question": "How many times did I ride rollercoasters across all the events I attended from July to October?",
+      "questionType": "multi-session",
+      "abstention": false,
+      "groundTruth": "10 times",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "b9cfe692",
+      "question": "How long did I take to finish 'The Seven Husbands of Evelyn Hugo' and 'The Nightingale' combined?",
+      "questionType": "temporal-reasoning",
+      "abstention": false,
+      "groundTruth": "5.5 weeks",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    },
+    {
+      "questionId": "58470ed2",
+      "question": "I was going through our previous conversation about The Library of Babel, and I wanted to confirm - what did Borges say about the center and circumference of the Library?",
+      "questionType": "single-session-assistant",
+      "abstention": false,
+      "groundTruth": "According to Borges, 'The Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.'",
+      "prediction": "Borges notes that the Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.",
+      "f1": 0.8717948717948718,
+      "containsGold": 0
+    },
+    {
+      "questionId": "08e075c7",
+      "question": "How long have I been using my Fitbit Charge 3?",
+      "questionType": "knowledge-update",
+      "abstention": false,
+      "groundTruth": "9 months",
+      "prediction": "No information available.",
+      "f1": 0,
+      "containsGold": 0
+    }
+  ],
+  "retrieval": [
+    {
+      "questionId": "gpt4_2f8be40d",
+      "question": "How many weddings have I attended in this year?",
+      "questionType": "multi-session",
+      "evidenceCount": 3,
+      "evidenceHit": 1,
+      "answerSessionCount": 3,
+      "answerSessionHit": 3
+    },
+    {
+      "questionId": "e5ba910e_abs",
+      "question": "What is the total cost of my recently purchased headphones and the iPad?",
+      "questionType": "multi-session",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 2,
+      "answerSessionHit": 2
+    },
+    {
+      "questionId": "545bd2b5",
+      "question": "How much screen time have I been averaging on Instagram per day?",
+      "questionType": "single-session-user",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "9d25d4e0",
+      "question": "How many pieces of jewelry did I acquire in the last two months?",
+      "questionType": "multi-session",
+      "evidenceCount": 5,
+      "evidenceHit": 0,
+      "answerSessionCount": 3,
+      "answerSessionHit": 3
+    },
+    {
+      "questionId": "gpt4_b5700ca9",
+      "question": "How many days ago did I attend the Maundy Thursday service at the Episcopal Church?",
+      "questionType": "temporal-reasoning",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "16c90bf4",
+      "question": "I'm looking back at our previous conversation about the Seco de Cordero recipe from Ancash. You mentioned using a light or medium-bodied beer, but I was wondering if you could remind me what type of beer you specifically recommended?",
+      "questionType": "single-session-assistant",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "gpt4_b4a80587",
+      "question": "Which event happened first, the road trip to the coast or the arrival of the new prime lens?",
+      "questionType": "temporal-reasoning",
+      "evidenceCount": 2,
+      "evidenceHit": 1,
+      "answerSessionCount": 2,
+      "answerSessionHit": 2
+    },
+    {
+      "questionId": "b759caee",
+      "question": "I was looking back at our previous conversation about buying unique engagement rings directly from designers. Can you remind me of the Instagram handle of the UK-based designer who works with unusual gemstones?",
+      "questionType": "single-session-assistant",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "gpt4_65aabe59",
+      "question": "Which device did I set up first, the smart thermostat or the mesh network system?",
+      "questionType": "temporal-reasoning",
+      "evidenceCount": 3,
+      "evidenceHit": 3,
+      "answerSessionCount": 2,
+      "answerSessionHit": 2
+    },
+    {
+      "questionId": "19b5f2b3_abs",
+      "question": "How long was I in Korea for?",
+      "questionType": "single-session-user",
+      "evidenceCount": 0,
+      "evidenceHit": 0,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "195a1a1b",
+      "question": "Can you suggest some activities that I can do in the evening?",
+      "questionType": "single-session-preference",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "gpt4_e05b82a6",
+      "question": "How many times did I ride rollercoasters across all the events I attended from July to October?",
+      "questionType": "multi-session",
+      "evidenceCount": 4,
+      "evidenceHit": 4,
+      "answerSessionCount": 4,
+      "answerSessionHit": 4
+    },
+    {
+      "questionId": "b9cfe692",
+      "question": "How long did I take to finish 'The Seven Husbands of Evelyn Hugo' and 'The Nightingale' combined?",
+      "questionType": "temporal-reasoning",
+      "evidenceCount": 2,
+      "evidenceHit": 1,
+      "answerSessionCount": 3,
+      "answerSessionHit": 3
+    },
+    {
+      "questionId": "58470ed2",
+      "question": "I was going through our previous conversation about The Library of Babel, and I wanted to confirm - what did Borges say about the center and circumference of the Library?",
+      "questionType": "single-session-assistant",
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1
+    },
+    {
+      "questionId": "08e075c7",
+      "question": "How long have I been using my Fitbit Charge 3?",
+      "questionType": "knowledge-update",
+      "evidenceCount": 2,
+      "evidenceHit": 2,
+      "answerSessionCount": 2,
+      "answerSessionHit": 2
+    }
+  ],
+  "aggregate": [
+    {
+      "questionType": "knowledge-update",
+      "count": 1,
+      "meanF1": 0,
+      "meanContainsGold": 0
+    },
+    {
+      "questionType": "multi-session",
+      "count": 4,
+      "meanF1": 0.265625,
+      "meanContainsGold": 0.25
+    },
+    {
+      "questionType": "single-session-assistant",
+      "count": 3,
+      "meanF1": 0.2905982905982906,
+      "meanContainsGold": 0
+    },
+    {
+      "questionType": "single-session-preference",
+      "count": 1,
+      "meanF1": 0,
+      "meanContainsGold": 0
+    },
+    {
+      "questionType": "single-session-user",
+      "count": 2,
+      "meanF1": 0.5,
+      "meanContainsGold": 0.5
+    },
+    {
+      "questionType": "temporal-reasoning",
+      "count": 4,
+      "meanF1": 0,
+      "meanContainsGold": 0
+    },
+    {
+      "questionType": "OVERALL",
+      "count": 15,
+      "meanF1": 0.19561965811965812,
+      "meanContainsGold": 0.13333333333333333
+    }
+  ],
+  "cost": {
+    "totalTokensIn": 38313,
+    "totalTokensOut": 225,
+    "totalCostUsd": 0,
+    "calls": 15
+  },
+  "wallClockSec": 213.414,
+  "config": {
+    "QA_LIMIT": 15,
+    "SEED": 42,
+    "TOP_K": 10,
+    "ANSWER_MODEL": "llama3.2:1b",
+    "DRY_RUN": false,
+    "embedModel": "nomic-embed-text",
+    "ollamaBaseUrl": "http://127.0.0.1:11434"
+  },
+  "scoringNote": "Cheap F1 + contains-gold only. Official LongMemEval metric is a GPT-4o yes/no judge — not run (no paid keys)."
+}
