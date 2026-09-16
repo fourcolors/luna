@@ -83,15 +83,20 @@ describe("sandbox local shell", () => {
       timeoutMs: 1_000,
     })
 
-    await expect(bridge.request({
+    const outcome = await bridge.request({
       threadId: "thr_1",
       command: "printf sandbox-ok",
       timeoutMs: 1_000,
-    })).resolves.toMatchObject({
+    })
+    expect(outcome.result).toMatchObject({
       approved: true,
       exitCode: 0,
       stdout: "sandbox-ok",
     })
+    // The sandbox binding identifies itself, so a command served by the
+    // container is distinguishable from one served by a desktop client.
+    expect(outcome.dispatchedTo.clientId).toBe("server_sandbox_thr_1")
+    expect(outcome.dispatchedTo.cwd).toBe(root)
   })
 
   it("denies request cwd outside the sandbox root", async () => {

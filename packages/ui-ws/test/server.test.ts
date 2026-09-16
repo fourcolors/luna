@@ -440,6 +440,58 @@ describe("UIWebSocketServer", () => {
     expect(bridge.getCapability("thr_1")).toBeNull()
   })
 
+  it("logs a warning when a local shell attach is refused", async () => {
+    // A refused attach changes no server state, so before this line existed it
+    // produced no record anywhere: the client that never got the shell looked
+    // exactly like the one that did.
+    const bridge = createLocalShellBridge()
+    rig = await startRig(undefined, { localShellBridge: bridge })
+
+    // Swap console.warn directly rather than via a mocking helper: these
+    // suites can run under runners whose `vi` shim is a subset of vitest's.
+    const warnings: string[] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(" "))
+    }
+
+    try {
+      await exchangeFrames(
+        rig.url,
+        { authorization: `Bearer ${TOKEN}` },
+        [
+          {
+            type: "local-shell-capability",
+            threadId: "thr_1",
+            enabled: true,
+            clientId: "cli_first",
+            platform: "linux",
+            cwd: "/root/luna",
+          },
+          {
+            type: "local-shell-capability",
+            threadId: "thr_1",
+            enabled: true,
+            clientId: "cli_second",
+            platform: "darwin",
+            cwd: "/Users/sterling",
+          },
+        ],
+        3,
+      )
+    } finally {
+      console.warn = originalWarn
+    }
+
+    const refusal = warnings.find((w) => w.includes("local-shell attach refused"))
+    expect(refusal).toBeDefined()
+    expect(refusal).toContain("thr_1")
+    expect(refusal).toContain("cli_second")
+
+    // The incumbent keeps the slot; this change is about visibility, not arity.
+    expect(bridge.getCapability("thr_1")?.clientId).toBe("cli_first")
+  })
+
   it("fires onLocalShellRelease when a client disables its local shell", async () => {
     const bridge = createLocalShellBridge()
     const released: Array<string> = []

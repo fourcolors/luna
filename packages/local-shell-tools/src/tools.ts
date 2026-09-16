@@ -41,7 +41,11 @@ export const makeLocalShellTools = (
     description:
       "Request execution of a shell command in the user's attached Luna terminal client. " +
       "The terminal client may ask the user for approval or run the command in an auto-approved attached session. " +
-      "Use this only when local machine execution is needed for the current task.",
+      "Use this only when local machine execution is needed for the current task. " +
+      "The result carries `ranOn`, identifying the client that actually served the command " +
+      "(clientId, platform, effective cwd, roots, fullAccess). Read it before concluding that " +
+      "a missing file or repo is absent: the binding can change between calls, so a result from " +
+      "an unexpected `ranOn.platform` means you ran on the wrong machine, not that the path is gone.",
     inputSchema: runShape,
     ...LOCAL_SHELL_TOOL_DISCOVERY,
     handler: (args) =>
@@ -66,7 +70,7 @@ export const makeLocalShellTools = (
           )
         }
 
-        const result = yield* Effect.tryPromise({
+        const outcome = yield* Effect.tryPromise({
           try: () =>
             bridge.request({
               threadId,
@@ -82,6 +86,7 @@ export const makeLocalShellTools = (
             }),
         })
 
+        const result = outcome.result
         return {
           approved: result.approved,
           exitCode: result.exitCode,
@@ -89,6 +94,10 @@ export const makeLocalShellTools = (
           stderr: result.stderr,
           durationMs: result.durationMs,
           timedOut: result.timedOut,
+          // Which machine actually ran this. Without it, a command that ran on
+          // the wrong host is indistinguishable from a missing file, because
+          // the binding for a thread can change with no in-band signal.
+          ranOn: outcome.dispatchedTo,
         } as const
       }),
   })

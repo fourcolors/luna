@@ -2130,6 +2130,15 @@ export const startUIWebSocketServer = (
                       send(ws, out)
                     })
                     send(ws, status)
+                    if (!status.accepted) {
+                      // A refused attach used to change no state and produce no
+                      // record anywhere, so a client that never got the shell
+                      // looked identical to one that did.
+                      console.warn(
+                        `[ui-ws] local-shell attach refused for ${frame.threadId} ` +
+                          `(clientId=${frame.clientId}): ${status.message}`,
+                      )
+                    }
                     if (status.accepted) {
                       yield* Ref.update(localShellClients, (clients) => {
                         const next = new Map(clients)
