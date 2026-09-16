@@ -15,6 +15,7 @@
     "bench:rerank": "bun bench/rerank-eval.ts",
     "eval:locomo": "bun src/adapters/locomo-eval/run.ts",
     "eval:locomo:judge-rescore": "bun src/adapters/locomo-eval/judge-rescore.ts",
+    "eval:longmemeval": "bun src/adapters/longmemeval-eval/run.ts",
     "bench:bulletin": "bun bench/bulletin-eval.ts",
     "bench:bulletin-generate": "bun bench/bulletin-generate.ts"
   },
