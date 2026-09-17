@@ -256,4 +256,111 @@ d("sqlite-vector maintenance", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("reembed refreshes the FTS enrichment column from current keyed content", async () => {
+    // Guards the rebuild contract: reembedMemoryVectors rebuilds the vector
+    // row from the CURRENT keyed content, so the enrichment column (and the
+    // FTS index fed by its trigger) must track content.enrichmentPhrases —
+    // not keep whatever the row was written with.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-reembed-enrich-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "enrich-row",
+                namespace: "notes",
+                kind: "note",
+                content: {
+                  text: "memory row with enrichment",
+                  enrichmentPhrases: ["first-alias"],
+                },
+              }),
+            )
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+
+      // Out-of-band content edit + stale provider tag: the audit must flag
+      // the row, and the reembed must rebuild enrichment from keyed content.
+      // Load the extension on the raw connection — the backend's AFTER
+      // triggers reference the vectorlite v-table.
+      const { initVectorlite } = await import(
+        "../src/backends/vectorlite-init.js"
+      )
+      const vl = initVectorlite()
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            get: (...p: unknown[]) => unknown
+            run: (...p: unknown[]) => { changes: number }
+          }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const raw = new bunSqlite.Database(dbPath)
+      try {
+        if (vl.ok) raw.loadExtension(vl.path)
+        raw.run(
+          "UPDATE memory_vectors SET embedding_provider = 'legacy-provider'",
+        )
+        const keyed = raw
+          .query("SELECT content_json FROM memory_keyed WHERE id = 'enrich-row'")
+          .get() as { content_json: string }
+        const content = JSON.parse(keyed.content_json) as Record<
+          string,
+          unknown
+        >
+        content.enrichmentPhrases = ["second-alias"]
+        raw
+          .query("UPDATE memory_keyed SET content_json = ? WHERE id = 'enrich-row'")
+          .run(JSON.stringify(content))
+      } finally {
+        raw.close()
+      }
+
+      const result = await Effect.runPromise(
+        reembedMemoryVectors({
+          dbPath,
+          embedder: replacementStub,
+          dryRun: false,
+        }),
+      )
+      expect(result.reembedded).toBe(1)
+
+      const check = new bunSqlite.Database(dbPath)
+      try {
+        if (vl.ok) check.loadExtension(vl.path)
+        const vec = check
+          .query("SELECT enrichment FROM memory_vectors WHERE id = 'enrich-row'")
+          .get() as { enrichment: string }
+        expect(vec.enrichment).toBe("second-alias")
+        const ftsNew = check
+          .query(
+            `SELECT count(*) AS c FROM memory_fts WHERE memory_fts MATCH '"second-alias"'`,
+          )
+          .get() as { c: number }
+        expect(ftsNew.c).toBe(1)
+        const ftsOld = check
+          .query(
+            `SELECT count(*) AS c FROM memory_fts WHERE memory_fts MATCH '"first-alias"'`,
+          )
+          .get() as { c: number }
+        expect(ftsOld.c).toBe(0)
+      } finally {
+        check.close()
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

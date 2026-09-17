@@ -972,6 +972,21 @@ export function reembedMemoryVectors(args: {
             })
             continue
           }
+          // Re-derive the enrichment phrases from the current keyed content,
+          // mirroring put()'s write path: this UPDATE rebuilds the vector
+          // row, so the FTS enrichment column must track
+          // content.enrichmentPhrases here too — otherwise the re-embedded
+          // row's lexical index stays stale until its next put().
+          let content: unknown = null
+          try {
+            content =
+              candidate.raw.content_json === null
+                ? null
+                : JSON.parse(candidate.raw.content_json)
+          } catch {
+            content = null
+          }
+          const enrichment = extractEnrichmentPhrases(content).join(" ")
           const embeddingInput = formatMemoryRecordEmbeddingInput({
             namespace: candidate.raw.namespace,
             kind: candidate.raw.kind ?? "unknown",
@@ -1012,7 +1027,8 @@ export function reembedMemoryVectors(args: {
                           embedding_model = ?,
                           embedding_format = ?,
                           embedding_input_hash = ?,
-                          embedded_at = ?
+                          embedded_at = ?,
+                          enrichment = ?
                     WHERE id = ?`,
                 ).run(
                   embeddingBuf,
@@ -1024,6 +1040,7 @@ export function reembedMemoryVectors(args: {
                   args.embedder.embeddingFormat,
                   inputHash,
                   embeddedAt,
+                  enrichment,
                   candidate.raw.id,
                 )
                 db.run("COMMIT")
