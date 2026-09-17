@@ -12,7 +12,7 @@
  * from vitest.config.ts), direct module imports, vi spies on Storage.prototype
  * (the vitest-setup.ts patch makes these reliable under Bun).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createState } from '../frontend-react/src/chat/state'
 import { createLocalShell } from '../frontend-react/src/chat/localShell'
 
@@ -144,5 +144,82 @@ describe('Feature: sendCapability() emits correct frame', () => {
     ls.sendCapability()
     const frame = wsFrames[0] as Record<string, unknown>
     expect(frame.approvalMode).not.toBe('prompt')
+  })
+})
+
+// ── Feature: handleRequest() runs cwd-less commands at the advertised default ──
+
+describe('Feature: handleRequest() cwd defaulting', () => {
+  const invokeMock = vi.fn()
+
+  beforeEach(() => {
+    localStorage.clear()
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', durationMs: 1, timedOut: false })
+    ;(window as any).__TAURI__ = { core: { invoke: invokeMock } }
+  })
+
+  afterEach(() => {
+    delete (window as any).__TAURI__
+  })
+
+  const resultFrame = (ctx: ReturnType<typeof makeCtx>['ctx']) =>
+    (ctx.WebSocketEngine.send as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((f) => f.type === 'local-shell-result')
+
+  it('Scenario: a request without cwd executes at roots[0], the advertised default', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = ['/Users/op/work']
+    state.localShell.fullAccess = false
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r1', threadId: 't1', command: 'pwd' })
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ command: 'pwd', cwd: '/Users/op/work' }),
+    )
+    expect(resultFrame(ctx)?.approved).toBe(true)
+  })
+
+  it('Scenario: an explicit cwd is passed through unchanged', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = ['/Users/op/work']
+    state.localShell.fullAccess = false
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r2', threadId: 't1', command: 'pwd', cwd: '/Users/op/work/sub' })
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: '/Users/op/work/sub' }),
+    )
+  })
+
+  it('Scenario: no roots and no homeDir keeps the legacy null (process cwd)', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = []
+    state.localShell.fullAccess = true
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r3', threadId: 't1', command: 'pwd' })
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: null }),
+    )
+  })
+
+  it('Scenario: a cwd-less command outside no roots is still denied', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = []
+    state.localShell.fullAccess = false
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r4', threadId: 't1', command: 'pwd' })
+
+    expect(invokeMock).not.toHaveBeenCalled()
+    expect(resultFrame(ctx)?.approved).toBe(false)
   })
 })
