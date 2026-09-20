@@ -147,12 +147,8 @@ export function createLocalShell(ctx: LocalShellCtx) {
       try {
         const r = await window.__TAURI__.core.invoke('local_shell_exec', {
           command: frame.command,
-          // A request that names no cwd runs at the ADVERTISED default
-          // (roots[0], else homeDir) — the same expression sendCapability()
-          // publishes as this client's `cwd`. Passing null here used to make
-          // the backend inherit the Tauri process's cwd (often `/`), so a
-          // command the scope gate approved as "in roots" executed outside
-          // them while ranOn reported roots[0].
+          // No cwd named: run at the advertised default (roots[0], else
+          // homeDir) — the same default sendCapability() publishes.
           cwd: frame.cwd || ls.roots[0] || ls.homeDir || null,
           timeoutMs: frame.timeoutMs ?? null
         });

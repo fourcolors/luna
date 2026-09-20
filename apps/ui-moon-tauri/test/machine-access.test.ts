@@ -151,6 +151,8 @@ describe('Feature: sendCapability() emits correct frame', () => {
 
 describe('Feature: handleRequest() cwd defaulting', () => {
   const invokeMock = vi.fn()
+  const ROOT = '/Users/op/work'
+  const HOME = '/Users/op'
 
   beforeEach(() => {
     localStorage.clear()
@@ -170,7 +172,7 @@ describe('Feature: handleRequest() cwd defaulting', () => {
 
   it('Scenario: a request without cwd executes at roots[0], the advertised default', async () => {
     const { ctx, state } = makeCtx()
-    state.localShell.roots = ['/Users/op/work']
+    state.localShell.roots = [ROOT]
     state.localShell.fullAccess = false
     const ls = createLocalShell(ctx)
 
@@ -178,23 +180,39 @@ describe('Feature: handleRequest() cwd defaulting', () => {
 
     expect(invokeMock).toHaveBeenCalledWith(
       'local_shell_exec',
-      expect.objectContaining({ command: 'pwd', cwd: '/Users/op/work' }),
+      expect.objectContaining({ command: 'pwd', cwd: ROOT }),
     )
     expect(resultFrame(ctx)?.approved).toBe(true)
   })
 
   it('Scenario: an explicit cwd is passed through unchanged', async () => {
     const { ctx, state } = makeCtx()
-    state.localShell.roots = ['/Users/op/work']
+    state.localShell.roots = [ROOT]
     state.localShell.fullAccess = false
     const ls = createLocalShell(ctx)
 
-    await ls.handleRequest({ requestId: 'r2', threadId: 't1', command: 'pwd', cwd: '/Users/op/work/sub' })
+    await ls.handleRequest({ requestId: 'r2', threadId: 't1', command: 'pwd', cwd: `${ROOT}/sub` })
 
     expect(invokeMock).toHaveBeenCalledWith(
       'local_shell_exec',
-      expect.objectContaining({ cwd: '/Users/op/work/sub' }),
+      expect.objectContaining({ cwd: `${ROOT}/sub` }),
     )
+  })
+
+  it('Scenario: no roots but a homeDir runs at homeDir', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = []
+    Object.assign(state.localShell, { homeDir: HOME })
+    state.localShell.fullAccess = true
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r5', threadId: 't1', command: 'pwd' })
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: HOME }),
+    )
+    expect(resultFrame(ctx)?.approved).toBe(true)
   })
 
   it('Scenario: no roots and no homeDir keeps the legacy null (process cwd)', async () => {
@@ -221,5 +239,20 @@ describe('Feature: handleRequest() cwd defaulting', () => {
 
     expect(invokeMock).not.toHaveBeenCalled()
     expect(resultFrame(ctx)?.approved).toBe(false)
+  })
+
+  it('Scenario: a rejected invoke still replies instead of hanging the bridge', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = [ROOT]
+    state.localShell.fullAccess = false
+    invokeMock.mockRejectedValueOnce(new Error('transport down'))
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r6', threadId: 't1', command: 'pwd' })
+
+    const f = resultFrame(ctx)
+    expect(f?.approved).toBe(true)
+    expect(f?.exitCode).toBeNull()
+    expect(String(f?.stderr)).toMatch(/exec failed/)
   })
 })
