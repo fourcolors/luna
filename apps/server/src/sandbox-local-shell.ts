@@ -277,6 +277,11 @@ export const executeSandboxLocalShellRequest = async (
       signalChild(child.pid, "SIGTERM")
       forceKillTimer = setTimeout(() => {
         signalChild(child.pid, "SIGKILL")
+        // The process group is dead, but "close" may never fire when a
+        // reparented grandchild (e.g. setsid) still holds the stdio pipes
+        // open. Settle here like the CLI executor does; the settled guard
+        // makes a later "close" a no-op.
+        finish(null)
       }, FORCE_KILL_GRACE_MS)
     }, timeoutMs)
   })
