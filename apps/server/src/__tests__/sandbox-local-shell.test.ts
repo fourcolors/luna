@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
@@ -122,6 +123,34 @@ describe("sandbox local shell", () => {
       stderr: "local shell cwd outside approved sandbox root",
     })
   })
+
+  it("settles after SIGKILL even when a reparented grandchild holds stdio open", async () => {
+    const root = tempDir()
+    try {
+      const result = await executeSandboxLocalShellRequest({
+        type: "local-shell-request",
+        requestId: "req_reparented",
+        threadId: "thr_1",
+        // setsid(1) moves the sleeper into a new session, so the
+        // process-group SIGKILL cannot reach it: it keeps the stdio pipes
+        // open and Node's "close" event never fires. The executor must
+        // still settle the result instead of hanging the promise.
+        command: "setsid sleep 20 & sleep 5",
+        timeoutMs: 500,
+      }, {
+        cwd: root,
+        sandboxRoot: root,
+        env: { PATH: process.env.PATH },
+        timeoutMs: 500,
+      })
+      expect(result).toMatchObject({ timedOut: true, exitCode: null })
+    } finally {
+      // Reap the setsid'd sleeper the repro command leaves behind.
+      try {
+        execFileSync("pkill", ["-f", "sleep 20"])
+      } catch { /* already gone */ }
+    }
+  }, 15_000)
 
   it("strips secrets from the command environment", () => {
     expect(sanitizeSandboxCommandEnv({
