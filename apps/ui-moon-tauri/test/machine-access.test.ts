@@ -241,6 +241,20 @@ describe('Feature: handleRequest() cwd defaulting', () => {
     expect(resultFrame(ctx)?.approved).toBe(false)
   })
 
+  it('Scenario: an empty-string cwd is treated as unnamed and gets the default', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = [ROOT]
+    state.localShell.fullAccess = true
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r7', threadId: 't1', command: 'pwd', cwd: '' })
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: ROOT }),
+    )
+  })
+
   it('Scenario: a rejected invoke still replies instead of hanging the bridge', async () => {
     const { ctx, state } = makeCtx()
     state.localShell.roots = [ROOT]
