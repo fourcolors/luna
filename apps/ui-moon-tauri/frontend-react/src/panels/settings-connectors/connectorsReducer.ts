@@ -108,6 +108,7 @@ export type ConnectorsPanelAction =
   | { readonly type: "oauth-begin-set"; readonly requestId: string; readonly defId: string }
   | { readonly type: "oauth-code-sent" }
   | { readonly type: "oauth-cancelled"; readonly message: string | null }
+  | { readonly type: "oauth-superseded" }
   | { readonly type: "busy-cleared"; readonly defId: string }
   | { readonly type: "plain-connecting-start"; readonly defId: string; readonly requestId: string }
   | { readonly type: "client-edit-toggled"; readonly defId: string }
@@ -407,6 +408,21 @@ export function reduceConnectors(
 
     case "oauth-cancelled":
       return teardownOauth(state, action.message)
+
+    case "oauth-superseded":
+      // A newer connectOauth retired this flow: Rust's oauth_loopback_start
+      // already cancelled its listener, so retire the UI state too — the stale
+      // "waiting for browser consent" indicator and Cancel button must not
+      // linger (that Cancel would kill the NEW flow's listener). Never touches
+      // the Rust listener or the new flow's epoch bookkeeping; see the epoch
+      // guard in ConnectorsPanel.tsx.
+      return {
+        ...state,
+        busy: clearBusy(state.busy, state.oauthDefinitionId),
+        oauthRequestId: null,
+        oauthDefinitionId: null,
+        oauthCodeSent: false,
+      }
 
     case "busy-cleared":
       return { ...state, busy: clearBusy(state.busy, action.defId) }

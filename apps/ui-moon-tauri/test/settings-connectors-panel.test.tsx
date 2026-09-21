@@ -287,6 +287,86 @@ describe("ConnectorsPanel (React port of panels/settings-connectors.js)", () => 
     expect(codeFrame.state).toBe("state_xyz")
   })
 
+  // 6b. Stale-flow race: starting a second OAuth connect while the first still
+  // awaits browser consent must not kill the second flow. The first flow's
+  // oauth_loopback_wait rejects ("OAuth flow cancelled" - its Rust listener
+  // was retired by the second oauth_loopback_start); that rejection must be
+  // swallowed, never invoking oauth_loopback_cancel on the new listener or
+  // tearing down the new flow's store state.
+  it("a superseded OAuth flow's wait rejection does not cancel the newer flow", async () => {
+    let rejectWait1: ((e: unknown) => void) | null = null
+    let resolveWait2: ((v: unknown) => void) | null = null
+    const conn = mountEnabled({
+      invoke: (cmd) => {
+        if (cmd === "oauth_loopback_start") return 54321
+        if (cmd === "open_external_url") return null
+        if (cmd === "oauth_loopback_wait") {
+          return new Promise((resolve, reject) => {
+            if (rejectWait1 === null) rejectWait1 = reject
+            else resolveWait2 = resolve
+          })
+        }
+        return null
+      },
+    })
+    const OAUTH_DEF_2 = { ...OAUTH_DEF, id: "discord", name: "Discord" }
+    act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF, OAUTH_DEF_2] }))
+
+    // Flow 1 (gws): begin -> redirect -> wait pending on consent.
+    act(() => connectBtn("gws").click())
+    act(() => goBtn("gws").click())
+    await flush()
+    const begin1 = conn.sentFrames().find((f) => f.type === "connector-oauth-begin")!
+    act(() =>
+      conn.fireFrame({
+        type: "connector-oauth-redirect",
+        requestId: begin1.requestId,
+        authUrl: "https://accounts.google.com/oauth?state=one",
+        pendingId: "pend_1",
+      }),
+    )
+    await flush()
+    expect(rejectWait1).not.toBeNull()
+
+    // Flow 2 (discord) starts while flow 1 awaits consent.
+    act(() => connectBtn("discord").click())
+    act(() => goBtn("discord").click())
+    await flush()
+    const begins = conn.sentFrames().filter((f) => f.type === "connector-oauth-begin")
+    expect(begins).toHaveLength(2)
+    act(() =>
+      conn.fireFrame({
+        type: "connector-oauth-redirect",
+        requestId: begins[1].requestId,
+        authUrl: "https://discord.com/oauth?state=two",
+        pendingId: "pend_2",
+      }),
+    )
+    await flush()
+    expect(resolveWait2).not.toBeNull()
+
+    // Flow 1's Rust listener dies (retired by flow 2's start) -> its wait rejects.
+    act(() => {
+      rejectWait1!("OAuth flow cancelled")
+    })
+    await flush()
+
+    // The newer flow must be untouched: no listener cancel, no error banner.
+    expect(conn.invoke).not.toHaveBeenCalledWith("oauth_loopback_cancel")
+    expect(errorEl().hidden).toBe(true)
+
+    // Flow 2's wait still resolves into a connector-oauth-code for pend_2.
+    act(() => {
+      resolveWait2!({ code: "code_2", state: "state_2" })
+    })
+    await flush()
+    const codeFrames = conn.sentFrames().filter((f) => f.type === "connector-oauth-code")
+    expect(codeFrames).toHaveLength(1)
+    expect(codeFrames[0].pendingId).toBe("pend_2")
+    expect(codeFrames[0].code).toBe("code_2")
+    expect(codeFrames[0].state).toBe("state_2")
+  })
+
   // 7. Plain (api-key) connect sends connector-connect
   it("sends connector-connect for api-key connector with secretRef", () => {
     const conn = mountEnabled()
