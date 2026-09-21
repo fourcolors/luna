@@ -149,7 +149,8 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     // Rust listener is about to be cancelled by oauth_loopback_start, and its
     // stale busy indicator / Cancel button must not linger (that Cancel would
     // otherwise kill the new flow's listener). Must run before
-    // oauth-authorizing-start so the retired def is still the old one.
+    // oauth-authorizing-start so the reducer's sweep of stale "authorizing"
+    // busy entries doesn't clear the new flow's own entry.
     store.dispatch({ type: "oauth-superseded" })
     const flowEpoch = ++oauthEpochRef.current
     store.dispatch({ type: "oauth-authorizing-start", defId: def.id })

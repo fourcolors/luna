@@ -367,6 +367,42 @@ describe("ConnectorsPanel (React port of panels/settings-connectors.js)", () => 
     expect(codeFrames[0].state).toBe("state_2")
   })
 
+  // 6c. Supersede-before-begin: a flow retired while still between
+  // oauth-authorizing-start and oauth-begin-set (its oauth_loopback_start
+  // never resolves, so oauthDefinitionId stays null) must not leave its
+  // "authorizing" busy indicator / Cancel button behind — that stale Cancel
+  // would kill the NEW flow's listener.
+  it("a flow superseded before oauth-begin-set leaves no stale Cancel button behind", async () => {
+    const conn = mountEnabled({
+      invoke: (cmd) => {
+        // oauth_loopback_start never resolves: flow 1 stays in the
+        // authorizing window, oauth-begin-set never fires.
+        if (cmd === "oauth_loopback_start") return new Promise(() => {})
+        if (cmd === "open_external_url") return null
+        return null
+      },
+    })
+    const OAUTH_DEF_2 = { ...OAUTH_DEF, id: "discord", name: "Discord" }
+    act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF, OAUTH_DEF_2] }))
+
+    // Flow 1 (gws) starts; its loopback_start promise never resolves.
+    act(() => connectBtn("gws").click())
+    act(() => goBtn("gws").click())
+    await flush()
+    const cancelBtn = (defId: string) =>
+      document.querySelector(`[data-testid="connector-cancel-btn-${defId}"]`)
+    expect(cancelBtn("gws")).toBeTruthy()
+
+    // Flow 2 (discord) supersedes it while it is still pre-begin.
+    act(() => connectBtn("discord").click())
+    act(() => goBtn("discord").click())
+    await flush()
+
+    // The stale gws Cancel button must be gone; discord's is live.
+    expect(cancelBtn("gws")).toBeFalsy()
+    expect(cancelBtn("discord")).toBeTruthy()
+  })
+
   // 7. Plain (api-key) connect sends connector-connect
   it("sends connector-connect for api-key connector with secretRef", () => {
     const conn = mountEnabled()
