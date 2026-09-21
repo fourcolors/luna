@@ -230,9 +230,16 @@ describe('Feature: handleRequest() cwd defaulting', () => {
   })
 
   it('Scenario: a cwd-less command outside no roots is still denied', async () => {
+    // Mirror the production boot state: 'off' in localStorage derives
+    // fullAccess:false AND enabled:false (enabled is derived as
+    // fullAccess || roots.length > 0), so this exercises the real
+    // `!ls.enabled` denial path instead of a hand-mutated state.
+    localStorage.setItem('luna_machine_access', 'off')
     const { ctx, state } = makeCtx()
     state.localShell.roots = []
-    state.localShell.fullAccess = false
+    // Pin the production boot invariant: machine access OFF with empty roots
+    // means enabled:false, so denial goes through the !ls.enabled path.
+    expect(state.localShell.enabled).toBe(false)
     const ls = createLocalShell(ctx)
 
     await ls.handleRequest({ requestId: 'r4', threadId: 't1', command: 'pwd' })
