@@ -49,54 +49,6 @@ export const composeInterceptors = (
     })
 }
 
-/** Deny a fixed set of tool names; pass on everything else. */
-export const denyByName = (
-  names: ReadonlyArray<string>,
-  message = "denied by policy",
-): ToolInterceptor => {
-  const set = new Set(names)
-  return (toolName) =>
-    Effect.succeed<InterceptorVerdict>(
-      set.has(toolName)
-        ? { behavior: "deny", message }
-        : "pass",
-    )
-}
-
-/** Allow a fixed set of tool names; pass on everything else. */
-export const allowByName = (
-  names: ReadonlyArray<string>,
-): ToolInterceptor => {
-  const set = new Set(names)
-  return (toolName, input) =>
-    Effect.succeed<InterceptorVerdict>(
-      set.has(toolName)
-        ? { behavior: "allow", updatedInput: input }
-        : "pass",
-    )
-}
-
-/**
- * For the named tools, strip the listed keys from input before
- * allowing. On non-matching tools: pass.
- */
-export const redactInput = (
-  names: ReadonlyArray<string>,
-  keys: ReadonlyArray<string>,
-): ToolInterceptor => {
-  const nameSet = new Set(names)
-  const keySet = new Set(keys)
-  return (toolName, input) =>
-    Effect.sync<InterceptorVerdict>(() => {
-      if (!nameSet.has(toolName)) return "pass"
-      const redacted: Record<string, unknown> = {}
-      for (const k of Object.keys(input)) {
-        if (!keySet.has(k)) redacted[k] = input[k]
-      }
-      return { behavior: "allow", updatedInput: redacted }
-    })
-}
-
 /* -------------------------------------------------------------------------- */
 /* Safety rails                                                               */
 /*                                                                            */

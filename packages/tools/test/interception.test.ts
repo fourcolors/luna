@@ -2,64 +2,26 @@
  * composeInterceptors Tier-1 tests.
  *
  * Invariants exercised:
- *  - denyByName matches → deny; non-match → pass
- *  - allowByName matches → allow; non-match → pass
- *  - redactInput strips keys on match; non-match → pass
  *  - compose: first non-pass wins; later interceptors NOT consulted
  *  - compose [] → default allow with original input
  */
 import { describe, expect, it } from "vitest"
 import { Effect } from "effect"
 import {
-  allowByName,
   buildMcpGateEntries,
   clearStaleUnmountableForLiveConnector,
   composeInterceptors,
   defaultSafetyInterceptors,
-  denyByName,
   denyDangerousCommands,
   denySecretPaths,
   mcpToolGate,
-  redactInput,
+  type InterceptorVerdict,
   type McpGateEntry,
   type McpServerPolicy,
   type ToolInterceptor,
 } from "../src/interception.js"
 
 const run = <A>(eff: Effect.Effect<A, never>) => Effect.runPromise(eff)
-
-describe("denyByName", () => {
-  it("denies on match, passes on non-match", async () => {
-    const d = denyByName(["Bash"])
-    expect(await run(d("Bash", {}))).toMatchObject({ behavior: "deny" })
-    expect(await run(d("Read", {}))).toBe("pass")
-  })
-})
-
-describe("allowByName", () => {
-  it("allows on match with input preserved, passes on non-match", async () => {
-    const a = allowByName(["Read"])
-    expect(await run(a("Read", { path: "/x" }))).toEqual({
-      behavior: "allow",
-      updatedInput: { path: "/x" },
-    })
-    expect(await run(a("Bash", {}))).toBe("pass")
-  })
-})
-
-describe("redactInput", () => {
-  it("strips listed keys on match; passes otherwise", async () => {
-    const r = redactInput(["Fetch"], ["token", "password"])
-    const hit = await run(
-      r("Fetch", { url: "https://x", token: "sk-…", password: "p" }),
-    )
-    expect(hit).toEqual({
-      behavior: "allow",
-      updatedInput: { url: "https://x" },
-    })
-    expect(await run(r("Read", { token: "sk" }))).toBe("pass")
-  })
-})
 
 describe("composeInterceptors", () => {
   it("empty list → default allow with original input", async () => {
@@ -98,9 +60,13 @@ describe("composeInterceptors", () => {
           Effect.andThen(inner(n, i)),
         )
 
+    const deny: ToolInterceptor = () =>
+      Effect.succeed<InterceptorVerdict>({ behavior: "deny", message: "no" })
+    const allow: ToolInterceptor = (_n, i) =>
+      Effect.succeed<InterceptorVerdict>({ behavior: "allow", updatedInput: i })
     const fn = composeInterceptors([
-      track("deny", denyByName(["Bash"])),
-      track("allow", allowByName(["Bash"])),
+      track("deny", deny),
+      track("allow", allow),
     ])
     const res = await run(fn("Bash", {}))
     expect(res).toMatchObject({ behavior: "deny" })
@@ -108,10 +74,9 @@ describe("composeInterceptors", () => {
   })
 
   it("all pass → default allow with original input", async () => {
-    const fn = composeInterceptors([
-      denyByName(["Other"]),
-      allowByName(["Other"]),
-    ])
+    const pass: ToolInterceptor = () =>
+      Effect.succeed<InterceptorVerdict>("pass")
+    const fn = composeInterceptors([pass, pass])
     const res = await run(fn("Neither", { k: "v" }))
     expect(res).toEqual({ behavior: "allow", updatedInput: { k: "v" } })
   })
