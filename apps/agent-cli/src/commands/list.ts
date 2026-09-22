@@ -12,7 +12,7 @@ interface ListArgs {
   dbPath?: string
 }
 
-const runList = (args: ListArgs): CmdResult => {
+export const listAccounts = (args: ListArgs): CmdResult => {
   const dbPath = args.dbPath ?? defaultDbPath()
   let db
   try {
@@ -47,6 +47,3 @@ const runList = (args: ListArgs): CmdResult => {
     db.close()
   }
 }
-
-/** Citty-friendly alias for runList — returns exit code directly. */
-export const listAccounts = runList
