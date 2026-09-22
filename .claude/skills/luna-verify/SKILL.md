@@ -144,8 +144,10 @@ m.dispatchPanelMount('settings.vault', ctx)   // remounts into #content-area
 ```
 
 Have the fake server push `{"type":"hello","capabilities":{...}}` on open - capability-gated sections
-(e.g. `vault-section` needs `capabilities.vault`) unhide only after that frame. Frame traffic is then
-assertable server-side in the fake server's stdout.
+(e.g. `vault-section` needs `capabilities.vault`) unhide only after that frame. The hello push is only
+strictly required for fail-closed gates like `settings.vault`: some panels (e.g. `settings.accounts`,
+whose `supported` flag defaults non-false) render the full form *until* a hello denies the capability.
+Frame traffic is then assertable server-side in the fake server's stdout.
 
 **No managed browser? Use CDP.** If the computer-use `browser` target is unavailable, launch
 `open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-devin`, then
