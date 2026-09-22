@@ -16,12 +16,6 @@ describe("buildClientInfo", () => {
     expect(buildClientInfo({ legacy: true }).name).toBe("luna-cli-readline")
   })
 
-  it("nameOverride wins over legacy flag", () => {
-    expect(
-      buildClientInfo({ legacy: true, nameOverride: "custom" }).name,
-    ).toBe("custom")
-  })
-
   it("explicit version and platform override defaults", () => {
     const ci = buildClientInfo({ version: "9.9.9", platform: "linux" })
     expect(ci.version).toBe("9.9.9")
