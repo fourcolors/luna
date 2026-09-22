@@ -10,6 +10,7 @@ import type {
 import type { ServerDescriptor } from "../contract.js"
 import type { TokenResolver } from "../token-resolver.js"
 import { Broadcast } from "../internal/broadcast.js"
+import { createFrameQueue } from "../internal/frame-queue.js"
 
 // ── Types for Hermes HTTP responses ──────────────────────────────────────────
 
@@ -369,58 +370,13 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
     this.#sessionAborts.set(sessionId, abortController)
 
     // Per-session async queue — same pattern as LunaWsAdapter
-    const frameQueue: Array<ChatFrame> = []
-    const frameWaiters: Array<(v: IteratorResult<ChatFrame>) => void> = []
-    let closed = false
+    const { push: pushFrame, drainClose, isClosed, messages } = createFrameQueue()
     let turnInFlight = false
-
-    function pushFrame(frame: ChatFrame): void {
-      if (closed) return
-      const waiter = frameWaiters.shift()
-      if (waiter) {
-        waiter({ value: frame, done: false })
-      } else {
-        frameQueue.push(frame)
-      }
-    }
-
-    function drainClose(): void {
-      closed = true
-      for (const w of frameWaiters.splice(0)) {
-        w({ value: undefined as unknown as ChatFrame, done: true })
-      }
-    }
 
     this.#sessionDrains.set(sessionId, drainClose)
 
     // We keep a reference to the pending message ID for delta/done correlation
     let currentMessageId = `msg-${Date.now()}`
-
-    const messages: AsyncIterable<ChatFrame> = {
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<ChatFrame>> {
-            if (closed && frameQueue.length === 0) {
-              return Promise.resolve({ value: undefined as unknown as ChatFrame, done: true })
-            }
-            const queued = frameQueue.shift()
-            if (queued !== undefined) {
-              return Promise.resolve({ value: queued, done: false })
-            }
-            if (closed) {
-              return Promise.resolve({ value: undefined as unknown as ChatFrame, done: true })
-            }
-            return new Promise<IteratorResult<ChatFrame>>((resolve) => {
-              frameWaiters.push(resolve)
-            })
-          },
-          return(): Promise<IteratorResult<ChatFrame>> {
-            drainClose()
-            return Promise.resolve({ value: undefined as unknown as ChatFrame, done: true })
-          },
-        }
-      },
-    }
 
     /** Internal: start an SSE fetch and pump frames into the queue. */
     const startStream = async (userText: string): Promise<void> => {
@@ -450,7 +406,7 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
           signal: abortController.signal,
         })
       } catch (err) {
-        if (!closed) {
+        if (!isClosed()) {
           pushFrame({
             t: "error",
             code: "fetch-failed",
@@ -462,7 +418,7 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
       }
 
       if (!res.ok) {
-        if (!closed) {
+        if (!isClosed()) {
           pushFrame({
             t: "error",
             code: `http-${res.status}`,
@@ -484,6 +440,44 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
       const decoder = new TextDecoder()
       let buffer = ""
 
+      // Parses one SSE `data:` payload into delta/done frames. Returns true
+      // when the [DONE] sentinel was seen (stream complete).
+      const handleDataLine = (data: string): boolean => {
+        // [DONE] sentinel — stream is complete
+        if (data === "[DONE]") {
+          if (!isClosed() && !doneEmitted) {
+            doneEmitted = true
+            pushFrame({ t: "done", messageId: currentMessageId })
+          }
+          return true
+        }
+
+        // Parse OpenAI delta chunk
+        let chunk: OpenAIChunk
+        try {
+          chunk = JSON.parse(data) as OpenAIChunk
+        } catch {
+          return false // skip malformed JSON
+        }
+
+        const choice = chunk.choices?.[0]
+        if (!choice) return false
+
+        const deltaText = choice.delta.content
+        if (deltaText) {
+          if (!isClosed()) {
+            pushFrame({ t: "delta", messageId: currentMessageId, text: deltaText })
+          }
+        }
+
+        // finish_reason present on the final chunk (before [DONE])
+        if (choice.finish_reason && !isClosed() && !doneEmitted) {
+          doneEmitted = true
+          pushFrame({ t: "done", messageId: currentMessageId, stopReason: choice.finish_reason })
+        }
+        return false
+      }
+
       try {
         while (true) {
           const { done, value } = await reader.read()
@@ -497,81 +491,22 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
             const trimmed = line.trim()
             if (!trimmed || trimmed.startsWith(":")) continue // empty or SSE comment
 
-            if (trimmed.startsWith("data:")) {
-              const data = trimmed.slice(5).trim()
-
-              // [DONE] sentinel — stream is complete
-              if (data === "[DONE]") {
-                if (!closed && !doneEmitted) {
-                  doneEmitted = true
-                  pushFrame({ t: "done", messageId: currentMessageId })
-                }
-                drainClose()
-                reader.cancel().catch(() => { /* ignore */ })
-                return
-              }
-
-              // Parse OpenAI delta chunk
-              let chunk: OpenAIChunk
-              try {
-                chunk = JSON.parse(data) as OpenAIChunk
-              } catch {
-                continue // skip malformed JSON
-              }
-
-              const choice = chunk.choices?.[0]
-              if (!choice) continue
-
-              const deltaText = choice.delta.content
-              if (deltaText) {
-                if (!closed) {
-                  pushFrame({ t: "delta", messageId: currentMessageId, text: deltaText })
-                }
-              }
-
-              // finish_reason present on the final chunk (before [DONE])
-              if (choice.finish_reason && !closed && !doneEmitted) {
-                doneEmitted = true
-                pushFrame({ t: "done", messageId: currentMessageId, stopReason: choice.finish_reason })
-              }
+            if (trimmed.startsWith("data:") && handleDataLine(trimmed.slice(5).trim())) {
+              drainClose()
+              reader.cancel().catch(() => { /* ignore */ })
+              return
             }
           }
         }
-      // Process any residual buffer (handles final line without trailing newline)
-      const residual = buffer.trim()
-      if (residual) {
-        if (residual.startsWith("data:")) {
-          const data = residual.slice(5).trim()
-          if (data === "[DONE]") {
-            if (!closed && !doneEmitted) {
-              doneEmitted = true
-              pushFrame({ t: "done", messageId: currentMessageId })
-            }
-            drainClose()
-            reader.cancel().catch(() => { /* ignore */ })
-            return
-          }
-          let chunk: OpenAIChunk
-          try {
-            chunk = JSON.parse(data) as OpenAIChunk
-          } catch {
-            chunk = { choices: [] }
-          }
-          const choice = chunk.choices?.[0]
-          if (choice) {
-            const deltaText = choice.delta.content
-            if (deltaText && !closed) {
-              pushFrame({ t: "delta", messageId: currentMessageId, text: deltaText })
-            }
-            if (choice.finish_reason && !closed && !doneEmitted) {
-              doneEmitted = true
-              pushFrame({ t: "done", messageId: currentMessageId, stopReason: choice.finish_reason })
-            }
-          }
+        // Process any residual buffer (handles final line without trailing newline)
+        const residual = buffer.trim()
+        if (residual.startsWith("data:") && handleDataLine(residual.slice(5).trim())) {
+          drainClose()
+          reader.cancel().catch(() => { /* ignore */ })
+          return
         }
-      }
       } catch (err) {
-        if (!closed && !(err instanceof DOMException && err.name === "AbortError")) {
+        if (!isClosed() && !(err instanceof DOMException && err.name === "AbortError")) {
           pushFrame({
             t: "error",
             code: "stream-error",
@@ -580,7 +515,7 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
         }
       } finally {
         reader.releaseLock()
-        if (!closed) {
+        if (!isClosed()) {
           drainClose()
         }
       }
@@ -592,7 +527,7 @@ export class HermesHttpSseAdapter implements ClientTransportAdapter {
       threadId,
       messages,
       async send(input: ChatInput): Promise<void> {
-        if (adapter.#disposed || closed) {
+        if (adapter.#disposed || isClosed()) {
           throw new Error("Cannot send: session is closed")
         }
         if (turnInFlight) {
