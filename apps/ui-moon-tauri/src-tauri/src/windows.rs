@@ -143,6 +143,68 @@ fn panel_kind_from_label(label: &str) -> Option<String> {
     label.strip_prefix("panel-").map(|s| s.replace('-', "."))
 }
 
+/// Params recorded at `open_widget` time, keyed by instance window label.
+/// An instance label carries only a HASH of its params (`panel-flow-1a2b3c`),
+/// so `write_panel_layout` could never recover the params from the label
+/// alone — every non-singleton panel (flow, agents, chat direct lines) was
+/// persisted under a bogus kind (`flow.1a2b3c`) the boot restore's
+/// `registry_lookup` could never resolve, and silently never came back.
+/// Stale entries are harmless: they are only consulted for windows that are
+/// currently open, and a label deterministically re-resolves to the same
+/// params if the same instance reopens.
+type InstanceParamsMap = std::sync::Mutex<std::collections::HashMap<String, serde_json::Value>>;
+
+static PANEL_INSTANCE_PARAMS: std::sync::OnceLock<InstanceParamsMap> =
+    std::sync::OnceLock::new();
+
+fn instance_params_map() -> &'static InstanceParamsMap {
+    PANEL_INSTANCE_PARAMS.get_or_init(Default::default)
+}
+
+fn record_instance_params(label: &str, params: &serde_json::Value) {
+    if let Ok(mut m) = instance_params_map().lock() {
+        m.insert(label.to_string(), params.clone());
+    }
+}
+
+fn instance_params_for(label: &str) -> Option<serde_json::Value> {
+    instance_params_map().lock().ok()?.get(label).cloned()
+}
+
+/// Resolve a panel window label to its registry kind plus instance params.
+/// Base labels (`panel-chat`) resolve directly with no params. Instance
+/// labels (`panel-flow-1a2b3c`) resolve to the base kind whose label is a
+/// prefix plus the params recorded at open time. Returns `None` for labels
+/// that resolve to no registry kind — the caller must not persist those
+/// (the boot restore could never replay them). Pure apart from the
+/// params-map read, and unit-tested.
+fn panel_label_to_kind_and_params(label: &str) -> Option<(String, Option<serde_json::Value>)> {
+    // A registered base label wins outright: the exact match is checked
+    // before the instance scan, so a base label that is also a prefix of a
+    // longer label (panel-settings vs panel-settings-face) still resolves to
+    // its own kind instead of being misread as an instance of the shorter one.
+    if let Some(kind) = panel_kind_from_label(label) {
+        if registry_lookup(&kind).is_some() {
+            return Some((kind, None));
+        }
+    }
+    // Instance label: registered base label + "-" + hex hash of the params.
+    for desc in widget_registry() {
+        let base = panel_label(&desc.kind);
+        let Some(rest) = label.strip_prefix(base.as_str()) else {
+            continue;
+        };
+        let Some(hash) = rest.strip_prefix('-') else {
+            continue;
+        };
+        if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            continue;
+        }
+        return Some((desc.kind.clone(), instance_params_for(label)));
+    }
+    None
+}
+
 /// Pure layout-persistence guard (testable without a webview), same shape as
 /// `is_closable_widget_label`. The launcher is a transient, summoned-on-demand
 /// command palette: `write_panel_layout` records every open panel and the boot
@@ -181,16 +243,28 @@ pub(crate) fn write_panel_layout(app: &tauri::AppHandle) {
         if !label.starts_with("panel-") {
             continue;
         }
-        let Some(kind) = panel_kind_from_label(&label) else {
+        // Resolve through the registry, recovering instance params recorded
+        // at open time. Labels that resolve to nothing are NOT persisted:
+        // the boot restore replays rows via registry_lookup, so an
+        // unresolvable row could never come back (previously every
+        // non-singleton panel wrote a bogus "flow.1a2b3c"-style kind here
+        // and was silently dropped on restart).
+        let Some((kind, params)) = panel_label_to_kind_and_params(&label) else {
             continue;
         };
         if !persists_in_layout(&kind) {
             continue;
         }
         if let Some((x, y, w, h)) = window_logical_rect(&win) {
-            entries.push(serde_json::json!({
+            let mut entry = serde_json::json!({
                 "kind": kind, "x": x, "y": y, "w": w, "h": h
-            }));
+            });
+            if let Some(p) = params {
+                if !p.is_null() {
+                    entry["params"] = p;
+                }
+            }
+            entries.push(entry);
         }
     }
     let mut doc = serde_json::json!({ "version": 1, "panels": entries });
@@ -237,6 +311,33 @@ pub(crate) fn spawn_panel(
         height,
     )
     .map(|w| w.label().to_string())
+}
+
+/// Spawn a panel for one boot-restore layout row. Rows with `params` replay
+/// through the deterministic instance label + param URL — the same label a
+/// fresh `open_widget` with those params would produce — so the restored
+/// window reconciles with the live instance namespace instead of spawning a
+/// sibling. Rows without params (or with unresolvable params) fall back to
+/// the base panel.
+pub(crate) fn spawn_panel_for_layout(
+    app: &tauri::AppHandle,
+    desc: &WidgetDescriptor,
+    params: Option<&serde_json::Value>,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<String, String> {
+    match params {
+        Some(p) if !p.is_null() => {
+            let label = panel_instance_label(&desc.kind, p);
+            let url = panel_url_with_params(&desc.page, p);
+            record_instance_params(&label, p);
+            spawn_panel_at(app, desc, &label, &url, x, y, width, height)
+                .map(|w| w.label().to_string())
+        }
+        _ => spawn_panel(app, desc, x, y, width, height),
+    }
 }
 
 /// Traffic-light inset shared by the window builders and the AppKit re-apply
@@ -440,6 +541,13 @@ pub(crate) async fn open_widget(
             panel_url_with_params(&desc.page, &params),
         )
     };
+    // The label only carries a hash of the params; remember the params
+    // themselves so write_panel_layout can persist instance panels and the
+    // boot restore can replay them (without this, every non-singleton panel
+    // silently vanished on restart).
+    if !params.is_null() {
+        record_instance_params(&label, &params);
+    }
     // Singleton (or same-params instance): already open → show (+ optional focus).
     // When the caller passes x/y (drag-out pull / re-drop), also re-place so
     // an early-spawned floater can track the pointer without a second IPC surface.
@@ -2410,5 +2518,80 @@ mod tests {
                 "viewMode": null,
             })
         );
+    }
+
+    // ── layout persistence: instance labels (issue: non-singleton panels
+    // silently never restored) ─────────────────────────────────────────────
+    //
+    // Before the fix, write_panel_layout derived the kind with
+    // panel_kind_from_label alone, so an instance window (panel-flow-1a2b3c)
+    // was persisted as kind "flow.1a2b3c" — which registry_lookup can never
+    // resolve, so the boot restore skipped it and the panel never came back.
+
+    #[test]
+    fn instance_label_resolves_to_base_kind_with_recorded_params() {
+        // The exact pre-fix failure: a flow inspector opened via
+        // open_widget("flow", {jobId}) must persist as kind "flow" WITH its
+        // params, not as the unresolvable kind "flow.<hash>".
+        let params = serde_json::json!({"jobId": "job-42"});
+        let label = panel_instance_label("flow", &params);
+        record_instance_params(&label, &params);
+        let (kind, restored) =
+            panel_label_to_kind_and_params(&label).expect("instance label must resolve");
+        assert_eq!(kind, "flow");
+        assert_eq!(restored.as_ref(), Some(&params));
+    }
+
+    #[test]
+    fn chat_direct_line_instance_resolves_with_thread_param() {
+        // open_widget("chat", {thread}) — the Phase 8 direct line — is the
+        // other live instance path; its thread param must survive the round
+        // trip so the exact direct line restores.
+        let params = serde_json::json!({"thread": "thread-abc"});
+        let label = panel_instance_label("chat", &params);
+        record_instance_params(&label, &params);
+        let (kind, restored) =
+            panel_label_to_kind_and_params(&label).expect("instance label must resolve");
+        assert_eq!(kind, "chat");
+        assert_eq!(restored.as_ref(), Some(&params));
+    }
+
+    #[test]
+    fn base_label_resolves_without_params() {
+        let (kind, params) =
+            panel_label_to_kind_and_params("panel-chat").expect("base label must resolve");
+        assert_eq!(kind, "chat");
+        assert!(params.is_none());
+        // Dotted kind round-trips through the dash label form.
+        let (kind, _) = panel_label_to_kind_and_params("panel-settings-updates")
+            .expect("dotted base label must resolve");
+        assert_eq!(kind, "settings.updates");
+    }
+
+    #[test]
+    fn unresolvable_labels_are_not_persisted() {
+        // Unknown kinds (base or instance-shaped) and non-panel windows must
+        // resolve to None so write_panel_layout skips them instead of
+        // writing rows the boot restore could never replay.
+        assert!(panel_label_to_kind_and_params("panel-nope").is_none());
+        assert!(panel_label_to_kind_and_params("panel-nope-1a2b3c").is_none());
+        assert!(panel_label_to_kind_and_params("main").is_none());
+        assert!(panel_label_to_kind_and_params("widget-deadbeef").is_none());
+    }
+
+    #[test]
+    fn instance_label_without_recorded_params_degrades_to_kind_only() {
+        // Params recorded at open_widget time live in-process; if the record
+        // is missing (poisoned lock, label from an older build), the row
+        // still persists under the resolvable base kind so the panel restores
+        // as its base window instead of being dropped entirely.
+        let params = serde_json::json!({"jobId": "job-unrecorded-99"});
+        let label = panel_instance_label("agents", &params);
+        // Deliberately NOT recording: simulates the missing-record edge.
+        let (kind, restored) =
+            panel_label_to_kind_and_params(&label).expect("must still resolve the kind");
+        assert_eq!(kind, "agents");
+        assert!(restored.is_none());
+        assert!(registry_lookup(&kind).is_some());
     }
 }
