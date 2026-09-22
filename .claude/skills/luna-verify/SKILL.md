@@ -95,6 +95,26 @@ Available: `WebSocketEngine`, `ChatState`, `ChatLoop`, `ChatEngine`, `MoonFace`,
 Stage state through those bridges, never by hand-writing markup. Setting the attribute a controller
 owns (`face.dataset.state = 'busy'`) is fine for isolating a single CSS rule.
 
+**Thread drawer / row drag** - when a change touches `threadDrawer.ts` or `threadDrag.ts`, the
+drawer is exercisable at T2 with no server:
+
+```js
+// Seed rows through the REAL frame handler - the same path the server's
+// 'thread-list' frame takes.
+WebSocketEngine.handleFrame({type:'thread-list', threads:[
+  {id:'t-a', title:'Alpha', lastMessagePreview:'one', lastMessageAt:Date.now()-60000},
+  {id:'t-b', title:'Beta',  lastMessagePreview:'two', lastMessageAt:Date.now()}
+]})
+```
+
+- Toggle is `#toggle-threads`; rows are `.thread-row` in `#thread-drawer-list`, sorted
+  `lastMessageAt` desc.
+- A real held-button drag on a row proves `LunaThreadDrag.createSession` + `pointerMove` ran: a
+  `.thread-drag-ghost` card follows the cursor and the row takes `.dragging`. Judge by mid-drag
+  state - after an in-strip release the ghost can stay in the DOM (its removal paths only run
+  when a Tauri window spawn succeeds), so a lingering ghost is not a failure.
+- A plain click goes pointerdown -> 'click' outcome -> `onRowClick` -> active selection.
+
 Take a screenshot **and** measure. `getComputedStyle()` and `getBoundingClientRect()` turn "looks
 right" into a number you can put in a PR - `getComputedStyle(el).fill` is how you catch a token that
 silently resolved to black. Precedent with the exact shape to copy: `.scratch/s16-shots/README.md`.
