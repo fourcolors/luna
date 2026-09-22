@@ -20,15 +20,7 @@
  * is not a fork of panel-ctx.ts's connectWs, it is the thing panel-ctx.ts's
  * doc says the hub intentionally keeps separate.
  */
-import {
-  dirShellExpr,
-  localStepCopy,
-  pathCardLocalDesc,
-  detectNoteText,
-  renderRemoteCmd,
-  PATH_PRELUDE,
-  REPO_URL,
-} from "./wizardHelpers"
+import { dirShellExpr, renderRemoteCmd, PATH_PRELUDE, REPO_URL } from "./wizardHelpers"
 import type { HubAction, ChosenPath, WizardStep } from "./hubReducer"
 import {
   invokeWithTimeout,
@@ -684,8 +676,6 @@ export class HubController {
   readonly WIZARD_W = 660
   readonly WIZARD_H = 600
   private wizardEnv = { serverRunning: false, repoExists: false }
-  private wizardChosenPath: ChosenPath = null
-  private wizardRanInstall = false
 
   isSetupComplete(): boolean {
     return localStorage.getItem(this.STORAGE_DONE) === "1"
@@ -720,7 +710,6 @@ export class HubController {
   openWizard(): void {
     this.dispatch({ type: "wizard-open" })
     this.setWindowSize(this.WIZARD_W, this.WIZARD_H)
-    this.wizardRanInstall = false
     void this.detectEnvironment()
     Logger.info("Setup wizard opened")
   }
@@ -750,37 +739,15 @@ export class HubController {
     this.dispatch({ type: "wizard-detected", env: this.wizardEnv })
   }
 
-  applyLocalMode(update: boolean): { title: string; sub: string; startLabel: string } {
-    return localStepCopy(update)
-  }
-
-  pathLocalDesc(): string {
-    return pathCardLocalDesc(this.wizardEnv)
-  }
-  detectNote(): string | null {
-    return detectNoteText(this.wizardEnv)
-  }
-  envSnapshot(): { serverRunning: boolean; repoExists: boolean } {
-    return this.wizardEnv
-  }
-
   goTo(step: WizardStep): void {
     this.dispatch({ type: "wizard-goto", step })
   }
 
   choosePath(path: "local" | "remote" | "connect"): void {
-    this.wizardChosenPath = path
     this.dispatch({ type: "wizard-choose-path", path })
     if (path === "connect") this.goTo("connect")
     else if (path === "local") this.goTo("local")
     else this.goTo("remote")
-  }
-
-  chosenPath(): ChosenPath {
-    return this.wizardChosenPath
-  }
-  ranInstall(): boolean {
-    return this.wizardRanInstall
   }
 
   prefillConnect(chosenPath: ChosenPath): void {
@@ -996,19 +963,14 @@ export class HubController {
     })
   }
 
-  dirShellExpr(dir: string): string | null {
-    return dirShellExpr(dir)
-  }
-
   async runLocalInstall(dirRaw: string): Promise<void> {
-    const dirSh = this.dirShellExpr(dirRaw.trim() || "~/luna")
+    const dirSh = dirShellExpr(dirRaw.trim() || "~/luna")
     if (!dirSh) {
       this.dispatch({ type: "wizard-local-dir-invalid", value: true })
       setTimeout(() => this.dispatch({ type: "wizard-local-dir-invalid", value: false }), 1800)
       return
     }
     const update = this.wizardEnv.serverRunning || this.wizardEnv.repoExists
-    this.wizardRanInstall = true
     this.dispatch({ type: "wizard-ran-install", value: true })
     this.goTo("progress")
 
