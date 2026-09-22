@@ -31,8 +31,9 @@ describe('native macOS titlebar ownership', () => {
     const placements = windowsRs.match(
       /\.traffic_light_position\(tauri::LogicalPosition::new\(\s*TRAFFIC_LIGHT_INSET_X,\s*TRAFFIC_LIGHT_INSET_Y,?\s*\)\)/g,
     )
-    expect(placements).toHaveLength(2)
-    // One source of truth for the inset — builders and the AppKit re-apply
+    // The shared build_card_window is the single placement site.
+    expect(placements).toHaveLength(1)
+    // One source of truth for the inset — the builder and the AppKit re-apply
     // share these consts so the two placements cannot drift apart.
     // Values track --card-inset in vendor/moon-theme.css, which a natively
     // framed (macOS) window collapses to 0 — see test/moon-native-frame.test.ts,
@@ -50,9 +51,10 @@ describe('native macOS titlebar ownership', () => {
     // no per-window zoom gating, no setEnabled call that could gray the green.
     expect(windowsRs).not.toContain('zoom_enabled')
     expect(windowsRs).not.toMatch(/setEnabled/)
-    // Both native window builders (spawn_panel_at + open_artifact_widget) opt the
-    // zoom button into the style mask so AppKit renders it enabled/green.
-    expect(windowsRs.match(/\.maximizable\(true\)/g)).toHaveLength(2)
+    // The shared card-window builder (build_card_window, used by
+    // spawn_panel_at + open_artifact_widget) opts the zoom button into the
+    // style mask so AppKit renders it enabled/green.
+    expect(windowsRs.match(/\.maximizable\(true\)/g)).toHaveLength(1)
     expect(windowsRs).not.toMatch(/\.maximizable\(false\)/)
   })
 
