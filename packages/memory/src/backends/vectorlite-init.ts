@@ -32,10 +32,6 @@
 import { createRequire } from "node:module"
 import type { VectorliteInitResult } from "@luna/core"
 
-// Re-export the canonical type from @luna/core for back-compat with
-// existing memory-internal consumers (Phase 27a — see brief §2.1).
-export type { VectorliteInitResult }
-
 let cached: VectorliteInitResult | null = null
 
 const DEFAULT_BREW_SQLITE = "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib"
