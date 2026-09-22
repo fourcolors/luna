@@ -28,19 +28,16 @@
  * short-circuits to a wake_log row with outcome='error'), so once the payload
  * parses, the worker's only failure surface is the payload guard.
  */
-import { Context, Effect } from "effect"
+import { Effect } from "effect"
 import { Clock } from "../clock.js"
 import { AgentNotesService } from "../agent-notes/agent-notes.js"
 import {
-  buildWorker,
   defineWorkerLayer,
   resolveEnvTimeoutMs,
   type WorkerKindSpec,
-  type WorkerLayerOptions,
 } from "../jobs/define-worker.js"
 import {
   WorkerError,
-  type Worker,
   type WorkerResult,
 } from "../jobs/worker-registry.js"
 import { WakeReasoner } from "./reasoner.js"
@@ -62,8 +59,6 @@ export const resolveWakeDefaultTimeoutMs = (): number =>
 
 /** The wake service environment a wake cycle requires (+ Clock for `now`). */
 type WakeCtx = WakeReasoner | WakeLogStore | AgentNotesService | Clock
-
-export interface WakeWorkerLayerOptions extends WorkerLayerOptions {}
 
 /**
  * Defensively parse a wake job payload into WakeCronOptions. Wake is
@@ -128,17 +123,6 @@ const wakeSpec: WorkerKindSpec<WakeCtx> = {
       } satisfies WorkerResult
     }),
 }
-
-/**
- * Build a `Worker<never>` that runs one wake cycle against `ctx` — the wake
- * service environment captured at layer-build time. The captured context
- * erases the worker's R to `never` (via the shared wrapper's
- * `Effect.provide`), satisfying the registry's `Worker<never>` contract.
- */
-export const buildWakeWorker = (
-  ctx: Context.Context<WakeCtx>,
-  kind: string,
-): Worker<never> => buildWorker(wakeSpec, ctx, kind)
 
 /**
  * Layer that registers the wake worker into the WorkerRegistry at boot.

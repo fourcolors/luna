@@ -190,17 +190,6 @@ const outcomeFromDigest = (digest: WakeDigest): WakeOutcome =>
     : "no-op"
 
 /**
- * Run one wake cycle. Reads inputs, calls the reasoner, writes wake_log.
- * Always emits a wake_log row (success, no-op, or error) — never throws.
- */
-/**
- * Synthetic sessionId used when wake mirrors its digest into agent_notes.
- * Wake doesn't run inside a chat session — using a stable id groups every
- * wake fire together for `getRecent('wake-cron', ...)` queries while still
- * surfacing through the cross-session `getRecentAcrossSessions` path that
- * `obs_notes_recent` uses by default.
- */
-/**
  * Best-effort side-write for wake's own durability writes (wake_log rows, the
  * agent_notes mirror, next_actions filing). These MUST NOT fail the cycle, but
  * a bare `Effect.ignore` here means a failure to record a failure leaves no
@@ -225,8 +214,19 @@ const bestEffort = <A, E, R>(
     Effect.asVoid,
   )
 
+/**
+ * Synthetic sessionId used when wake mirrors its digest into agent_notes.
+ * Wake doesn't run inside a chat session — using a stable id groups every
+ * wake fire together for `getRecent('wake-cron', ...)` queries while still
+ * surfacing through the cross-session `getRecentAcrossSessions` path that
+ * `obs_notes_recent` uses by default.
+ */
 const WAKE_SESSION_ID = "wake-cron"
 
+/**
+ * Run one wake cycle. Reads inputs, calls the reasoner, writes wake_log.
+ * Always emits a wake_log row (success, no-op, or error) — never throws.
+ */
 export const runWake = (
   now: number,
   opts: WakeCronOptions,
@@ -265,6 +265,25 @@ export const runWake = (
         "agent_notes mirror",
       )
 
+    // Record one wake outcome: append the wake_log row, then mirror into
+    // agent_notes — same two effects, same order, at every branch.
+    const record = (
+      summary: string,
+      outcome: WakeOutcome,
+      artifacts: string,
+      site: string,
+    ): Effect.Effect<void, never> =>
+      bestEffort(
+        store.append({
+          wokeAt: now,
+          goalSlug: null,
+          summary,
+          outcome,
+          artifacts,
+        }),
+        site,
+      ).pipe(Effect.andThen(mirrorToNotes({ summary, outcome, artifacts })))
+
     // Step 1: read state. Failure logged + returned early.
     const inputsResult = yield* Effect.result(readWakeInputs(opts))
     if (inputsResult._tag === "Failure") {
@@ -273,21 +292,12 @@ export const runWake = (
         stage: "read-inputs",
         error: inputsResult.failure.message,
       })
-      yield* bestEffort(
-        store.append({
-          wokeAt: now,
-          goalSlug: null,
-          summary: errSummary,
-          outcome: "error",
-          artifacts: errArtifacts,
-        }),
+      yield* record(
+        errSummary,
+        "error",
+        errArtifacts,
         "wake_log append (read-inputs error)",
       )
-      yield* mirrorToNotes({
-        summary: errSummary,
-        outcome: "error",
-        artifacts: errArtifacts,
-      })
       return
     }
     const read = inputsResult.success
@@ -308,21 +318,12 @@ export const runWake = (
         stage: "read-inputs",
         skipped: read.reason,
       })
-      yield* bestEffort(
-        store.append({
-          wokeAt: now,
-          goalSlug: null,
-          summary: skipSummary,
-          outcome: "skipped",
-          artifacts: skipArtifacts,
-        }),
+      yield* record(
+        skipSummary,
+        "skipped",
+        skipArtifacts,
         "wake_log append (skip)",
       )
-      yield* mirrorToNotes({
-        summary: skipSummary,
-        outcome: "skipped",
-        artifacts: skipArtifacts,
-      })
       return
     }
     const inputs = read.inputs
@@ -335,21 +336,12 @@ export const runWake = (
         stage: "reason",
         error: reasonResult.failure.message,
       })
-      yield* bestEffort(
-        store.append({
-          wokeAt: now,
-          goalSlug: null,
-          summary: errSummary,
-          outcome: "error",
-          artifacts: errArtifacts,
-        }),
+      yield* record(
+        errSummary,
+        "error",
+        errArtifacts,
         "wake_log append (reason error)",
       )
-      yield* mirrorToNotes({
-        summary: errSummary,
-        outcome: "error",
-        artifacts: errArtifacts,
-      })
       return
     }
     const digest = reasonResult.success
@@ -358,21 +350,12 @@ export const runWake = (
     const successSummary = summarizeDigest(digest)
     const successOutcome = outcomeFromDigest(digest)
     const successArtifacts = JSON.stringify(digest)
-    yield* bestEffort(
-      store.append({
-        wokeAt: now,
-        goalSlug: null,
-        summary: successSummary,
-        outcome: successOutcome,
-        artifacts: successArtifacts,
-      }),
+    yield* record(
+      successSummary,
+      successOutcome,
+      successArtifacts,
       "wake_log append (success)",
     )
-    yield* mirrorToNotes({
-      summary: successSummary,
-      outcome: successOutcome,
-      artifacts: successArtifacts,
-    })
 
     // Step 4 (Path B): file the reasoner's proposed actions into next_actions so
     // observation becomes actionable instead of evaporating into wake_log. The
@@ -393,8 +376,3 @@ export const runWake = (
       }
     }
   })
-
-// The legacy `registerWakeCron` (TriggerAgent fiber-per-cron registration) was
-// removed with the V1 scheduler. Wake now runs exclusively through the V2 path:
-// per-workspace `kind:"wake"` job rows drained by the JobTicker into the
-// WakeWorker (see wake-worker.ts), which calls `runWake(now, opts)` directly.
