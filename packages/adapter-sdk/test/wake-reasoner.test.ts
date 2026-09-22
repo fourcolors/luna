@@ -384,6 +384,21 @@ describe("WakeReasonerDefault", () => {
       expect(opts["maxTurns"]).toBe(1)
     })
 
+    // Wake shares the dream reasoner's single-shot contract: `maxTurns: 1` is
+    // only safe while the model has no tool it could spend that turn on. See
+    // dream-reasoner.test.ts for the incident. Wake has not failed this way in
+    // production, but it carried the identical exposure, so the invariant is
+    // pinned on both lanes.
+    it("(b2) disables all built-in tools so maxTurns:1 cannot be spent on a tool_use", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      await Effect.runPromise(runReason(baseInputs, recordingClient(sink)))
+      const opts = sink.last!.options
+      expect(opts["maxTurns"]).toBe(1)
+      expect(opts["tools"]).toEqual([])
+    })
+
     it("(c) EXHAUSTION: broker with no matching account → reason() returns a WakeError (Left), does NOT throw", async () => {
       const sink: { last: { options: Record<string, unknown> } | null } = {
         last: null,
