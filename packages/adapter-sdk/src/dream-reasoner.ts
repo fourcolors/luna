@@ -779,6 +779,15 @@ export const DreamReasonerDefault: Layer.Layer<
             prompt,
             baseOptions: {
               maxTurns: 1,
+              // The dream reasoner is a single-shot JSON producer: it reads the
+              // prompt and returns ops. It never needs a tool. Leaving the
+              // default built-in toolset in context made `maxTurns: 1` unsafe —
+              // any turn the model spent on a tool_use consumed the only turn
+              // and the run died with "Reached maximum number of turns (1)".
+              // `tools: []` is the SDK's documented way to disable all built-in
+              // tools (`allowedTools: []` would NOT do this; it only controls
+              // permission prompting, not availability).
+              tools: [],
               ...(structuredOutputEnabled
                 ? {
                     outputFormat: {

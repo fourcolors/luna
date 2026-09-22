@@ -407,6 +407,11 @@ export const WakeReasonerDefault: Layer.Layer<
             prompt,
             baseOptions: {
               maxTurns: 1,
+              // Same single-shot contract as the dream reasoner: produce a
+              // digest, never call a tool. See dream-reasoner.ts for why this
+              // is `tools: []` and not `allowedTools: []`. Wake has not failed
+              // this way in practice, but it carries the identical exposure.
+              tools: [],
               ...(structuredOutputEnabled
                 ? {
                     outputFormat: {

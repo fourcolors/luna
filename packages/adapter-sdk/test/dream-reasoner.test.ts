@@ -509,6 +509,46 @@ describe("DreamReasonerDefault", () => {
   })
 
   // -------------------------------------------------------------------------
+  // SINGLE-SHOT TURN BUDGET (regression: "Reached maximum number of turns (1)")
+  //
+  // The reasoner is a one-shot JSON producer and runs with `maxTurns: 1`. It
+  // shipped WITHOUT restricting the toolset, so the SDK handed the model the
+  // full built-in `claude_code` preset. Any night the model opened with a
+  // tool_use instead of an answer, that tool_use consumed the only turn and the
+  // dream died with "Reached maximum number of turns (1)". Because it depends
+  // on what the model chooses, it failed intermittently (2026-09-14, 09-19 and
+  // 09-20) while succeeding in between, which is why it read as flake.
+  //
+  // `tools: []` is the SDK's documented switch for "disable all built-in
+  // tools". `allowedTools: []` is NOT a substitute: per the SDK's own type
+  // docs it governs permission prompting, not availability, and would have
+  // left every tool in context.
+  // -------------------------------------------------------------------------
+  describe("single-shot turn budget (regression: max-turns-1 tool_use)", () => {
+    const recordingClient = (sink: {
+      last: { options: Record<string, unknown> } | null
+    }): Layer.Layer<SDKClient> =>
+      SDKClient.fake((params) => {
+        sink.last = { options: (params.options ?? {}) as Record<string, unknown> }
+        const r = { ...makeResultMessage("sid", "uuid-tools"), result: "[]" }
+        return makeFakeQuery({ messages: [r] }).query
+      })
+
+    it("disables all built-in tools so maxTurns:1 cannot be spent on a tool_use", async () => {
+      const sink: { last: { options: Record<string, unknown> } | null } = {
+        last: null,
+      }
+      await Effect.runPromise(
+        runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
+      )
+      const opts = sink.last!.options
+      expect(opts["maxTurns"]).toBe(1)
+      // Must be an empty array — not absent, and not `allowedTools`.
+      expect(opts["tools"]).toEqual([])
+    })
+  })
+
+  // -------------------------------------------------------------------------
   // PROVIDER SEAM (A4): the nightly Dream acquires a credential per reason()
   // through the AccountBroker and routes the SDK at a cheap model via
   // LUNA_DREAM_MODEL. These tests capture the SDK `options` the reasoner builds.
