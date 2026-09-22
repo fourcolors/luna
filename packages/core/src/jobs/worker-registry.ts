@@ -240,72 +240,7 @@ export interface WorkerRegistryApi {
 
 // ── Tag + Layer ─────────────────────────────────────────────────────────────
 
-export class WorkerRegistry extends Context.Service<WorkerRegistry, WorkerRegistryApi>()("luna/WorkerRegistry") {
-  /**
-   * Empty registry. Tests or chat-server boot composes additional Layers
-   * that call `WorkerRegistry.register(kind, worker)` at construction time
-   * (see `WorkerRegistry.withWorker` below) to populate it.
-   */
-  static Default: Layer.Layer<WorkerRegistry> = Layer.effect(
-    WorkerRegistry,
-    Effect.gen(function* () {
-      const ref = yield* Ref.make<Map<string, WorkerEntry<never>>>(new Map())
-
-      const register: WorkerRegistryApi["register"] = (kind, worker) =>
-        Effect.gen(function* () {
-          const entry = normalizeEntry(worker)
-          const before = yield* Ref.get(ref).pipe(
-            Effect.map((m) => m.get(kind) ?? null),
-          )
-          yield* Ref.update(ref, (m) => {
-            const next = new Map(m)
-            next.set(kind, entry)
-            return next
-          })
-          return before?.run ?? null
-        })
-
-      const listKinds: WorkerRegistryApi["listKinds"] = Effect.gen(
-        function* () {
-          const m = yield* Ref.get(ref)
-          return Array.from(m.keys()).sort()
-        },
-      )
-
-      const lookupEntry: WorkerRegistryApi["lookupEntry"] = (kind) =>
-        Effect.gen(function* () {
-          const m = yield* Ref.get(ref)
-          return m.get(kind) ?? null
-        })
-
-      const lookup: WorkerRegistryApi["lookup"] = (kind) =>
-        lookupEntry(kind).pipe(Effect.map((entry) => entry?.run ?? null))
-
-      const dispatch: WorkerRegistryApi["dispatch"] = (kind, payload, ctx) =>
-        Effect.gen(function* () {
-          const entry = yield* lookupEntry(kind)
-          if (!entry) {
-            return yield* Effect.fail(
-              new WorkerError({
-                reason: "unknown_kind",
-                kind,
-                message: `no worker registered for kind "${kind}"`,
-              }),
-            )
-          }
-          return yield* entry.run(payload, ctx)
-        })
-
-      return {
-        register,
-        listKinds,
-        lookup,
-        lookupEntry,
-        dispatch,
-      } satisfies WorkerRegistryApi
-    }),
-  )
-}
+export class WorkerRegistry extends Context.Service<WorkerRegistry, WorkerRegistryApi>()("luna/WorkerRegistry") {}
 
 /**
  * Make a WorkerRegistry layer seeded with an initial worker map. Use this at
@@ -316,9 +251,9 @@ export class WorkerRegistry extends Context.Service<WorkerRegistry, WorkerRegist
  *     workflow: workflowWorker,
  *   })
  *
- * Tests can either compose this with stub workers, OR start from
- * `WorkerRegistry.Default` (empty) and call `register()` at runtime to
- * exercise the dynamic-register path.
+ * Tests can either compose this with stub workers, OR start from an empty
+ * `makeWorkerRegistry({})` and call `register()` at runtime to exercise the
+ * dynamic-register path.
  */
 export const makeWorkerRegistry = (
   initial: Record<string, Registrable<never>>,
