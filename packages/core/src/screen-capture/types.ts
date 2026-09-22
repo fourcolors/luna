@@ -34,13 +34,6 @@ export interface CaptureOptions {
    * Timeout for the capture operation in ms. Default: 10_000.
    */
   readonly timeoutMs?: number
-
-  /**
-   * Apply basic redaction: blur regions matching common PII patterns.
-   * Phase 13b: not yet implemented; reserved for a future phase.
-   * Default: false.
-   */
-  readonly redact?: boolean
 }
 
 export interface CaptureResult {
