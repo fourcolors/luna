@@ -172,7 +172,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
 
   // Phase 3 D3: wire survey check-in frames → store signal.
   session.on("survey", (pending) => {
-    dbg(`evt survey surveyId=${(pending as unknown as { surveyId?: string }).surveyId ?? "?"} items=${pending.items.length}`)
+    dbg(`evt survey surveyId=? items=${pending.items.length}`)
     store.setSurvey(pending)
   })
 

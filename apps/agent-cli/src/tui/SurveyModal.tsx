@@ -56,9 +56,9 @@ export const SurveyModal = (props: SurveyModalProps) => {
       beliefAnswers: beliefAnswers(),
     }
     const verdicts = buildSurveyVerdicts(props.survey.items, answers, props.survey.issuedAt)
-    // surveyId is carried on the PendingSurvey (populated from SurveyRequestFrame.surveyId).
+    // surveyId is an echo for correlation only — mint from issuedAt.
     props.onSubmit(
-      (props.survey as unknown as { surveyId?: string }).surveyId ?? `survey-${props.survey.issuedAt}`,
+      `survey-${props.survey.issuedAt}`,
       props.survey.issuedAt,
       verdicts,
     )
