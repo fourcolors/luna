@@ -147,7 +147,6 @@ const nextDelayMsPure = (consecutiveFailures: number, pollSeconds: number): numb
  *                nowMs - lastAttemptAt >= nextDelayMs(consecutiveFailures, pollSeconds)
  *
  * Both gates must hold for a sync attempt to proceed.
- * Track B will swap chat-server to call this.
  */
 export interface ShouldAttemptSyncInput {
   readonly nowMs: number

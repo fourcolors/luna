@@ -1,12 +1,10 @@
 /**
  * toWireVaultItem — pure wire-safety projection.
  *
- * Mirrors chat-server.ts:2234-2247 exactly: 10 wire fields, `synced` and
- * `shadowed` are derived flags (never values). Exported so Track B can
- * swap the chat-server inline copy to use this instead.
+ * 10 wire fields; `synced` and `shadowed` are derived flags (never values).
  *
- * `varName` is extracted from an env-secret ref (`env:<NAME>`) using the same
- * slice logic as the chat-server's `envVarNameFromRef` helper.
+ * `varName` is extracted from an env-secret ref (`env:<NAME>`) by slicing
+ * off the `env:` prefix.
  */
 
 import type { VaultItem } from "./types.js"
