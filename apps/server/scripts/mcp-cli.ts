@@ -455,7 +455,7 @@ switch (cmd) {
       process.exit(1)
     }
     const flag = argv[2]
-    const on = flag === "--off" ? false : true
+    const on = flag !== "--off"
     await cmdAllowAll(slug, on)
     break
   }
