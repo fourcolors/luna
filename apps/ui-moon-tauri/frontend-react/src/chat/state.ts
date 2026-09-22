@@ -21,6 +21,7 @@
  * skipped by a new call site.
  */
 // @ts-nocheck
+import { newRequestId } from "@luna/ui-shared/core"
 
 export function createState() {
   return {
@@ -185,9 +186,7 @@ export function createState() {
           // Advertised as the default cwd when no root is attached, so a
           // cwd-less command never runs at the filesystem root.
           homeDir: '',
-          clientId: 'moon_' + ((window.crypto && crypto.randomUUID)
-            ? crypto.randomUUID().replace(/-/g, '')
-            : Math.random().toString(36).slice(2))
+          clientId: newRequestId('moon_')
         };
       })()
   }

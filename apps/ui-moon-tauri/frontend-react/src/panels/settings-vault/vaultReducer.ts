@@ -195,14 +195,6 @@ export function storageLineText(storage: VaultStorageLike): string {
   return text
 }
 
-/** prefix + a UUID (dashes stripped) when available, else a random fallback -
- *  ported verbatim from the vanilla module's newReqId(). */
-export function newReqId(prefix: string): string {
-  const c = (globalThis as { crypto?: Crypto }).crypto
-  const uuid = c && typeof c.randomUUID === "function" ? c.randomUUID().replace(/-/g, "") : null
-  return prefix + (uuid ?? Math.random().toString(36).slice(2))
-}
-
 const GENERIC_OK = "Saved."
 const GENERIC_FAIL = "That didn’t work - try again."
 

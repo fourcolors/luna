@@ -15,6 +15,7 @@ export {
   deriveTitle,
   formatBytes,
   formatVal,
+  newRequestId,
   relativeTime,
   truncate,
 } from "./helpers.js"

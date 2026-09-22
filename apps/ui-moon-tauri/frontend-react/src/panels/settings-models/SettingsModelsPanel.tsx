@@ -30,6 +30,7 @@
  * callbacks" rule.
  */
 import { useEffect, useMemo, useReducer, useRef } from "react"
+import { newRequestId } from "@luna/ui-shared/core"
 import type { ModelRoutingListFrame, ModelRoutingStatusFrame } from "@luna/ui-shared/core"
 import { Banner, Button, Card, HStack, NumberInput, Selector, Switch, Text, TextInput, VStack } from "../../astryx-kit"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
@@ -46,14 +47,6 @@ import {
 
 /** Consumed by settings-models-mount.tsx for #bar-title / document.title. */
 export const PANEL_TITLE = "Models"
-
-function newRequestId(prefix: string): string {
-  const g = globalThis as { crypto?: Crypto }
-  if (g.crypto && typeof g.crypto.randomUUID === "function") {
-    return prefix + g.crypto.randomUUID().replace(/-/g, "")
-  }
-  return prefix + Math.random().toString(36).slice(2)
-}
 
 function socketIsOpen(client: LunaWsClient | null): boolean {
   const sock = client?.socket() as { readyState?: number } | null | undefined

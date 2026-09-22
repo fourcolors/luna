@@ -43,14 +43,13 @@
  * covering test), Badge for the kind/source/synced/shadowed chips.
  */
 import { useEffect, useRef } from "react"
-import type { Action } from "@luna/ui-shared/core"
+import { newRequestId, type Action } from "@luna/ui-shared/core"
 import { Badge, Button, NumberInput, SegmentedControl, SegmentedControlItem, Switch, TextInput } from "../../astryx-kit"
 import { useLocalStore, useMoonSelector, useMoonStore } from "../../state/store"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
 import {
   effectiveVarName,
   initialVaultPanelState,
-  newReqId,
   reduceVaultPanel,
   storageLineText,
   type VaultKind,
@@ -205,7 +204,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
       local.dispatch({ type: "status-set", text: "Not connected to a server.", kind: "error" })
       return
     }
-    const rid = newReqId("vlt_")
+    const rid = newRequestId("vlt_")
     frame.requestId = rid
     frame.value = value // the ONLY frame a secret ever rides on
     if (!client!.send(frame)) {
@@ -229,7 +228,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
       local.dispatch({ type: "status-set", text: "Not connected to a server.", kind: "error" })
       return
     }
-    const rid = newReqId("vlt_")
+    const rid = newRequestId("vlt_")
     client!.send({ type: "vault-delete", requestId: rid, id })
     local.dispatch({ type: "delete-started", requestId: rid })
   }
@@ -246,7 +245,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
     }
     const opVault = state.syncOpVault.trim() || "Luna"
     const pollSeconds = Math.max(60, state.syncPoll ?? 300)
-    const rid = newReqId("vlt_")
+    const rid = newRequestId("vlt_")
     client!.send({
       type: "vault-sync-config",
       requestId: rid,
@@ -272,7 +271,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
       local.dispatch({ type: "op-status-set", text: "Not connected to a server.", kind: "error" })
       return
     }
-    const rid = newReqId("op_")
+    const rid = newRequestId("op_")
     if (!client!.send({ type: "register-op-token", requestId: rid, label, token })) {
       local.dispatch({ type: "op-status-set", text: "Not connected to a server.", kind: "error" })
       return
