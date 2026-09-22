@@ -72,7 +72,7 @@ fn read_connection_value_in(luna_dir: &std::path::Path) -> Option<serde_json::Va
     serde_json::from_str::<serde_json::Value>(&contents).ok()
 }
 
-/// Path-injectable variant of `client_config::load_client_config_pub` — parses
+/// Path-injectable variant of `client_config::load_client_config` — parses
 /// `<luna_dir>/client.toml`.  Returns `None` when the file is absent (clean
 /// fall-through to the legacy path), `Err(reason)` when present but invalid.
 fn load_client_config_in(

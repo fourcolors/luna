@@ -216,14 +216,6 @@ fn load_client_config() -> Result<ClientConfig, String> {
     parse_client_config(&contents)
 }
 
-/// Public alias so external callers (e.g. future non-Tauri tooling) can inspect
-/// the default route without going through a Tauri command.
-/// `main.rs` now uses `load_client_config_in` directly for testability.
-#[allow(dead_code)]
-pub(crate) fn load_client_config_pub() -> Result<ClientConfig, String> {
-    load_client_config()
-}
-
 fn derive_transport(endpoints: &[String]) -> String {
     let first = endpoints.first().map(String::as_str).unwrap_or("");
     if first.starts_with("wss://") {
