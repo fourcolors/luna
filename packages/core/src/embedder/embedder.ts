@@ -17,6 +17,7 @@
  */
 import { Context, Effect, Result, Layer, Schedule } from "effect"
 import { EmbedderError } from "../errors.js"
+import { fnv1a32 } from "../fnv1a.js"
 
 export interface EmbedderApi {
   /** Provider tag — e.g. "stub", "ollama", "anthropic". For telemetry/logs. */
@@ -44,18 +45,6 @@ export class EmbedderService extends Context.Service<EmbedderService, EmbedderAp
 // slots chosen by FNV-1a hash. Then L2-normalize. This gives ranking that
 // monotonically tracks token overlap — sufficient for the BDD scenarios.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const FNV_OFFSET = 2166136261 >>> 0
-const FNV_PRIME = 16777619
-
-function fnv1a(s: string): number {
-  let h = FNV_OFFSET
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, FNV_PRIME) >>> 0
-  }
-  return h
-}
 
 function tokenize(text: string): string[] {
   return text.toLowerCase().match(/[a-z0-9]+/g) ?? []
@@ -85,7 +74,7 @@ export function makeStubEmbedder(opts?: StubEmbedderOptions): EmbedderApi {
           return v
         }
         for (const tok of tokens) {
-          const slot = fnv1a(tok) % dimension
+          const slot = fnv1a32(tok) % dimension
           v[slot] = (v[slot] ?? 0) + 1
         }
         // L2-normalize so cosine == dot product.

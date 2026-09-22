@@ -19,6 +19,7 @@ import { Clock } from "../clock.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
+import { fnv1a32 } from "../fnv1a.js"
 import { SUGGESTED_ACTIONS_COMPONENT, SuggestedActionsError } from "./types.js"
 import type {
   ExecutionRef,
@@ -84,16 +85,6 @@ const SCHEMA_V1 = `
 
 // ── Deterministic ids ──────────────────────────────────────────────────────────
 
-/** FNV-1a (32-bit) — same family belief-writer uses for content ids. */
-const fnv1a = (s: string): string => {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(36)
-}
-
 /** Deterministic, key-order-independent JSON — so two equivalent payloads that
  *  differ only in object key order produce the SAME dedup hash (plain
  *  `JSON.stringify` is insertion-order-dependent and not guaranteed stable). */
@@ -113,9 +104,9 @@ const stableStringify = (v: unknown): string => {
  *  doesn't change the id. Explicit `id` wins. */
 const deriveActionId = (i: ProposeInput): string =>
   i.id ??
-  `sa-${fnv1a(
+  `sa-${fnv1a32(
     `${i.threadId}|${i.actionType}|${i.title.trim().toLowerCase()}|${stableStringify(i.payload)}`,
-  )}`
+  ).toString(36)}`
 
 /** Audit-log row id — idempotency key on (actionId, event, at). */
 const deriveLogId = (actionId: string, event: string, at: number): string =>

@@ -1,5 +1,6 @@
 import type { MemoryRecord } from "@luna/memory"
 import { makeRecord, OPERATOR_MEMORY_SCOPE } from "@luna/memory"
+import { fnv1a32 } from "../fnv1a.js"
 
 /** Beliefs live in the operator namespace as kind:"belief" memory records. */
 export const BELIEF_KIND = "belief"
@@ -51,16 +52,6 @@ export interface BeliefContent {
   readonly outreachRights: BeliefOutreachRights
 }
 
-/** FNV-1a 32-bit hash → stable hex id (no external dep). */
-function fnv1a(s: string): string {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return (h >>> 0).toString(16).padStart(8, "0")
-}
-
 /**
  * Deterministic belief id from (domain, normalized statement). Trimmed,
  * whitespace-collapsed + lowercased so case- and whitespace-normalized
@@ -69,7 +60,7 @@ function fnv1a(s: string): string {
  */
 export function deriveBeliefId(domain: string, statement: string): string {
   const norm = statement.trim().toLowerCase().replace(/\s+/g, " ")
-  return `belief-${domain}-${fnv1a(`${domain} ${norm}`)}`
+  return `belief-${domain}-${fnv1a32(`${domain} ${norm}`).toString(16).padStart(8, "0")}`
 }
 
 /** Construct a belief MemoryRecord. Defaults: status "proposed", no validation. */
