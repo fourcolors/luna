@@ -1,8 +1,8 @@
 /**
  * @luna/ui-shared — framework-agnostic chat plumbing.
  *
- * Now that the React UI has been retired, this barrel re-exports the same
- * surface as `@luna/ui-shared/core`. Solid components live in
- * @luna/ui-shared-solid.
+ * This barrel re-exports the same surface as `@luna/ui-shared/core`;
+ * framework-bound UI components live with their apps (e.g. the Moon's
+ * React frontend under apps/ui-moon-tauri/frontend-react).
  */
 export * from "./core.js"
