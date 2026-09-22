@@ -7,8 +7,6 @@
 import type { ClientInfo } from "@luna/ui-ws"
 
 export type ClientInfoSource = {
-  /** Override the client name (default: "luna-tui" if !legacy, "luna-cli" if legacy). */
-  readonly nameOverride?: string
   /** Set to true when the legacy readline UI is calling. */
   readonly legacy?: boolean
   /** Override the version (default: pulled from agent-cli package.json). */
@@ -24,8 +22,7 @@ export type ClientInfoSource = {
 export const AGENT_CLI_CLIENT_VERSION = "0.0.1"
 
 export const buildClientInfo = (src: ClientInfoSource = {}): ClientInfo => {
-  const name =
-    src.nameOverride ?? (src.legacy === true ? "luna-cli-readline" : "luna-tui")
+  const name = src.legacy === true ? "luna-cli-readline" : "luna-tui"
   return {
     name,
     version: src.version ?? AGENT_CLI_CLIENT_VERSION,
