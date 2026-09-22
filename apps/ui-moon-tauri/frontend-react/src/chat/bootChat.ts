@@ -589,7 +589,6 @@ export function bootChat() {
     // closure resolves it at call time. Thread switches are user-driven and
     // always happen long after boot, so the binding is always live by then.
     onThreadSwitch: () => { suggestedActionsEngine.refresh() },
-    LunaThreadDrag: (window as unknown as { LunaThreadDrag?: unknown }).LunaThreadDrag,
     // Single-writer wrapper: binds setActiveThread to the live State object so
     // threadDrawer.ts never touches State.activeThreadId directly.
     setActiveThread: (id: string, reason: string) => setActiveThread(State, id, reason),
