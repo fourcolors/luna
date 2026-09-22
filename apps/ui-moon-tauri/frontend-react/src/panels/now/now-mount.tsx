@@ -12,7 +12,7 @@
  *
  * Mirrors settings-launcher-mount.tsx's mountSettingsLauncherPanel shape.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "../panel-mount"
 import { NowPanel, NOW_PANEL_TITLE } from "./NowPanel"
 import type { PanelCtx } from "../panel-ctx"
 
@@ -21,22 +21,5 @@ export function isNowPanelType(type: string): boolean {
 }
 
 export function mountNowPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = NOW_PANEL_TITLE
-  document.title = `Luna - ${NOW_PANEL_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<NowPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, NOW_PANEL_TITLE, <NowPanel ctx={ctx} />)
 }

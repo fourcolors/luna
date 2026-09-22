@@ -9,7 +9,7 @@
 // the REAL shipped host (frontend-react/panel.html - see
 // src-tauri/tauri.conf.json's frontendDist), and panel.html's own
 // host-level suite (test/panel-window.test.tsx) now boots that real host +
-// mountReactPanel directly with 'settings.updates' as its representative
+// dispatchPanelMount directly with 'settings.updates' as its representative
 // React-owned system-widget, so nothing still depends on the vanilla file
 // (grepped the worktree - see UpdatesPanel.tsx's module doc). This file
 // mounts the component directly with React's own createRoot + act,

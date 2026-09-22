@@ -16,7 +16,7 @@
  * KIND ('settings', what the chat gear and the agent's open_widget use) and
  * the file-name-derived type ('settings-launcher') - both route here.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { SettingsLauncherPanel, SETTINGS_LAUNCHER_TITLE } from "./SettingsLauncherPanel"
 import type { PanelCtx } from "./panel-ctx"
 
@@ -30,18 +30,6 @@ declare global {
      * re-deriving it from `window.__TAURI__` itself.
      */
     __panelCtx?: PanelCtx
-    /**
-     * Observability contract every panel type sets (vanilla via
-     * panel.html's bootModule(), React panels via mountSettingsLauncherPanel
-     * and its future siblings) - read by agent-browser smoke checks and
-     * tests.
-     */
-    __PanelInternals?: {
-      type: string
-      hasModule: boolean
-      resolvedRouteKey: string | null
-      lastNotice: string | null
-    }
   }
 }
 
@@ -52,22 +40,5 @@ export function isSettingsLauncherPanelType(type: string): boolean {
 }
 
 export function mountSettingsLauncherPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = SETTINGS_LAUNCHER_TITLE
-  document.title = `Luna - ${SETTINGS_LAUNCHER_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<SettingsLauncherPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, SETTINGS_LAUNCHER_TITLE, <SettingsLauncherPanel ctx={ctx} />)
 }

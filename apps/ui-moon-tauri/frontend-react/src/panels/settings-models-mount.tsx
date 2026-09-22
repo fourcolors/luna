@@ -14,7 +14,7 @@
  * Mirrors settings-general-mount.tsx's shape exactly (see that file's doc
  * comment for the full rationale).
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { PANEL_TITLE, SettingsModelsPanel } from "./settings-models/SettingsModelsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
@@ -26,22 +26,5 @@ export function isSettingsModelsPanelType(type: string): boolean {
 }
 
 export function mountSettingsModelsPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = SETTINGS_MODELS_TITLE
-  document.title = `Luna - ${SETTINGS_MODELS_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<SettingsModelsPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, SETTINGS_MODELS_TITLE, <SettingsModelsPanel ctx={ctx} />)
 }

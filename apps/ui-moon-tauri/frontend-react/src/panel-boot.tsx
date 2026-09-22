@@ -37,7 +37,7 @@ import { isLauncherPanelType, mountLauncherPanel } from "./panels/launcher/launc
 import { isNotificationsPanelType, mountNotificationsPanel } from "./panels/notifications/notifications-mount"
 
 /** Returns true if `type` was a React-owned panel type this dispatched. */
-export function mountReactPanel(type: string, ctx: PanelCtx): boolean {
+export function dispatchPanelMount(type: string, ctx: PanelCtx): boolean {
   if (isNowPanelType(type)) {
     mountNowPanel(type, ctx)
     return true

@@ -14,25 +14,9 @@
  * Mirrors settings-launcher-mount.tsx's shape (see its module doc) - this is
  * the second panel type converted through panel-boot.tsx's dispatcher.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { AgentsPanel } from "./agents/AgentsPanel"
 import type { PanelCtx } from "./panel-ctx"
-
-declare global {
-  interface Window {
-    /**
-     * Observability contract every panel type sets (vanilla via
-     * panel.html's bootModule(), React panels via mount*Panel functions like
-     * this one) - read by agent-browser smoke checks and tests.
-     */
-    __PanelInternals?: {
-      type: string
-      hasModule: boolean
-      resolvedRouteKey: string | null
-      lastNotice: string | null
-    }
-  }
-}
 
 export const AGENTS_PANEL_TITLE = "Agents"
 const AGENTS_PANEL_TYPES = ["agents"] as const
@@ -42,22 +26,5 @@ export function isAgentsPanelType(type: string): boolean {
 }
 
 export function mountAgentsPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = AGENTS_PANEL_TITLE
-  document.title = `Luna - ${AGENTS_PANEL_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<AgentsPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, AGENTS_PANEL_TITLE, <AgentsPanel ctx={ctx} />)
 }

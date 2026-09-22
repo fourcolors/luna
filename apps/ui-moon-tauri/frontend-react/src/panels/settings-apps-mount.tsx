@@ -15,7 +15,7 @@
  * type wired into main-panel.tsx) so a future conversion has one obvious
  * pattern to copy.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { SettingsAppsPanel } from "./SettingsAppsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
@@ -27,22 +27,5 @@ export function isSettingsAppsPanelType(type: string): boolean {
 }
 
 export function mountSettingsAppsPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = SETTINGS_APPS_TITLE
-  document.title = `Luna - ${SETTINGS_APPS_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<SettingsAppsPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, SETTINGS_APPS_TITLE, <SettingsAppsPanel ctx={ctx} />)
 }

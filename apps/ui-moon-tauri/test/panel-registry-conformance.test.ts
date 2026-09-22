@@ -12,7 +12,7 @@
 //   (a) has a panels/<X with . -> -.js module registering LunaPanelTypes[X]
 //       (the vanilla path), or
 //   (b) is a React-owned type per panel.html's REACT_PANEL_TYPES map, in
-//       which case panel-boot.tsx's mountReactPanel(X, ctx) must actually
+//       which case panel-boot.tsx's dispatchPanelMount(X, ctx) must actually
 //       dispatch it - parsed straight out of the live panel.html source so
 //       this guard self-updates as more panels convert, instead of a
 //       hardcoded exception list this file would silently rot against.
@@ -20,7 +20,7 @@ import { describe, it, expect, afterEach, beforeAll } from "vitest"
 import { act } from "react"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { mountReactPanel } from "../frontend-react/src/panel-boot"
+import { dispatchPanelMount } from "../frontend-react/src/panel-boot"
 import type { PanelCtx } from "../frontend-react/src/panels/panel-ctx"
 
 const registry = JSON.parse(
@@ -30,10 +30,10 @@ const panelKinds: string[] = registry.widgets
   .map((w: any) => /^panel\.html\?type=([a-z0-9.]+)$/.exec(w.page)?.[1])
   .filter(Boolean)
 
-// mountReactPanel createRoot().render()s a real React 19 tree, and React 19's
+// dispatchPanelMount createRoot().render()s a real React 19 tree, and React 19's
 // concurrent scheduler defers that work to a setImmediate
 // (scheduler's performWorkUntilDeadline). Wiping innerHTML in afterEach does
-// NOT cancel it, and mountReactPanel returns a boolean, not a root, so there is
+// NOT cancel it, and dispatchPanelMount returns a boolean, not a root, so there is
 // nothing to unmount. Left alone, that queued work fires AFTER vitest tears the
 // jsdom environment down and throws "ReferenceError: window is not defined" -
 // one per mounted panel type. Vitest counts those as unhandled errors and exits
@@ -49,7 +49,7 @@ beforeAll(() => {
 function mountFlushed(kind: string, ctx: PanelCtx): boolean {
   let dispatched = false
   act(() => {
-    dispatched = mountReactPanel(kind, ctx)
+    dispatched = dispatchPanelMount(kind, ctx)
   })
   return dispatched
 }
@@ -75,7 +75,7 @@ describe("widget-registry panel conformance", () => {
     expect(panelKinds).toHaveLength(panelPages.length)
   })
 
-  describe("every React-owned panel.html type is actually dispatched by mountReactPanel", () => {
+  describe("every React-owned panel.html type is actually dispatched by dispatchPanelMount", () => {
     // Not every REACT_PANEL_TYPES key is a widget-registry page type - e.g.
     // 'settings-launcher' is a dual-dispatch alias panel.html also accepts
     // (see settings-launcher-mount.tsx's isSettingsLauncherPanelType), never
@@ -86,7 +86,7 @@ describe("widget-registry panel conformance", () => {
       delete (window as any).__PanelInternals
     })
 
-    it.each([...reactOwnedPanelKinds()])("mountReactPanel dispatches '%s'", (kind) => {
+    it.each([...reactOwnedPanelKinds()])("dispatchPanelMount dispatches '%s'", (kind) => {
       document.body.innerHTML = `
         <div class="widget-shell">
           <div class="title-bar" id="title-bar"><span id="bar-title">Loading…</span></div>

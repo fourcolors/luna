@@ -13,7 +13,7 @@
  *
  * Mirrors settings-apps-mount.tsx exactly (the established conversion recipe).
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "../panel-mount"
 import { LauncherPanel } from "./LauncherPanel"
 import type { PanelCtx } from "../panel-ctx"
 
@@ -25,22 +25,5 @@ export function isLauncherPanelType(type: string): boolean {
 }
 
 export function mountLauncherPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = LAUNCHER_TITLE
-  document.title = `Luna - ${LAUNCHER_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<LauncherPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, LAUNCHER_TITLE, <LauncherPanel ctx={ctx} />)
 }

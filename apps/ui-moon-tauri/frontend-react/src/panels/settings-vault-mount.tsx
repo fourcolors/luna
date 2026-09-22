@@ -10,7 +10,7 @@
  *   - window.__PanelInternals = { type, hasModule, resolvedRouteKey, lastNotice }
  *   - renders the panel's content into #content-area
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { SettingsVaultPanel, SETTINGS_VAULT_TITLE } from "./settings-vault/SettingsVaultPanel"
 import type { PanelCtx } from "./panel-ctx"
 
@@ -21,22 +21,5 @@ export function isSettingsVaultPanelType(type: string): boolean {
 }
 
 export function mountSettingsVaultPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = SETTINGS_VAULT_TITLE
-  document.title = `Luna - ${SETTINGS_VAULT_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<SettingsVaultPanel ctx={ctx} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, SETTINGS_VAULT_TITLE, <SettingsVaultPanel ctx={ctx} />)
 }
