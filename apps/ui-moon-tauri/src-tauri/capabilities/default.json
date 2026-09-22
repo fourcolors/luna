@@ -33,6 +33,7 @@
     "allow-local-shell-exec",
     "allow-get-platform",
     "allow-get-host-label",
+    "allow-get-home-dir",
     "allow-notify",
     "allow-updater",
     "allow-voice-status",

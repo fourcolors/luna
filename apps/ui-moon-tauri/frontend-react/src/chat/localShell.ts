@@ -82,6 +82,14 @@ export function createLocalShell(ctx: LocalShellCtx) {
       } catch (e) {
         Logger.warn('get_host_label failed; falling back to platform as label:', e);
       }
+      try {
+        // The no-roots fallback cwd advertised in sendCapability() and applied
+        // in handleRequest(). Without it a cwd-less command runs at the app
+        // process cwd ('/' for a packaged .app).
+        State.localShell.homeDir = await window.__TAURI__.core.invoke('get_home_dir');
+      } catch (e) {
+        Logger.warn('get_home_dir failed; cwd-less commands keep the process cwd:', e);
+      }
     },
     // Tell the server this client's scope. Sent ONCE PER CONNECTION and on every
     // scope change — deliberately NOT per active thread.

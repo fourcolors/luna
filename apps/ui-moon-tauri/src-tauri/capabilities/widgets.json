@@ -23,6 +23,7 @@
     "allow-migrate-legacy-connection",
     "allow-get-platform",
     "allow-get-host-label",
+    "allow-get-home-dir",
     "allow-close-widget",
     "allow-open-widget",
     "allow-collapse-to-moon",

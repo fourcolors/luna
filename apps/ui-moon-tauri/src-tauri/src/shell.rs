@@ -236,6 +236,16 @@ pub(crate) fn get_host_label() -> String {
     }
 }
 
+/// The user's home directory, advertised in the local-shell capability frame
+/// as the default cwd when no root is attached — so a cwd-less command runs
+/// somewhere sane instead of the app process cwd ('/' for a packaged .app).
+#[tauri::command]
+pub(crate) fn get_home_dir() -> String {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

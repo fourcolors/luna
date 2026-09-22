@@ -277,3 +277,56 @@ describe('Feature: handleRequest() cwd defaulting', () => {
     expect(String(f?.stderr)).toMatch(/exec failed/)
   })
 })
+
+// ── Feature: refreshPlatform() populates homeDir via get_home_dir ──────────────
+
+describe('Feature: refreshPlatform() fetches homeDir', () => {
+  const invokeMock = vi.fn()
+  const HOME = '/Users/op'
+
+  beforeEach(() => {
+    localStorage.clear()
+    invokeMock.mockReset()
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === 'get_platform' ? 'macos'
+        : cmd === 'get_host_label' ? 'op-mac'
+        : cmd === 'get_home_dir' ? HOME
+        : null,
+      ),
+    )
+    ;(window as any).__TAURI__ = { core: { invoke: invokeMock } }
+  })
+
+  afterEach(() => {
+    delete (window as any).__TAURI__
+  })
+
+  it('Scenario: refreshPlatform stores the home dir the capability advertises', async () => {
+    const { ctx, state } = makeCtx()
+    const ls = createLocalShell(ctx)
+
+    await ls.refreshPlatform()
+
+    expect(invokeMock).toHaveBeenCalledWith('get_home_dir')
+    expect(state.localShell.homeDir).toBe(HOME)
+  })
+
+  it('Scenario: a get_home_dir invoke failure leaves homeDir empty', async () => {
+    const { ctx, state } = makeCtx()
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === 'get_home_dir'
+        ? Promise.reject(new Error('not permitted'))
+        : Promise.resolve('macos'),
+    )
+    const ls = createLocalShell(ctx)
+
+    await ls.refreshPlatform()
+
+    expect(state.localShell.homeDir).toBe('')
+    expect(ctx.Logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('get_home_dir'),
+      expect.any(Error),
+    )
+  })
+})
