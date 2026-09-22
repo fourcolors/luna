@@ -102,6 +102,22 @@ silently resolved to black. Precedent with the exact shape to copy: `.scratch/s1
 > **Judge at true size.** A hairline that reads at 3x can be invisible at 34px. Render the component
 > at its shipped size before believing it, and remember an agent screenshot is downscaled.
 
+**Panel windows** are exercisable the same way: `http://localhost:5175/panel.html?type=<panel-type>`
+(plus per-type params like `?thread=` for actions, `?jobId=` for flow). React-owned types boot via
+`src/panel-boot.tsx`'s `dispatchPanelMount` -> `mountReactPanel` (`src/panels/panel-mount.ts`), which
+sets `#bar-title`, `document.title`, renders into `#content-area`, and publishes
+`window.__PanelInternals = { type, hasModule, resolvedRouteKey, lastNotice }` - the designed
+smoke-check surface. Vanilla types go through panel.html's own `bootModule()` which sets the same
+four fields PLUS `resolvedRouteLabel` and a `viewMode` accessor (React path's object is a strict
+subset - pre-existing, not a bug). An unknown type lands on "Unknown panel" + a notice with
+`hasModule: false`, which is a cheap regression check that the React/vanilla dispatch split works.
+
+> Chrome 136+ only honors `--remote-debugging-port` with a **non-default `--user-data-dir`**
+> (`--user-data-dir=/tmp/chrome-cdp`). If `browser_console`/`read_dom` refuse ("Chrome is not in the
+> foreground" on macOS, or no listener on 9222), drive CDP yourself: fetch
+> `http://127.0.0.1:9222/json`, open the page target's `webSocketDebuggerUrl`, `Page.navigate` +
+> `Runtime.evaluate` with `returnByValue`.
+
 ## T3 - real WKWebView. Ten minutes plus a Rust build.
 
 Tauri on macOS **is** WKWebView, and it is stricter than Chromium. Required for the traps listed
