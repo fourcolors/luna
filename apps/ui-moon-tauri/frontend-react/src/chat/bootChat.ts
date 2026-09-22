@@ -83,7 +83,7 @@ import { createWire } from "./wire"
 import { createState, setActiveThread, clearActiveThread } from "./state"
 import { createDom } from "./domMap"
 import { createFrames } from "./frames"
-import { installWiring } from "./wiring"
+import { installMoonE2E, installWiring } from "./wiring"
 import { createSecretPromptEngine } from "./secretPromptEngine"
 import { createSuggestedActionsEngine } from "./suggestedActionsEngine"
 import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from "./feedbackEngine"
@@ -765,6 +765,10 @@ export function bootChat() {
     const st = getChatHost()?.state() as { pinnedThread?: string | null } | undefined
     if (st) st.pinnedThread = PINNED_THREAD
   }
+
+  // WebDriver e2e surface (e2e/specs) — every lookup inside is late-bound to
+  // window globals, so installing before connect is safe.
+  try { installMoonE2E() } catch (_) { /* best-effort */ }
 
   // The drawer's two boot calls run HERE, not at its construction: wireDivider is
   // gated on State.pinnedThread, which installWiring above is what sets.
