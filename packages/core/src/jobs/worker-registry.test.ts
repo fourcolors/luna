@@ -80,7 +80,7 @@ describe("WorkerRegistry", () => {
         expect(result.failure.kind).toBe("nope")
       }
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("register + dispatch round-trips the payload through the worker", async () => {
@@ -100,7 +100,7 @@ describe("WorkerRegistry", () => {
         JSON.stringify({ payload: { hello: "world" }, jobId: "abc" }),
       )
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("register returns the previous worker on replacement (for swap-tests)", async () => {
@@ -115,7 +115,7 @@ describe("WorkerRegistry", () => {
       const out = yield* reg.dispatch("swap", {}, idCtx)
       expect(out.outputText).toBe("v2")
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("listKinds returns a sorted snapshot of registered kinds", async () => {
@@ -128,7 +128,7 @@ describe("WorkerRegistry", () => {
       const kinds = yield* reg.listKinds
       expect([...kinds]).toEqual(["prompt", "shell", "workflow"])
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("makeWorkerRegistry(initial) seeds the registry at construction time", async () => {
@@ -164,7 +164,7 @@ describe("WorkerRegistry", () => {
         expect(result.failure.message).toBe("missing field")
       }
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("register(kind, {run, defaultTimeoutMs}) round-trips through lookupEntry AND lookup", async () => {
@@ -187,7 +187,7 @@ describe("WorkerRegistry", () => {
       const out = yield* reg.dispatch("dream", {}, idCtx)
       expect(out.outputText).toBe("timed")
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("a bare-function registration has no defaultTimeoutMs on its entry (back-compat)", async () => {
@@ -199,7 +199,7 @@ describe("WorkerRegistry", () => {
       expect(entry?.run).toBe(bare)
       expect(entry?.defaultTimeoutMs).toBeUndefined()
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("register() returns the previous RUN function (not the wrapping entry) on replacement, for both bare-fn and object forms", async () => {
@@ -217,10 +217,10 @@ describe("WorkerRegistry", () => {
       const entry = yield* reg.lookupEntry("swap")
       expect(entry?.defaultTimeoutMs).toBeUndefined()
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
-  it("makeWorkerRegistry(initial) accepts the object form too and normalizes identically to WorkerRegistry.Default", async () => {
+  it("makeWorkerRegistry(initial) accepts the object form too and normalizes identically to an empty registry", async () => {
     const stubWorker: Worker = () => Effect.succeed({ outputText: "seeded" })
     const stack = makeWorkerRegistry({ dream: { run: stubWorker, defaultTimeoutMs: 900_000 } })
     const prog = Effect.gen(function* () {
@@ -239,7 +239,7 @@ describe("WorkerRegistry", () => {
       const entry = yield* reg.lookupEntry("nope")
       expect(entry).toBeNull()
     })
-    await Effect.runPromise(prog.pipe(Effect.provide(WorkerRegistry.Default)))
+    await Effect.runPromise(prog.pipe(Effect.provide(makeWorkerRegistry({}))))
   })
 
   it("makeWorkerRegistry's seeded workers are still mutable post-build via register()", async () => {
