@@ -426,7 +426,7 @@ function runPromptStep(
     // is non-success → with `halt_on_failure` the workflow stops BEFORE the
     // gate/ship steps that release the lock, so the lock falls to the staleness
     // reclaim. The 10-min default leaves a 6× margin. See
-    // apps/ui-web/scripts/push-through-install.ts.
+    // apps/server/scripts/push-through-install.ts.
     const timeoutMs = step.timeout_ms ?? DEFAULT_QUERY_TIMEOUT_MS
 
     const outcome = yield* runBoundedQuery(

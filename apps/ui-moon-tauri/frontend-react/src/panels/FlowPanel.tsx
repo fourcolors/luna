@@ -20,7 +20,7 @@
  *
  * State model: unlike the vanilla module's hand-rolled `runs`/`jobMeta`
  * variables + imperative re-render, this dispatches every inbound frame
- * into the shared reducer ui-web already relies on (@luna/ui-shared/core -
+ * into the shared reducer (@luna/ui-shared/core -
  * see UIState.workflows / workflowRuns, already modeled for exactly this
  * PRD slice) and reads it back out via useMoonSelector
  * (useSyncExternalStore underneath - src/state/store.ts). The WS registry

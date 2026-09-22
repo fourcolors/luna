@@ -24,7 +24,7 @@ import { resolve as resolvePath } from "node:path"
  *
  * `scriptDir` is the directory that contains the calling script (i.e.
  * `dirname(fileURLToPath(import.meta.url))`). The repo SYSTEM.md lives
- * three levels up from `apps/ui-web/scripts/` — pass a fake path in tests.
+ * three levels up from `apps/server/src/` — pass a fake path in tests.
  *
  * `personalSystemPath` overrides the default `~/.luna/SYSTEM.md` location.
  * Pass `null` to skip the personal override entirely (useful in tests

@@ -6,8 +6,7 @@
 // script - see git history). That module and its bootPanel harness are
 // gone: VoicePanel.tsx now owns this panel entirely (see
 // frontend-react/src/panels/settings-voice/), so this file mounts the real
-// component directly with React's own createRoot + act, mirroring
-// apps/ui-web/src/studio/vault-panel.test.jsx's approach (no
+// component directly with React's own createRoot + act (no
 // @testing-library dependency - this workspace doesn't install one) rather
 // than re-simulating an HTML shell that no longer exists for this type.
 //

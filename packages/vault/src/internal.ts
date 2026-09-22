@@ -21,8 +21,7 @@ export const makeId = (): string => {
  * are kept stable here so every vault consumer (mutations, reconciler) is
  * untouched. One deliberate inline mirror remains:
  *   - packages/secret-tools/src/register-secret.ts `isEnvReserved`
- *     (inlined so secret-tools stays unit-testable without pulling @luna/core;
- *     an apps/ui-web cross-package drift test pins behavioural equality).
+ *     (inlined so secret-tools stays unit-testable without pulling @luna/core).
  * The audit's case-insensitivity requirement (a lookalike like `luna_x` or
  * `Ui_Ws_Token` must be rejected exactly like the uppercase form) lives in the
  * canonical module.

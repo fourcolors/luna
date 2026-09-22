@@ -1,7 +1,7 @@
 /**
  * The client-side capability registry: maps a CapabilityKind to a frontend-specific
  * renderer/handler. The package never inspects the renderer type `R` — Moon binds a
- * DOM builder, ui-web a Solid component, agent-cli a TUI cell — so this stays
+ * DOM builder, agent-cli a TUI cell — so this stays
  * framework-free. Instance-based (no module-global state) so importing the package
  * has no side effects and two hosts never share a renderer map.
  */

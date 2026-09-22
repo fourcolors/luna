@@ -50,7 +50,7 @@ const DISCORD_API = "https://discord.com/api/v10"
 /**
  * Minimal REST client over fetch, satisfying the `GuildCommandsRest` shape
  * putGuildCommands needs. discord.js is deliberately NOT imported here: it
- * is a dependency of packages/channels, not of apps/ui-web, and this bun
+ * is a dependency of packages/channels, not of apps/server, and this bun
  * workspace uses the isolated linker, so "discord.js" does not resolve from
  * this directory. A non-2xx response throws with the response BODY included
  * (a 4xx means the payload or addressing is wrong; the body says which).

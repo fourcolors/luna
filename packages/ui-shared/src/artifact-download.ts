@@ -1,11 +1,10 @@
 /**
  * Browser download helper for artifact content. Framework-agnostic so
- * both the React app and the Solid port can call it.
+ * any web client can call it.
  *
- * Hoisted from apps/ui-web/src/App.tsx. Same filename derivation
- * fallback chain: explicit path basename → sanitized title → id-based
- * default. Revokes the object URL on next tick so the download has
- * time to start.
+ * Filename derivation fallback chain: explicit path basename → sanitized
+ * title → id-based default. Revokes the object URL on next tick so the
+ * download has time to start.
  *
  * Pure DOM API (Blob + URL.createObjectURL + anchor click) — no
  * framework imports.

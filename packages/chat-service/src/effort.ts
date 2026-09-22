@@ -3,7 +3,7 @@
  *
  * This module is the server-side single source of truth for which effort
  * levels each model accepts. Two consumers, one matrix:
- *   - chat-server.ts (apps/ui-web) builds the hello frame's
+ *   - chat-server.ts (apps/server) builds the hello frame's
  *     `availableModels[].efforts` from `effortsForModel` (re-exported there).
  *   - chat-service enforces the SAME matrix defensively: createThread →
  *     buildSessionOptions clamps before the SDK options are built, and

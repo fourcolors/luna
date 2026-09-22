@@ -7,7 +7,7 @@
  * ships the mechanism (each backend layer, the storage-policy resolver, the
  * luna-vault file), and the app decides how to wire them for a given storage
  * mode + platform. Keeping the wiring here - not in the 3500-line chat-server -
- * makes the composition unit-testable (chat-server.ts has no tsc/unit gate).
+ * makes the composition unit-testable (chat-server.ts is not unit-tested).
  *
  * Three responsibilities:
  *   1. `normalizeVaultStorageModeV2` - the mode source of truth (v2 vocabulary).

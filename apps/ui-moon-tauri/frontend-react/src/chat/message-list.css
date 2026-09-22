@@ -467,7 +467,7 @@
   margin-top: -4px;
 }
 
-/* Markdown rendering inside assistant bubbles (mirrors ui-web's .markdown conventions) */
+/* Markdown rendering inside assistant bubbles */
 .msg.assistant .msg-body > :first-child { margin-top: 0; }
 .msg.assistant .msg-body > :last-child { margin-bottom: 0; }
 .msg.assistant p { margin: 0.5em 0; white-space: pre-wrap; } /* keep single newlines */

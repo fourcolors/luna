@@ -1,7 +1,7 @@
 /**
  * op-token-scrub - the ANTI-RESURRECTION delete contract for a runtime-written
  * op service-account token, factored out of chat-server.ts so the decision
- * logic is unit-testable (chat-server.ts has no tsc/unit gate).
+ * logic is unit-testable (chat-server.ts is not unit-tested).
  *
  * Op-token discovery (secret-chain.ts `discoverOpTokens`) falls through
  * keychain (darwin) → `LUNA_OP_TOKEN_<LABEL>` env var → luna vault entry →

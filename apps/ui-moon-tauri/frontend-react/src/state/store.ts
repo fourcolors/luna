@@ -1,8 +1,8 @@
 /**
  * store.ts - Moon's React binding for the shared @luna/ui-shared reducer.
  *
- * Ported from apps/ui-web/src/data/useUiStore.ts (the proven pattern already
- * live in ui-web). The reducer stays the single state-transition
+ * Ported from the retired web client's useUiStore (a proven pattern).
+ * The reducer stays the single state-transition
  * implementation; this file adds the imperative dispatch/getState surface
  * plus useMoonSelector for React consumers, wired through
  * useSyncExternalStore so React 19 concurrent rendering stays tear-free.

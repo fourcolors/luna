@@ -503,7 +503,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
         // → N `assistant-done` frames; per-message done can't tell the moon
         // "the whole turn is over". This `turn-complete` frame does — the
         // moon uses it to settle (collapse + relabel) its grouped activity
-        // timeline. Additive: ui-web is seq-keyed and ignores it.
+        // timeline. Additive: seq-keyed clients ignore it.
         yield* PubSub.publish(args.pubsub, {
           type: "turn-complete",
           threadId: args.threadId,

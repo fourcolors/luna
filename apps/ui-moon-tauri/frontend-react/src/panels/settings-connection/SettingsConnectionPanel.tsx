@@ -27,9 +27,8 @@
  *
  * Astryx mapping: TextInput for the two text fields, Button for Save/Open.
  * Channel/Model/Effort stay native <select> elements - Astryx's Selector is
- * a Popover-API-based combobox with no jsdom shim in this test harness (see
- * apps/ui-web/src/studio/settings-panel.jsx's Model dropdown for the same
- * documented precedent) - forcing it here would silently change behavior
+ * a Popover-API-based combobox with no jsdom shim in this test harness -
+ * forcing it here would silently change behavior
  * the covering tests assert on native <select> semantics (.value,
  * 'change' events).
  */

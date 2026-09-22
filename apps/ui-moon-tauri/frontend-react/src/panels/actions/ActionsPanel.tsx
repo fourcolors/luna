@@ -22,7 +22,7 @@
  *
  * State model: unlike the vanilla module's hand-rolled `actions` array +
  * imperative re-render, every inbound frame is dispatched into the SAME
- * shared reducer ui-web already relies on (@luna/ui-shared/core -
+ * shared reducer (@luna/ui-shared/core -
  * UIState.suggestedActions is a per-threadId map, already modeled for
  * exactly this PRD slice) and read back out via useMoonSelector
  * (useSyncExternalStore underneath). Because the reducer partitions

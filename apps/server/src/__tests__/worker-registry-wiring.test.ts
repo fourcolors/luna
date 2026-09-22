@@ -11,7 +11,7 @@
  * proven composable + the kind set is correct without booting the server.
  *
  * Mirrors the standalone prompt-worker-boot.smoke.ts pattern, promoted into the
- * vitest suite (apps/ui-web/scripts/__tests__) so it runs in CI.
+ * vitest suite (apps/server/src/__tests__) so it runs in CI.
  */
 import { describe, expect, it } from "vitest"
 import { Effect, Layer, Ref, Stream } from "effect"

@@ -182,7 +182,7 @@ export interface UIState {
   /**
    * Smart Bar (v1) — server-assembled context item list for the active thread.
    * Empty until the first `smart-bar` frame arrives; hidden when empty.
-   * Items are pre-sorted by the server (group then priority); ui-web renders
+   * Items are pre-sorted by the server (group then priority); clients render
    * them in order. `threadId` tracks which thread the list belongs to so a
    * stale frame after a thread switch is discarded.
    */
@@ -625,9 +625,9 @@ export const reduce = (state: UIState, action: Action): UIState => {
       // transport (streamy frame), not folded into store state.
       return state
     case "turn-complete":
-      // End-of-agentic-turn marker. ui-web renders from seq-keyed finalized
+      // End-of-agentic-turn marker. seq-keyed clients render from finalized
       // messages, so the "whole turn is over" signal carries no new state for
-      // it — only the moon's grouped activity timeline needs it. No-op here.
+      // them — only the moon's grouped activity timeline needs it. No-op here.
       return state
     case "connector-oauth-redirect":
       // The consent URL is consumed by the Moon directly off the transport

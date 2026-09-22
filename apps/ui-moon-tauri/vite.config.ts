@@ -51,8 +51,7 @@ export default defineConfig({
     host: "0.0.0.0",
   },
   // Pin the browser entries so Vite's dep crawler never pulls in anything
-  // outside the four page bundles (mirrors ui-web/vite.config.ts's same
-  // guard, adapted to Moon's multi-page entries).
+  // outside the four page bundles (adapted to Moon's multi-page entries).
   optimizeDeps: {
     entries: [
       "frontend-react/index.html",

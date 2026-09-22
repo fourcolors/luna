@@ -3,7 +3,7 @@
 // Canonical DDL for the wake-related tables in a workspace.db. This is the
 // SINGLE source of truth shared by:
 //   - WakeLogStore's wake_log self-heal,
-//   - the `enable-wake` installer (apps/ui-web/scripts/enable-wake.ts),
+//   - the `enable-wake` installer (apps/server/scripts/enable-wake.ts),
 //   - the wake unit tests.
 //
 // History: before this module these tables existed ONLY in test files — no

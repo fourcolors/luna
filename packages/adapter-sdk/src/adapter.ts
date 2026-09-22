@@ -549,8 +549,8 @@ const makeAdapter = (broker: AccountBrokerApi | null) =>
             overrides,
           )
           // "default" is the broker's default-lane SENTINEL, never a real model
-          // id. A caller-persisted "default" (ui-web custom-model field, a
-          // forked recovery thread) must run on the SDK's own default model —
+          // id. A caller-persisted "default" (a forked recovery thread) must
+          // run on the SDK's own default model —
           // exactly the pre-provider-seam behavior — not be sent verbatim.
           if ((mergedOpts as { model?: unknown }).model === "default") {
             delete (mergedOpts as { model?: unknown }).model
