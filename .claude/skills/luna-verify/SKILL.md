@@ -73,6 +73,12 @@ computed colour are genuine.
 The page boots fine outside Tauri: boot-time invokes are capped (`BOOT_INVOKE_MS` in `tauriBoot.ts`),
 so it degrades to "Disconnected" rather than hanging.
 
+**The hub's first-run setup wizard is force-opened off-Tauri** by loading
+`http://localhost:5175/index.html?wizard` - `MoonHubApp.tsx`'s mount effect checks
+`new URLSearchParams(location.search).has("wizard")` when `__TAURI__` is absent, paints `body`
+`#10142a`, and calls `controller.openWizard()`. `localStorage "luna.moon.setupComplete"` does NOT
+gate this path - the param bypasses `isSetupComplete()`.
+
 **The real page publishes its controllers as globals**, so you can drive a whole turn from the
 console - this is the single most useful thing in this skill:
 
@@ -89,8 +95,14 @@ Available: `WebSocketEngine`, `ChatState`, `ChatLoop`, `ChatEngine`, `MoonFace`,
 `Attachments`, `ComposerConfig`, `SlashMenu`, `SmartBarEngine`, `ThreadDrawerEngine`, `LunaThreadDrag`.
 `MoonFace.setBusy(true)` and friends drive the avatar directly.
 
-> `window.__MoonInternals` does **not** exist here - that bridge is published only by the jsdom
-> harness (T1). Reaching for it in the browser gets you `undefined`.
+> `window.__MoonInternals` exists on the **hub page (`index.html`)** - `MoonHubApp.tsx` publishes it
+> in its mount effect (search for `window.__MoonInternals = {` in `src/hub/MoonHubApp.tsx`):
+> `handleFrame(frame)`, `dispatch(action)`, `getState()`, `SetupWizard.{open, close, goTo,
+> choosePath, isComplete}`, `WebSocketEngine.{connect, disconnect, send}`, `TauriService`, `State`.
+> It does **not** exist on `chat.html` - there the jsdom harness (T1) is the only publisher.
+> Useful for asserting reducer state from CDP when a transient flag (e.g. `wizard.localDirInvalid`,
+> a 1.8s pulse) resets before a screenshot lands: arm an in-page `setInterval` poller into
+> `window.__<flag>` first, then click.
 
 Stage state through those bridges, never by hand-writing markup. Setting the attribute a controller
 owns (`face.dataset.state = 'busy'`) is fine for isolating a single CSS rule.
