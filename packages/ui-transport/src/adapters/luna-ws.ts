@@ -19,6 +19,7 @@ import type {
 import type { ServerDescriptor } from "../contract.js"
 import type { TokenResolver } from "../token-resolver.js"
 import { Broadcast } from "../internal/broadcast.js"
+import { createFrameQueue } from "../internal/frame-queue.js"
 
 /** WebSocket-compatible constructor signature used for testability. */
 export type WsFactory = (
@@ -314,58 +315,15 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       ws.send(JSON.stringify(subscribeFrame))
     }
 
-    // Build a per-session async queue that can be terminated on close/dispose.
-    const frameQueue: Array<ChatFrame> = []
-    const frameWaiters: Array<(v: IteratorResult<ChatFrame>) => void> = []
-    let closed = false
-
-    function drainClose(): void {
-      closed = true
-      for (const w of frameWaiters.splice(0)) {
-        w({ value: undefined as unknown as ChatFrame, done: true })
-      }
-    }
+    // Per-session async queue — same pattern as HermesHttpSseAdapter
+    const { push, drainClose, messages } = createFrameQueue()
 
     const sessionEntry: SessionEntry = {
       threadId,
-      push: (frame: ChatFrame) => {
-        if (closed) return
-        const waiter = frameWaiters.shift()
-        if (waiter) {
-          waiter({ value: frame, done: false })
-        } else {
-          frameQueue.push(frame)
-        }
-      },
+      push,
       close: drainClose,
     }
     this.#sessions.set(sessionId, sessionEntry)
-
-    const messages: AsyncIterable<ChatFrame> = {
-      [Symbol.asyncIterator]() {
-        return {
-          next(): Promise<IteratorResult<ChatFrame>> {
-            if (closed && frameQueue.length === 0) {
-              return Promise.resolve({ value: undefined as unknown as ChatFrame, done: true })
-            }
-            const queued = frameQueue.shift()
-            if (queued !== undefined) {
-              return Promise.resolve({ value: queued, done: false })
-            }
-            if (closed) {
-              return Promise.resolve({ value: undefined as unknown as ChatFrame, done: true })
-            }
-            return new Promise<IteratorResult<ChatFrame>>((resolve) => {
-              frameWaiters.push(resolve)
-            })
-          },
-          return(): Promise<IteratorResult<ChatFrame>> {
-            drainClose()
-            return Promise.resolve({ value: undefined as unknown as ChatFrame, done: true })
-          },
-        }
-      },
-    }
 
     const adapter = this
     const session: ChatSession = {
