@@ -5,10 +5,11 @@
  * Svelte, vanilla, server, or test code. Use this entry point from any
  * non-React UI surface (e.g. a Solid or vanilla-JS client).
  *
- * The default barrel (`@luna/ui-shared`) re-exports everything in here
- * PLUS the React-bound CodeBlock and MarkdownView components — importing
- * the default barrel from a Solid app would pull React into module
- * evaluation. Always use `@luna/ui-shared/core` from non-React surfaces.
+ * The default barrel (`@luna/ui-shared`) re-exports exactly this
+ * surface — no extra framework-bound exports. UI components live with
+ * their apps (e.g. the Moon's React frontend under
+ * apps/ui-moon-tauri/frontend-react). Use this entry point from
+ * non-React surfaces to keep that guarantee explicit.
  */
 export {
   countLines,
