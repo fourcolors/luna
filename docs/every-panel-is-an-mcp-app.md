@@ -90,9 +90,9 @@ The **UI MCP Apps plane** is the substrate for "panel = app":
 
 - **Client hosts** (turn a sandboxed iframe into an MCP App frame; speak the host
   side of the JSON-RPC):
-  - `packages/ui-shared/src/mcp-app-host.ts` — web (Solid), `host({frameEl, uri, html?, transport, onError})`.
+  - `packages/ui-shared/src/mcp-app-host.ts` — `host({frameEl, uri, html?, transport, onError})`; written for the web client, which is deleted — kept as the test-covered web-side implementation.
   - `apps/ui-moon-tauri/frontend/vendor/mcp-app-host.js` — Moon (`LunaMcpHost`), the original.
-- **Server registry** (`apps/ui-web/scripts/core-apps.ts`) — resolves `ui://`
+- **Server registry** (`apps/server/src/core-apps.ts`) — resolves `ui://`
   resources and routes app `tools/call`, with the **same-server rule enforced
   server-side** (`Object.hasOwn` guard). Three provider shapes already exist:
   - `createCoreAppRegistry` — `ui://luna/<name>` core apps that ship real JS tool handlers.
@@ -123,9 +123,9 @@ accepts `ui/notifications/initialized` then pushes `ui/notifications/tool-input`
 `mcp-app` artifacts mount in the **same hard sandbox** as legacy widgets
 (`buildMcpSrcdoc` / `buildGeneratedAppSrcdoc` in
 `packages/ui-shared/src/widget-sandbox.ts`): `sandbox="allow-scripts"` only (no
-`allow-same-origin`), opaque origin, CSP no-network, no `__TAURI__`. Web renders
-via `packages/ui-shared-solid/src/ArtifactPanel.tsx` (the `kind==="mcp-app"`
-branch with a `props.mcp` relay); Moon via `widget.html` + the vendor host.
+`allow-same-origin`), opaque origin, CSP no-network, no `__TAURI__`. Rendered
+only in Moon via `widget.html` + the vendor host (the web inline render path
+went with the deleted `packages/ui-shared-solid` tree).
 
 ### 2.4 v1 deviations from the full spec (the gap, verbatim from the doc)
 
@@ -307,12 +307,12 @@ security posture. Recommendations are mine; the call is the operator's.
 |---|---|
 | Canonical plan | `apps/ui-moon-tauri/design/widget-system.md` (§"Widgets are MCP Apps", "As-built Phase 7 v1", "Trust tiers") |
 | Client host | `packages/ui-shared/src/mcp-app-host.ts`, `apps/ui-moon-tauri/frontend/vendor/mcp-app-host.js` |
-| Server registry | `apps/ui-web/scripts/core-apps.ts`; wired in `apps/ui-web/scripts/chat-server.ts` (`createMcpAppHost`, ~2896) |
+| Server registry | `apps/server/src/core-apps.ts`; wired in `apps/server/src/chat-server.ts` (`createMcpAppHost`, ~4070) |
 | Wire protocol | `packages/ui-ws/src/protocol.ts`, `packages/ui-ws/src/mcp-app-host.ts`, `packages/ui-shared/src/wire.ts` (`ArtifactKind`, relay frames) |
-| Render / sandbox | `packages/ui-shared-solid/src/ArtifactPanel.tsx`, `packages/ui-shared/src/widget-sandbox.ts`, `apps/ui-moon-tauri/frontend-react/widget.html` |
+| Render / sandbox | `packages/ui-shared/src/widget-sandbox.ts`, `apps/ui-moon-tauri/frontend-react/widget.html` |
 | Producer tools | `packages/widget-tools/src/tools.ts`, `packages/core/src/artifacts/types.ts` |
-| Theming tokens | `apps/ui-moon-tauri/frontend/vendor/moon-palette.css`, `apps/ui-web/src/watercolor.css` |
-| Theme apply | `apps/ui-moon-tauri/frontend/vendor/moon-appearance.js`, `apps/ui-web/src/appearance.ts` |
+| Theming tokens | `apps/ui-moon-tauri/frontend/vendor/moon-palette.css` (single source since the ui-web tree was deleted) |
+| Theme apply | `apps/ui-moon-tauri/frontend/vendor/moon-appearance.js` |
 
 ## 8. Sources (MCP Apps / SEP-1865)
 
@@ -399,13 +399,13 @@ Vercel AI SDK / `mcp-use` (archived) / FastMCP (server-only) / LangChain adapter
 on: first-class `readResource`/`callTool`, stdio **and** Streamable HTTP, custom
 `capabilities` in `initialize` (to advertise `extensions.io.modelcontextprotocol/ui`),
 and a lean footprint (`zod` + `eventsource-parser`; `zod` already used). Added to
-`apps/ui-web`.
+`apps/server` (carried over from `apps/ui-web` in the daemon move).
 
 **Built + proven (relay core):**
-- `apps/ui-web/scripts/example-mcp-ui-server.ts` — a REAL in-repo external MCP
+- `apps/server/src/example-mcp-ui-server.ts` — a REAL in-repo external MCP
   server (runs over stdio, or links in-memory for tests) serving
   `ui://example/dashboard` (a zero-theme-code app) + an `example-stats` tool.
-- `apps/ui-web/scripts/external-mcp-app-registry.ts` — `createExternalMcpAppRegistry`
+- `apps/server/src/external-mcp-app-registry.ts` — `createExternalMcpAppRegistry`
   (an `McpAppHostDeps` provider: routes `ui://`→owning server, enforces the
   **same-server rule** via each server's tool allowlist, unknown→`ok:false` so it
   composes cleanly) + `connectExternalStdioServer` (SDK `Client` over stdio;
@@ -427,7 +427,7 @@ Unset / empty / invalid env ⇒ zero subprocesses and an inert provider (default
 Example (local demo with the in-repo example server):
 
 ```bash
-export LUNA_EXTERNAL_MCP_SERVERS='[{"id":"example","command":"bun","args":["run","apps/ui-web/scripts/example-mcp-ui-server.ts"]}]'
+export LUNA_EXTERNAL_MCP_SERVERS='[{"id":"example","command":"bun","args":["run","apps/server/src/example-mcp-ui-server.ts"]}]'
 ```
 
 Separately, the SEP's **double-iframe sandbox-proxy** is still required on the

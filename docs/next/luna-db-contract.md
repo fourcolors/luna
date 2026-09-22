@@ -2,7 +2,7 @@
 
 ## Why this document exists
 
-Stack 2 of `luna-next` (see `NEXT.md`) plans to extract the chat-server daemon out of `apps/ui-web/scripts/` and into `apps/server`.
+Stack 2 of `luna-next` (see `NEXT.md`) extracted the chat-server daemon out of `apps/ui-web/scripts/` and into `apps/server` — the move this contract governed.
 That move is a daemon cutover: a new process starts reading and writing the same on-disk state the old daemon owned.
 The 2026-07-31 greenfield redesign review flagged that no document named exactly which tables, columns, and indexes a daemon depends on, so a schema change could silently break continuity across a cutover with nobody noticing until data looked wrong in production.
 This document is that list.
@@ -18,7 +18,7 @@ The daemon opens three distinct kinds of SQLite database, and a cutover must cop
 1. `~/.luna/luna.db` (or `$LUNA_DB_PATH`) - the Luna-runtime database.
    Sessions, threads, jobs, agent notes, alignment, the cost ledger, and the dream reflection store all live here, gated by the per-component `schema_versions` migration ledger.
 2. `~/.luna/memory.db` (or `$LUNA_MEMORY_DB`) - the memory/embeddings database.
-   This is a SEPARATE file from `luna.db`, wired independently in `apps/ui-web/scripts/runtime-paths.ts`.
+   This is a SEPARATE file from `luna.db`, wired independently in `apps/server/src/runtime-paths.ts`.
    It holds `memory_keyed`, `memory_vectors`, the `memory_fts` full-text index, and - when the optional Vectorlite extension loads - the `memory_vectors_hnsw` virtual table plus its own on-disk sidecar file.
    Beliefs (`~/BELIEFS.md`-style operator beliefs, not Mr. Cobb's personal file) are rows inside `memory_vectors`/`memory_keyed`, not a separate `beliefs` table.
 3. `<workspace>/.workspace/workspace.db` - one file per workspace, created by `installWakeSchema()` (`packages/core/src/wake/workspace-schema.ts`) with plain `CREATE TABLE IF NOT EXISTS` DDL, never the `schema_versions` migration ladder.
@@ -42,7 +42,7 @@ This is what fixed the Phase 25e migration-collision bug where one component's `
 
 ### `sessions` + `messages` (chat transcript store)
 
-Source: `packages/core/src/session/session-store-sqlite.ts`, wired at `paths.lunaDbPath` in `apps/ui-web/scripts/chat-server.ts`.
+Source: `packages/core/src/session/session-store-sqlite.ts`, wired at `paths.lunaDbPath` in `apps/server/src/chat-server.ts`.
 
 ```
 sessions (id, parent_id, title, tags, created_at, ended_at, model, options_json, status, meta_json)
@@ -171,7 +171,7 @@ This contract names `memory_vectors_hnsw` and its sidecar so a future migration 
 
 ## Part C - tables in each workspace's `workspace.db` (bootstrap DDL, not the migration ladder)
 
-Source: `packages/core/src/wake/workspace-schema.ts` (`installWakeSchema`, `hasWakeSchema`), installed by `apps/ui-web/scripts/enable-wake.ts` and self-healed by `WakeLogStore` (`packages/core/src/wake/wake-log-store.ts`).
+Source: `packages/core/src/wake/workspace-schema.ts` (`installWakeSchema`, `hasWakeSchema`), installed by `apps/server/scripts/enable-wake.ts` and self-healed by `WakeLogStore` (`packages/core/src/wake/wake-log-store.ts`).
 
 ```
 goals (slug TEXT PRIMARY KEY, title, description, status, priority, created_at, updated_at)

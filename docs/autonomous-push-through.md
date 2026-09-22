@@ -5,7 +5,7 @@ queued workspace next_action per run into a pull request against `dev` — fully
 unattended, but with the irreversible actions (push, PR) kept in deterministic
 shell steps and only the code change delegated to a bounded agent.
 
-It is installed by [`apps/ui-web/scripts/push-through-install.ts`](../apps/ui-web/scripts/push-through-install.ts)
+It is installed by [`apps/server/scripts/push-through-install.ts`](../apps/server/scripts/push-through-install.ts)
 and runs under the `JobTicker` (the only scheduler).
 
 ## Why a workflow (not a prompt) job
@@ -68,13 +68,13 @@ crashed run can't wedge the action), open a PR against `dev`, mark the action
 ## Install / arm
 ```sh
 # install disabled (default)
-bun run apps/ui-web/scripts/push-through-install.ts
+bun run apps/server/scripts/push-through-install.ts
 # install and arm on the */30 schedule
-bun run apps/ui-web/scripts/push-through-install.ts --enable
+bun run apps/server/scripts/push-through-install.ts --enable
 # replace an existing job (e.g. swap the legacy prompt job)
-bun run apps/ui-web/scripts/push-through-install.ts --force
+bun run apps/server/scripts/push-through-install.ts --force
 # remove
-bun run apps/ui-web/scripts/push-through-install.ts --uninstall
+bun run apps/server/scripts/push-through-install.ts --uninstall
 ```
 
 By default it installs **disabled**; arming an unattended pusher is a deliberate

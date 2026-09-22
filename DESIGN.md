@@ -1004,7 +1004,7 @@ Every Service has a `Default` Layer (real) and a `Test` Layer (in-memory/fake). 
 
 ## §9. UI System (revisable)
 
-Consumes §16 observability stream. **Tauri + SolidJS** (a Tauri shell over the Solid `@luna/ui-web` bundle remains a revisable design option). Non-goal for M1–M3; targeted at M4+. Web client (`apps/ui-web`) is live; the native desktop surface today is the floating **Luna Moon** widget (`apps/ui-moon-tauri`).
+Consumes §16 observability stream. The native desktop surface is the floating **Luna Moon** widget (`apps/ui-moon-tauri`), the only GUI — the `apps/ui-web` web client and the Solid `@luna/ui-web` bundle option are retired (frontend deleted in 54c99c5d; the chat-server daemon lives in `apps/server`). The terminal client is `apps/agent-cli`.
 
 ---
 
