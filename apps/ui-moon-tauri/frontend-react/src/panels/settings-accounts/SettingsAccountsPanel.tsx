@@ -6,7 +6,7 @@
  * hot-reload). Composer Auto/pin (#545) is untouched.
  */
 import { useEffect, useRef } from "react"
-import type { Action } from "@luna/ui-shared/core"
+import { newRequestId, type Action } from "@luna/ui-shared/core"
 import { Badge, type BadgeVariant, Button, TextInput } from "../../astryx-kit"
 import { useLocalStore, useMoonSelector, useMoonStore } from "../../state/store"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
@@ -14,7 +14,6 @@ import {
   FIXED_ACCOUNT_KIND,
   healthLabel,
   initialAccountsPanelState,
-  newReqId,
   reduceAccountsPanel,
   type AccountsPanelAction,
   type AccountsPanelState,
@@ -121,7 +120,7 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
       })
       return
     }
-    const requestId = newReqId()
+    const requestId = newRequestId("acct-")
     local.dispatch({ type: "submit-add-started", requestId })
     const sent = wsClientRef.current!.send({
       type: "account-add",
@@ -149,7 +148,7 @@ export function SettingsAccountsPanel({ ctx }: { ctx: PanelCtx }) {
       })
       return
     }
-    const requestId = newReqId()
+    const requestId = newRequestId("acct-")
     local.dispatch({ type: "submit-rm-started", requestId })
     const sent = wsClientRef.current!.send({
       type: "account-rm",
