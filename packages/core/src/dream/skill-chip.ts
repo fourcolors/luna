@@ -8,6 +8,7 @@
  *   - mode=update → actionType task (rewrite existing user skill under ~/.luna/skills)
  *   - NEVER auto-apply skill files from dream
  */
+import { fnv1a32 } from "../fnv1a.js"
 import type { ProposeInput } from "../suggested-actions/types.js"
 import type { DreamOp, SkillImprovementAfter } from "./types.js"
 
@@ -99,10 +100,5 @@ export const deriveSkillImprovementTargetId = (
   prompt: string,
 ): string => {
   const s = `skill-imp|${title.trim().toLowerCase()}|${prompt.trim().toLowerCase()}`
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return `skill-imp-${(h >>> 0).toString(36)}`
+  return `skill-imp-${fnv1a32(s).toString(36)}`
 }
