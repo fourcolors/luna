@@ -157,7 +157,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     store.onToolResult(e)
   })
   session.on("assistantError", ({ message, kind, silent }) => {
-    if (silent === true) return
+    if (silent) return
     store.appendSystem(`[${kind ?? "error"}] ${message}`)
   })
   session.on("fatal", (reason) => {
@@ -266,7 +266,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
       store.appendSystem(`selection mode already ${t.next ? "on" : "off"}`)
       return
     }
-    if (rendererRef !== undefined && rendererRef !== null) {
+    if (rendererRef) {
       rendererRef.useMouse = !t.next
     }
     store.setSelectionMode(t.next)
@@ -373,7 +373,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
   }
 
   const handleKey = (evt: KeyPressEvent): void => {
-    if (evt.ctrl === true && evt.name === "c") {
+    if (evt.ctrl && evt.name === "c") {
       dbg(`key: ctrl-c quit`)
       session.beginQuit()
       void client.close().then(() => { rendererRef?.destroy() })
