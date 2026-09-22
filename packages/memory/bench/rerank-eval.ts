@@ -75,6 +75,7 @@ import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js
 import { MemoryLayer } from "../src/layer.js"
 import { MemoryRouterTag } from "../src/router.js"
 import { makeRecord } from "../src/types.js"
+import { sleep } from "../src/sleep.js"
 
 // ---------------------------------------------------------------------------
 // Corpus types + loader (duplicated from memory-suite.ts - see header comment)
@@ -519,10 +520,6 @@ const RETRY_ATTEMPTS = 2
 // roughly in half (24k -> 17k measured) with no effect on scoring behavior.
 const NEUTRAL_CWD = resolve(tmpdir(), "luna-rerank-eval-cwd")
 if (!existsSync(NEUTRAL_CWD)) mkdirSync(NEUTRAL_CWD, { recursive: true })
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 /** Spawns one `claude -p` call with the given prompt on stdin. Resolves with
  * the extracted `result` text field, or rejects on non-zero exit, timeout,

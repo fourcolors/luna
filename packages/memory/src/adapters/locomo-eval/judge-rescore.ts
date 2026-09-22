@@ -85,6 +85,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { sleep } from "../../sleep.js"
 import {
   callOllamaCloudChat,
   LocomoHardStopError,
@@ -188,10 +189,6 @@ export interface JudgedQA {
   readonly rawJudgeResponse: string
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
-
 /**
  * Lane-based adaptive-concurrency worker pool. Spawns `opts.initial` lanes;
  * each lane pulls the next unclaimed item and runs `worker` on it. A lane
@@ -251,13 +248,6 @@ async function judgeAll(
   const judged: Array<JudgedQA | undefined> = new Array(scored.length)
   let consecutiveFailures = 0
   let hardStop: { reason: string; message: string } | null = null
-
-  const onFailure = (): number => {
-    consecutiveFailures++
-    // no-op placeholder for the current limit; real reduction happens below
-    return consecutiveFailures >= 3 ? -1 : -1
-  }
-  void onFailure
 
   let currentLimit = Math.max(MIN_CONCURRENCY, INITIAL_CONCURRENCY)
 

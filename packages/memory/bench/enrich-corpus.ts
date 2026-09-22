@@ -35,6 +35,7 @@ import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawn } from "node:child_process"
+import { sleep } from "../src/sleep.js"
 
 // node:child_process, not `Bun.spawn` - the project avoids @types/bun (see
 // DESIGN.md and the sqlite backend comments). The prompt is piped over
@@ -147,10 +148,6 @@ function buildPrompt(batch: ReadonlyArray<CorpusRecord>): string {
 }
 
 const CALL_TIMEOUT_MS = 90_000
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
-}
 
 /** Spawns one `claude -p --model <model>` call with the prompt piped over
  * stdin (avoids ARG_MAX on large batches). Rejects on nonzero exit or a
