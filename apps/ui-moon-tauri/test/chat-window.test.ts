@@ -702,8 +702,6 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       }
     })
 
-    // ── Empty-bubble cleanup ──────────────────────────────────────────────
-    // ── sweepTrailingEmptyAssistantBubbles ────────────────────────────────
     // ── Tool-call card rendering ──────────────────────────────────────────
     it('Scenario: appendToolCallCard renders a collapsible card with the tool name + JSON input + pending status', () => {
       const { appendToolCallCard } = internals() as any

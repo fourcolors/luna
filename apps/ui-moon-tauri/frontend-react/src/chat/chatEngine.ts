@@ -161,16 +161,6 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     // so callers (and tests) don't have to change.
     // ----------------------------------------------------------------------
 
-    // Legacy predicate. State has no concept of "visually empty" — empty
-    // turns are dropped at finishTurn time. Kept here as `false` so any
-    // remaining callers see "this bubble is not empty" and proceed.
-    isVisuallyEmpty() { return false; },
-
-    // Legacy sweep. ChatState.finishTurn already drops zero-content turns
-    // before the renderer ever paints them, so there's nothing to sweep.
-    // Kept as a no-op for backward callers.
-    sweepTrailingEmptyAssistantBubbles() {},
-
     // Route a frame's tool-call into ChatState. Returns the newly-rendered
     // card element (test ergonomics).
     appendToolCallCard(frame) {
