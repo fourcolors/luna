@@ -44,6 +44,7 @@
  * — see `test/locomo-eval.test.ts`.
  */
 import { priceTurnUsd, rateFor } from "@luna/core"
+import { sleep } from "../../sleep.js"
 
 export interface AnswerResult {
   readonly text: string
@@ -136,10 +137,6 @@ export function classifyOllamaCloudResponse(args: {
     return { kind: "retry", delayMs: backoffDelayMs(attempt) }
   }
   return { kind: "fail" }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /** One session's number + its LoCoMo-annotated date/time string. */

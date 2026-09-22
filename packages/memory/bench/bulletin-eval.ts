@@ -35,6 +35,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { sleep } from "../src/sleep.js"
 
 // ---------------------------------------------------------------------------
 // Fixture
@@ -171,7 +172,7 @@ async function callClaude(prompt: string): Promise<string> {
       return await callClaudeOnce(prompt)
     } catch (e) {
       lastError = e
-      await new Promise((r) => setTimeout(r, 1_000 * (attempt + 1)))
+      await sleep(1_000 * (attempt + 1))
     }
   }
   throw lastError
