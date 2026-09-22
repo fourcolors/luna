@@ -137,13 +137,15 @@ describe('shadow ownership follows frame ownership', () => {
     // borderless one keeps the CSS halo and no OS shadow. Either way the call
     // must be cfg-gated, never a bare `false`.
     expect(windowsRs).not.toMatch(/\.shadow\(false\)/)
-    expect(windowsRs.match(/\.shadow\(cfg!\(target_os = "macos"\)\)/g)).toHaveLength(2)
+    // The one shared card-window builder (build_card_window) gates it.
+    expect(windowsRs.match(/\.shadow\(cfg!\(target_os = "macos"\)\)/g)).toHaveLength(1)
   })
 
   it('the CSS and the Rust agree on which platform is natively framed', () => {
     // Both sides must say macOS, or the card geometry and the real window
-    // frame disagree.
-    expect(windowsRs.match(/\.decorations\(cfg!\(target_os = "macos"\)\)/g)).toHaveLength(2)
+    // frame disagree. One shared build_card_window is the only decorations
+    // site for panel/artifact card windows.
+    expect(windowsRs.match(/\.decorations\(cfg!\(target_os = "macos"\)\)/g)).toHaveLength(1)
     expect(appearance).toMatch(/data-native-frame/)
     expect(appearance).toMatch(/Macintosh|Mac OS X/)
   })
