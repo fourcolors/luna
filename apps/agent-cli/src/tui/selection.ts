@@ -28,7 +28,7 @@ export const applySelection = (
   action: SelectionAction,
 ): SelectionTransition => {
   const next =
-    action === "toggle" ? !current : action === "on" ? true : false
+    action === "toggle" ? !current : action === "on"
   return { next, changed: next !== current }
 }
 
