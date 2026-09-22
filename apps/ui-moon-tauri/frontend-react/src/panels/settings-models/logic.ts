@@ -23,11 +23,9 @@
  *   dream        -> claude-haiku-4-5  (cheapest)
  *
  * OpenAI / Google are present-but-gated provider slots: shown with a
- * "validated when key + gateway present" notice; not selectable for wake/dream
- * (JSON_LANES - kept for parity with the vanilla module though this port's UI
- * doesn't yet filter role model options by lane, matching the vanilla
- * module's actual shipped behavior, which also didn't filter the ANTHROPIC_MODELS
- * list by JSON_LANES - see its render() role loop).
+ * "validated when key + gateway present" notice; this port doesn't filter
+ * role model options by lane, matching the vanilla module's shipped
+ * behavior (see its render() role loop).
  */
 import type { ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
 
@@ -80,11 +78,6 @@ export const ANTHROPIC_MODELS: readonly ModelOption[] = [
   { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 - prior gen" },
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 - fastest" },
 ]
-
-// Roles that require JSON-capable providers (structuredOutput != "none").
-// Kept for parity with the vanilla module's constant table; see the module
-// doc above for why it isn't consumed by this port's render logic either.
-export const JSON_LANES: Partial<Record<Role, true>> = { wake: true, dream: true }
 
 export interface ProviderDraft {
   enabled: boolean
