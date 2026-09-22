@@ -28,7 +28,11 @@ import { MemoryRouterTag } from "@luna/memory"
 import { DreamReasoner } from "@luna/core"
 import { deriveBeliefId, makeBeliefRecord } from "@luna/core"
 import { SDKClient } from "../src/sdk-client.js"
-import { buildDreamPrompt, DreamReasonerDefault } from "../src/dream-reasoner.js"
+import {
+  BELIEF_DOMAINS,
+  buildDreamPrompt,
+  DreamReasonerDefault,
+} from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
 import type { DreamInputs, DistilledSession } from "@luna/core"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -946,5 +950,14 @@ describe("buildDreamPrompt - structured-output prompt shortening", () => {
     const prompt = buildDreamPrompt(EMPTY_INPUTS, true)
     expect(prompt).toContain("CATEGORY BOUNDARY")
     expect(prompt).toContain("hard cap of ~3 skill chips per night")
+  })
+
+  it("structured-path worked example uses a BELIEF_DOMAINS value (invalid example domains stage beliefs the survey can never select)", () => {
+    const prompt = buildDreamPrompt(EMPTY_INPUTS, true)
+    const m = prompt.match(
+      /Example op:\n\s*\{\s*"kind":\s*"belief_candidate",\s*"domain":\s*"([^"]+)"/,
+    )
+    expect(m).not.toBeNull()
+    expect([...BELIEF_DOMAINS]).toContain(m![1])
   })
 })
