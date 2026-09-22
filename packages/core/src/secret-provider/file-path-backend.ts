@@ -28,6 +28,8 @@ export const FILE_JSON_PREFIX = "file-json:" as const
 /** Hard read cap — 64 KiB. Prevents unbounded reads on large/adversarial files. */
 export const FILE_SIZE_CAP_BYTES = 64 * 1024
 
+const MODULE = "FilePathSecretProvider"
+
 // ---------------------------------------------------------------------------
 // Internal helpers — never export raw file content
 // ---------------------------------------------------------------------------
@@ -40,20 +42,17 @@ export const FILE_SIZE_CAP_BYTES = 64 * 1024
  *
  * Returns a ConfigError if any check fails.
  */
-const validatePath = (
-  rawPath: string,
-  module: string,
-): ConfigError | null => {
+const validatePath = (rawPath: string): ConfigError | null => {
   if (rawPath.length === 0) {
     return new ConfigError({
-      module,
+      module: MODULE,
       key: rawPath,
       message: "path is empty",
     })
   }
   if (!path.isAbsolute(rawPath)) {
     return new ConfigError({
-      module,
+      module: MODULE,
       key: rawPath,
       message: `path must be absolute: ${rawPath}`,
     })
@@ -64,7 +63,7 @@ const validatePath = (
   // string to prevent traversal attacks.
   if (rawPath.split("/").some((seg) => seg === "..")) {
     return new ConfigError({
-      module,
+      module: MODULE,
       key: rawPath,
       message: `path must not contain '..': ${rawPath}`,
     })
@@ -72,7 +71,7 @@ const validatePath = (
   const normalized = path.normalize(rawPath)
   if (normalized.includes("..")) {
     return new ConfigError({
-      module,
+      module: MODULE,
       key: rawPath,
       message: `path must not contain '..': ${rawPath}`,
     })
@@ -89,7 +88,6 @@ const validatePath = (
  */
 const readFileSafe = (
   filePath: string,
-  module: string,
 ): Effect.Effect<string, ConfigError> =>
   Effect.try({
     try: () => {
@@ -97,14 +95,14 @@ const readFileSafe = (
       const stat = fs.lstatSync(filePath)
       if (!stat.isFile()) {
         throw new ConfigError({
-          module,
+          module: MODULE,
           key: filePath,
           message: `path is not a regular file: ${filePath}`,
         })
       }
       if (stat.size > FILE_SIZE_CAP_BYTES) {
         throw new ConfigError({
-          module,
+          module: MODULE,
           key: filePath,
           message: `file exceeds ${FILE_SIZE_CAP_BYTES}-byte size cap: ${filePath}`,
         })
@@ -117,7 +115,7 @@ const readFileSafe = (
         const bytesRead = fs.readSync(fd, buf, 0, FILE_SIZE_CAP_BYTES + 1, 0)
         if (bytesRead > FILE_SIZE_CAP_BYTES) {
           throw new ConfigError({
-            module,
+            module: MODULE,
             key: filePath,
             message: `file exceeds ${FILE_SIZE_CAP_BYTES}-byte size cap: ${filePath}`,
           })
@@ -130,30 +128,16 @@ const readFileSafe = (
     catch: (e) => {
       if (e instanceof ConfigError) return e
       return new ConfigError({
-        module,
+        module: MODULE,
         key: filePath,
         message: `failed to read file: ${filePath}`,
       })
     },
   })
 
-/** Strip leading UTF-8 BOM if present (both raw bytes form and JS string form). */
-const stripBom = (s: string): string => {
-  // charCodeAt(0) === 0xfeff covers the BOM as a single JS string character.
-  if (s.charCodeAt(0) === 0xfeff) return s.slice(1)
-  // Also handle the case where the BOM bytes (0xEF 0xBB 0xBF) are present as
-  // three individual latin-1 characters (U+00EF U+00BB U+00BF) — this happens
-  // when a file written with the BOM byte sequence is read back and the bytes
-  // are interpreted individually rather than as the single BOM codepoint.
-  if (
-    s.charCodeAt(0) === 0xef &&
-    s.charCodeAt(1) === 0xbb &&
-    s.charCodeAt(2) === 0xbf
-  ) {
-    return s.slice(3)
-  }
-  return s
-}
+/** Strip the leading UTF-8 BOM (U+FEFF) if present. */
+const stripBom = (s: string): string =>
+  s.charCodeAt(0) === 0xfeff ? s.slice(1) : s
 
 /** Trim trailing newlines and carriage returns. */
 const trimTrailing = (s: string): string => s.replace(/[\r\n]+$/, "")
@@ -186,10 +170,10 @@ const makeProvider = (): SecretProviderApi => ({
     // ── file: path ──────────────────────────────────────────────────────────
     if (ref.startsWith(FILE_PATH_PREFIX)) {
       const filePath = ref.slice(FILE_PATH_PREFIX.length)
-      const pathErr = validatePath(filePath, "FilePathSecretProvider")
+      const pathErr = validatePath(filePath)
       if (pathErr !== null) return Effect.fail(pathErr)
 
-      return readFileSafe(filePath, "FilePathSecretProvider").pipe(
+      return readFileSafe(filePath).pipe(
         Effect.flatMap((raw) => {
           const cleaned = trimTrailing(stripBom(raw))
           if (cleaned.trim().length === 0) {
@@ -226,10 +210,10 @@ const makeProvider = (): SecretProviderApi => ({
       const filePath = rest.slice(0, hashIdx)
       const field = rest.slice(hashIdx + 1)
 
-      const pathErr = validatePath(filePath, "FilePathSecretProvider")
+      const pathErr = validatePath(filePath)
       if (pathErr !== null) return Effect.fail(pathErr)
 
-      return readFileSafe(filePath, "FilePathSecretProvider").pipe(
+      return readFileSafe(filePath).pipe(
         Effect.flatMap((raw) => {
           const cleaned = stripBom(raw)
           let parsed: unknown

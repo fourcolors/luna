@@ -59,10 +59,24 @@ describe("FilePathSecretProvider — happy paths", () => {
   it("file: strips UTF-8 BOM", async () => {
     const dir = tmpDir()
     const p = path.join(dir, "bom.txt")
-    // Write BOM + content + trailing newline.
-    fs.writeFileSync(p, "\xEF\xBB\xBFhello\n")
+    // Write the raw BOM bytes (EF BB BF) + content + trailing newline.
+    fs.writeFileSync(
+      p,
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("hello\n")]),
+    )
     const val = await run(get(`file:${p}`))
     expect(Redacted.value(val)).toBe("hello")
+  })
+
+  it("file: preserves content that starts with the chars 'ï»¿'", async () => {
+    const dir = tmpDir()
+    const p = path.join(dir, "not-bom.txt")
+    // "\xEF\xBB\xBF" in a JS string is the chars U+00EF U+00BB U+00BF, which
+    // writeFileSync encodes to disk as UTF-8 (C3 AF C2 BB C2 BF). They are
+    // content, not a BOM — a real BOM decodes to the single char U+FEFF.
+    fs.writeFileSync(p, "\xEF\xBB\xBFhello\n")
+    const val = await run(get(`file:${p}`))
+    expect(Redacted.value(val)).toBe("ï»¿hello")
   })
 
   it("file: empty/whitespace-only file is a MISS (fail-closed, no empty secret)", async () => {
