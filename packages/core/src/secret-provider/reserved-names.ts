@@ -22,6 +22,8 @@
  *   - packages/vault/src/internal.ts `isEnvDenied` - now DELEGATES here.
  *   - packages/secret-tools/src/register-secret.ts `isEnvReserved` - keeps its
  *     documented inline copy (unit-testable without pulling @luna/core).
+ * apps/server/src/chat-server.ts `persistEnvSecret` also DELEGATES here via
+ * its existing @luna/core import — no third inline copy.
  */
 
 /** The single non-prefix reserved name. */

@@ -1712,11 +1712,6 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
  * the no-newline invariant is ALSO enforced here so every writer — present and
  * future — is covered (review M2.6: an interior \n in a value would inject an
  * extra line into ~/.luna/.env).
- */
-/**
- * Defense-in-depth reserved-name predicate (mirrors isEnvDenied in
- * @luna/vault/src/internal.ts). Inlined so persistEnvSecret stays
- * self-contained. Check is CASE-INSENSITIVE (audit finding).
  *
  * CONNECTOR BYPASS: the connector OAuth path (storeSecret) writes
  * LUNA_CONNECTOR_* vars intentionally — those are legitimate internal
@@ -1725,11 +1720,6 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
  * applied ONLY to registerSecret-reachable paths (operator/agent input).
  * The connector's storeSecret passes allowReserved=true to opt out.
  */
-const _isEnvReservedLocal = (varName: string): boolean => {
-  const upper = varName.toUpperCase()
-  return upper === "UI_WS_TOKEN" || upper.startsWith("LUNA_")
-}
-
 const persistEnvSecret = (varName: string, value: string, allowReserved = false): Promise<void> =>
   new Promise((resolve, reject) => {
     try {
@@ -1745,7 +1735,7 @@ const persistEnvSecret = (varName: string, value: string, allowReserved = false)
       // gate so any future writer that calls persistEnvSecret directly
       // (bypassing makeRegisterSecret) cannot overwrite Luna internals.
       // The connector OAuth path passes allowReserved=true — see comment above.
-      if (!allowReserved && _isEnvReservedLocal(varName)) {
+      if (!allowReserved && isReservedSecretName(varName)) {
         reject(new Error(`env var name "${varName}" is reserved for Luna internals`))
         return
       }
