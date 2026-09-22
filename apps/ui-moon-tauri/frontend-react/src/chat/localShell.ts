@@ -147,7 +147,9 @@ export function createLocalShell(ctx: LocalShellCtx) {
       try {
         const r = await window.__TAURI__.core.invoke('local_shell_exec', {
           command: frame.command,
-          cwd: frame.cwd ?? null,
+          // No cwd named: run at the advertised default (roots[0], else
+          // homeDir) — the same default sendCapability() publishes.
+          cwd: frame.cwd || ls.roots[0] || ls.homeDir || null,
           timeoutMs: frame.timeoutMs ?? null
         });
         reply({
