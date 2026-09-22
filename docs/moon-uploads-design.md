@@ -183,9 +183,8 @@ base64 `document` blocks in a user message — it may strip/ignore/error on one.
   event wiring for picker + paste + drag-drop. Image previews use `data:` URLs
   (CSP blocks `blob:`). Fixed a pre-existing missing `}` on `.send-btn svg`.
 
-**Behaviour:** images → `attachments` frame (server-ready); text/code → folded
-into message text; PDFs → declined behind `Attachments.PDF_ENABLED=false`
-(flip with the server slice); binaries → declined with a clear message.
+**Behaviour:** images + PDFs → `attachments` frame; text/code → folded
+into message text; binaries → declined with a clear message.
 
 **Client-side downscaler ADDED** (`processImage`): non-GIF images downscaled to
 ≤ `MAX_EDGE` (1568 px) long edge, re-encoded preserving png/jpeg/webp, guaranteed
@@ -217,7 +216,8 @@ CSP — all need the running moon app.
   - `server.ts` `validateAttachments` → allow pdf; type-aware caps (image 10MB,
     pdf 20MB, turn-total 20MB); WS `maxPayload` 8→32MB.
   - `chat-service.ts` `buildUserMessage` → emit `document` block for pdf.
-  - moon `index.html` → `PDF_ENABLED=true`, `MAX_PDF_BYTES=20MB`.
+  - moon → accept pdf with `MAX_PDF_BYTES=20MB` (the transitional
+    `PDF_ENABLED` guard was later removed once the server slice landed).
   **Typecheck: 0 errors** across the root project (all touched packages).
 
 **Verified without the app:** spike (live SDK), tsc (0 err), 16 logic asserts,

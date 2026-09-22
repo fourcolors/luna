@@ -102,7 +102,6 @@ const TEXT_EXTS = new Set([
 ])
 // Server accepts application/pdf document blocks as of the PDF slice
 // (protocol.ts + server.ts + buildUserMessage; SDK passthrough spiked).
-const PDF_ENABLED = true
 const MAX_PDF_BYTES = 20 * 1024 * 1024 // matches server MAX_PDF_RAW_BYTES
 // Decoded-bytes budget for one turn. Mirrors server MAX_TURN_RAW_BYTES. MUST
 // be enforced client-side: a turn whose base64 exceeds the 32MB WS maxPayload
@@ -389,12 +388,6 @@ function createAttachmentsBridge(store: AttachmentsStore): AttachmentsBridge {
       const text = await readText(file)
       store.setItems([...store.getState().items, { id: newId(), kind, name: file.name, text }])
     } else if (kind === "pdf") {
-      // Phase-1b: flip PDF_ENABLED once the server accepts document blocks
-      // (protocol.ts + validateAttachments + buildUserMessage). Until then,
-      // decline politely rather than send a frame the server will reject.
-      if (!PDF_ENABLED) {
-        throw new Error(`PDF support is coming in the next update: ${file.name}`)
-      }
       if (file.size > MAX_PDF_BYTES) {
         throw new Error(`PDF too large (max 20 MB): ${file.name}`)
       }
