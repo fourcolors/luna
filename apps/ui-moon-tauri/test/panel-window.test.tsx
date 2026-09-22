@@ -12,7 +12,7 @@
 // ctx/connectWs waterfall - see panel-ctx.ts's module doc on why that stays
 // vanilla); the only difference is the REACT_PANEL_TYPES hand-off this test
 // now also exercises: after the inline script runs, main-panel.tsx calls
-// mountReactPanel(type, window.__panelCtx) for every panel type (a no-op for
+// dispatchPanelMount(type, window.__panelCtx) for every panel type (a no-op for
 // types it doesn't own - see panel-boot.tsx) - this harness reproduces that
 // exact call so the test proves the real two-stage boot (vanilla shell ->
 // React hand-off), not just the vanilla half.
@@ -31,7 +31,7 @@ import * as path from 'node:path'
 
 ;(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true
 
-import { mountReactPanel } from '../frontend-react/src/panel-boot'
+import { dispatchPanelMount } from '../frontend-react/src/panel-boot'
 import type { PanelCtx } from '../frontend-react/src/panels/panel-ctx'
 
 function loadVendorInto(target: any, file: string) {
@@ -99,9 +99,9 @@ function bootPanel(opts: { type: string; invoke?: (cmd: string, args?: any) => a
 
   // React hand-off: reproduces exactly what main-panel.tsx's deferred module
   // script does after the inline script above runs. A no-op for panel types
-  // mountReactPanel doesn't own (see panel-boot.tsx) - safe to call always.
+  // dispatchPanelMount doesn't own (see panel-boot.tsx) - safe to call always.
   act(() => {
-    mountReactPanel(opts.type, (window as any).__panelCtx as PanelCtx)
+    dispatchPanelMount(opts.type, (window as any).__panelCtx as PanelCtx)
   })
 
   // jsdom never loads injected <script src> tags: fire the error event the

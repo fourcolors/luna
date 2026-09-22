@@ -17,25 +17,9 @@
  * `{ ctx, jobId }` prop consumer, easy to mount directly in tests without
  * touching `location`.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { FlowPanel } from "./FlowPanel"
 import type { PanelCtx } from "./panel-ctx"
-
-declare global {
-  interface Window {
-    /**
-     * Observability contract every panel type sets (vanilla via
-     * panel.html's bootModule(), React panels via mountFlowPanel and its
-     * siblings) - read by agent-browser smoke checks and tests.
-     */
-    __PanelInternals?: {
-      type: string
-      hasModule: boolean
-      resolvedRouteKey: string | null
-      lastNotice: string | null
-    }
-  }
-}
 
 export const FLOW_PANEL_TITLE = "Run history"
 export const FLOW_PANEL_TYPES = ["flow"] as const
@@ -45,24 +29,7 @@ export function isFlowPanelType(type: string): boolean {
 }
 
 export function mountFlowPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = FLOW_PANEL_TITLE
-  document.title = `Luna - ${FLOW_PANEL_TITLE}`
-
   const jobId = new URLSearchParams(location.search).get("jobId")
 
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<FlowPanel ctx={ctx} jobId={jobId} />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, FLOW_PANEL_TITLE, <FlowPanel ctx={ctx} jobId={jobId} />)
 }

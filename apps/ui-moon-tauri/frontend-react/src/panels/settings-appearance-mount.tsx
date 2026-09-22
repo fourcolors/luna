@@ -19,7 +19,7 @@
  * - the `ctx` parameter still exists so panel-boot.tsx's dispatcher can call
  * every mount<Name>Panel(type, ctx) function through one uniform signature.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { SETTINGS_APPEARANCE_TITLE, SettingsAppearancePanel } from "./SettingsAppearancePanel"
 import type { PanelCtx } from "./panel-ctx"
 
@@ -30,22 +30,5 @@ export function isSettingsAppearancePanelType(type: string): boolean {
 }
 
 export function mountSettingsAppearancePanel(type: string, _ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = SETTINGS_APPEARANCE_TITLE
-  document.title = `Luna - ${SETTINGS_APPEARANCE_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<SettingsAppearancePanel />)
-  }
-
-  // Same shape panel.html's own bootModule() sets for vanilla panels, so
-  // agent-browser smoke checks and tests keep one observability contract
-  // regardless of which renderer owns a given panel type.
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, SETTINGS_APPEARANCE_TITLE, <SettingsAppearancePanel />)
 }

@@ -7,7 +7,7 @@
  * #bar-title, document.title, window.__PanelInternals, #content-area) -
  * dispatched from panel-boot.tsx.
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "../panel-mount"
 import { NotificationsPanel, NOTIFICATIONS_PANEL_TITLE } from "./NotificationsPanel"
 import type { PanelCtx } from "../panel-ctx"
 
@@ -18,19 +18,5 @@ export function isNotificationsPanelType(type: string): boolean {
 }
 
 export function mountNotificationsPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = NOTIFICATIONS_PANEL_TITLE
-  document.title = `Luna - ${NOTIFICATIONS_PANEL_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<NotificationsPanel ctx={ctx} />)
-  }
-
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, NOTIFICATIONS_PANEL_TITLE, <NotificationsPanel ctx={ctx} />)
 }

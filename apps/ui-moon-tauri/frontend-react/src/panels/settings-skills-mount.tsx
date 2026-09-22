@@ -10,7 +10,7 @@
  *   - window.__PanelInternals = { type, hasModule, resolvedRouteKey, lastNotice }
  *   - renders the panel's content into #content-area
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "./panel-mount"
 import { SettingsSkillsPanel, SETTINGS_SKILLS_TITLE } from "./settings-skills/SettingsSkillsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
@@ -21,19 +21,5 @@ export function isSettingsSkillsPanelType(type: string): boolean {
 }
 
 export function mountSettingsSkillsPanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = SETTINGS_SKILLS_TITLE
-  document.title = `Luna - ${SETTINGS_SKILLS_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<SettingsSkillsPanel ctx={ctx} />)
-  }
-
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, SETTINGS_SKILLS_TITLE, <SettingsSkillsPanel ctx={ctx} />)
 }

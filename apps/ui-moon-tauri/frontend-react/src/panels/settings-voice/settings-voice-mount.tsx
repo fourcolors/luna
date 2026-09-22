@@ -11,7 +11,7 @@
  *   - window.__PanelInternals = { type, hasModule, resolvedRouteKey, lastNotice }
  *   - rendering the panel's content into #content-area
  */
-import { createRoot } from "react-dom/client"
+import { mountReactPanel } from "../panel-mount"
 import { VoicePanel, PANEL_TITLE } from "./VoicePanel"
 import type { PanelCtx } from "../panel-ctx"
 
@@ -22,19 +22,5 @@ export function isSettingsVoicePanelType(type: string): boolean {
 }
 
 export function mountSettingsVoicePanel(type: string, ctx: PanelCtx): void {
-  const barTitle = document.getElementById("bar-title")
-  if (barTitle) barTitle.textContent = PANEL_TITLE
-  document.title = `Luna - ${PANEL_TITLE}`
-
-  const contentArea = document.getElementById("content-area")
-  if (contentArea) {
-    createRoot(contentArea).render(<VoicePanel ctx={ctx} />)
-  }
-
-  window.__PanelInternals = {
-    type,
-    hasModule: true,
-    resolvedRouteKey: null,
-    lastNotice: null,
-  }
+  mountReactPanel(type, PANEL_TITLE, <VoicePanel ctx={ctx} />)
 }
