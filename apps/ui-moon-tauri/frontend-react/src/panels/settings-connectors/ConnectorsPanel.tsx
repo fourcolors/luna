@@ -37,6 +37,7 @@
  * lives in a ref here.
  */
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react"
+import { newRequestId } from "@luna/ui-shared/core"
 import {
   Badge,
   Banner,
@@ -82,12 +83,6 @@ function badgeVariantFor(status: OverallStatus): BadgeVariant {
     default:
       return "neutral"
   }
-}
-
-function randomRequestId(prefix: string): string {
-  const g = globalThis as { crypto?: Crypto }
-  const id = g.crypto?.randomUUID ? g.crypto.randomUUID().replace(/-/g, "") : Math.random().toString(36).slice(2)
-  return prefix + "_" + id
 }
 
 export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
@@ -159,7 +154,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
         // A newer connectOauth started while this listener was binding — its
         // begin would target a dead listener, so drop it silently.
         if (flowEpoch !== oauthEpochRef.current) return
-        const requestId = randomRequestId("oauth")
+        const requestId = newRequestId("oauth_")
         store.dispatch({ type: "oauth-begin-set", requestId, defId: def.id })
         oauthBeginEpochRef.current = flowEpoch
         clearBeginTimer()
@@ -230,7 +225,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
       })
       return
     }
-    const requestId = randomRequestId("conn").replace("oauth_", "conn_")
+    const requestId = newRequestId("conn_")
     store.dispatch({ type: "plain-connecting-start", defId: def.id, requestId })
     const frame: Record<string, unknown> = {
       type: "connector-connect",
@@ -248,7 +243,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     if (!trimmedId) return
     const frame: Record<string, unknown> = {
       type: "connector-set-client",
-      requestId: randomRequestId("setclient"),
+      requestId: newRequestId("setclient_"),
       definitionId,
       clientId: trimmedId,
     }

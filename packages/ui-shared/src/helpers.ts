@@ -69,6 +69,20 @@ export const relativeTime = (ms: number, now: number = Date.now()): string => {
 }
 
 /**
+ * `prefix` + a dashless `crypto.randomUUID()` when available, else a
+ * `Math.random().toString(36)` fallback — the request-id shape used by
+ * every request/ack-correlated frame.
+ */
+export const newRequestId = (prefix: string): string => {
+  const c = (globalThis as { crypto?: Crypto }).crypto
+  const uuid =
+    c && typeof c.randomUUID === "function"
+      ? c.randomUUID().replace(/-/g, "")
+      : null
+  return prefix + (uuid ?? Math.random().toString(36).slice(2))
+}
+
+/**
  * Compact stringification for ObsEvent fields shown in EventRow
  * summary lines. Strings get truncated to 30 chars; numbers/booleans
  * pass through; objects fall through to a 30-char JSON snippet.
