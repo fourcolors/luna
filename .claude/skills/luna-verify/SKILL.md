@@ -127,6 +127,32 @@ WebSocketEngine.handleFrame({type:'thread-list', threads:[
   when a Tauri window spawn succeeds), so a lingering ghost is not a failure.
 - A plain click goes pointerdown -> 'click' outcome -> `onRowClick` -> active selection.
 
+**Driving a React panel's send path off-Tauri.** On `panel.html?type=<t>` the connect waterfall only
+dials when `ctx.invoke('load_connection')` resolves, so in a plain browser the panel's `LunaWsClient`
+never connects, `client.socket()` stays null, and every send path early-returns "Not connected". To
+exercise a real `send()` (e.g. to inspect a request frame): wrap `window.__panelCtx.connectWs` so the
+fresh client dials a throwaway `Bun.serve` WS endpoint, then remount the same panel via the module
+graph - the mount's effect calls your wrapped `connectWs`:
+
+```js
+const m = await import('/src/panel-boot.tsx')
+const ctx = { ...window.__panelCtx, connectWs: (reg, opts) => {
+  const c = window.LunaWS.createClient({ registry: reg, ...(opts || {}) })
+  c.connect('ws://127.0.0.1:9911'); return c
+} }
+m.dispatchPanelMount('settings.vault', ctx)   // remounts into #content-area
+```
+
+Have the fake server push `{"type":"hello","capabilities":{...}}` on open - capability-gated sections
+(e.g. `vault-section` needs `capabilities.vault`) unhide only after that frame. Frame traffic is then
+assertable server-side in the fake server's stdout.
+
+**No managed browser? Use CDP.** If the computer-use `browser` target is unavailable, launch
+`open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-devin`, then
+`GET http://localhost:9222/json`, pick the page target by URL, and `Runtime.evaluate` over its
+`webSocketDebuggerUrl` (`returnByValue:true, awaitPromise:true`) - dynamic `import()` works in the dev
+page, which is how the recipe above runs.
+
 Take a screenshot **and** measure. `getComputedStyle()` and `getBoundingClientRect()` turn "looks
 right" into a number you can put in a PR - `getComputedStyle(el).fill` is how you catch a token that
 silently resolved to black. Precedent with the exact shape to copy: `.scratch/s16-shots/README.md`.
