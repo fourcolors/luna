@@ -78,3 +78,14 @@ export interface LunaWsClient {
   registerCloseHook: (fn: (evt: unknown) => void) => void
   socket: () => unknown
 }
+
+/**
+ * True when the client's underlying socket is OPEN - the same
+ * `readyState === WebSocket.OPEN` idiom src/chat/wire.ts and
+ * src/hub/hubEngines.ts use. The `client.socket()` trust-boundary cast
+ * (typed `unknown`) lives here so panels don't each redo it.
+ */
+export function socketOpen(client: LunaWsClient | null): boolean {
+  const sock = client?.socket() as { readyState?: number } | null | undefined
+  return !!(sock && sock.readyState === WebSocket.OPEN)
+}

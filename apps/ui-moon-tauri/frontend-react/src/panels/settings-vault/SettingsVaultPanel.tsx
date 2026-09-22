@@ -46,6 +46,7 @@ import { useEffect, useRef } from "react"
 import { newRequestId, type Action } from "@luna/ui-shared/core"
 import { Badge, Button, NumberInput, SegmentedControl, SegmentedControlItem, Switch, TextInput } from "../../astryx-kit"
 import { useLocalStore, useMoonSelector, useMoonStore } from "../../state/store"
+import { socketOpen } from "../panel-ctx"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
 import {
   effectiveVarName,
@@ -86,14 +87,6 @@ interface VaultItem {
   readonly description: string | null
   readonly synced: boolean
   readonly shadowed: boolean
-}
-
-function socketOpen(client: LunaWsClient | null): boolean {
-  const sock = client?.socket() as { readyState?: number } | null | undefined
-  const OPEN = typeof WebSocket !== "undefined" && (WebSocket as unknown as { OPEN?: number }).OPEN !== undefined
-    ? (WebSocket as unknown as { OPEN: number }).OPEN
-    : 1
-  return !!(sock && sock.readyState === OPEN)
 }
 
 /** Read a hello frame's `capabilities.vault` flag - mirrors

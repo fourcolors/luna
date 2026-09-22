@@ -33,6 +33,7 @@ import { useEffect, useMemo, useReducer, useRef } from "react"
 import { newRequestId } from "@luna/ui-shared/core"
 import type { ModelRoutingListFrame, ModelRoutingStatusFrame } from "@luna/ui-shared/core"
 import { Banner, Button, Card, HStack, NumberInput, Selector, Switch, Text, TextInput, VStack } from "../../astryx-kit"
+import { socketOpen } from "../panel-ctx"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
 import {
   ANTHROPIC_MODELS,
@@ -47,12 +48,6 @@ import {
 
 /** Consumed by settings-models-mount.tsx for #bar-title / document.title. */
 export const PANEL_TITLE = "Models"
-
-function socketIsOpen(client: LunaWsClient | null): boolean {
-  const sock = client?.socket() as { readyState?: number } | null | undefined
-  const OPEN = (globalThis as { WebSocket?: { OPEN?: number } }).WebSocket?.OPEN ?? 1
-  return !!(sock && sock.readyState === OPEN)
-}
 
 export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
   const [state, dispatch] = useReducer(reduceModelRouting, initialModelRoutingState)
@@ -110,7 +105,7 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
       return
     }
     const client = clientRef.current
-    if (!socketIsOpen(client)) {
+    if (!socketOpen(client)) {
       dispatch({ type: "not-connected" })
       return
     }
