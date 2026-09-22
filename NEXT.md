@@ -16,7 +16,7 @@ Every change lands as a small stacked PR on branch `luna-next` for Operator revi
    Every SDK-native adoption is gated per lane on its capability flag, with exactly one portable fallback, because Luna deliberately keeps local model lanes.
 5. Every behavioral change carries an acceptance metric and an abandon condition, measured with harnesses already in the repo: retrieval bench, cost ledger, job-run history.
 
-## Stack 1 (this stack)
+## Stack 1 (landed)
 
 1. charter
 2. drop studio shell
@@ -30,16 +30,21 @@ Every change lands as a small stacked PR on branch `luna-next` for Operator revi
 10. capability-gate helper
 11. structured output default-on
 
-## Stack 2 (planned)
+## Stack 2 (landed)
 
 - Add the `defineToolPackage` factory, then migrate all ten tool packages onto it.
+  SHIPPED (PRs #421-#423): `packages/tools/src/define-tool-package.ts`; all ten packages migrated.
 - Extract the server to `apps/server` (coordinated deploy migration).
+  SHIPPED: the daemon lives in `apps/server/src` (`chat-server.ts`, `runtime-paths.ts`, `core-apps.ts`), ops/dev CLIs in `apps/server/scripts`.
 - Delete the `ui-web` frontend.
+  SHIPPED (54c99c5d): `apps/ui-web` and the packages only it consumed are gone.
 - ~~Unify dream+wake into one `ReflectionJob`~~ — REJECTED on implementation contact (Operator adjudication, 2026-08-03).
   Six deliberate divergences block the merge; see `DESIGN.md` §5.3.6.
   Landed instead as slice 9a: the shared `defineWorkerLayer` registration wrapper (`jobs/define-worker.ts`), runtimes untouched.
 - Split `chat-service.ts` / `job-ticker.ts` / `main.rs` along existing seams.
+  SHIPPED (PRs #424-#426): job-ticker → producer/executor/reconcile, chat-service → seam modules, main.rs → domain modules.
 - Establish a `luna.db` schema-continuity contract before any daemon cutover.
+  SHIPPED (PR #427): `docs/next/luna-db-contract.md` + `packages/core/test/luna-db-contract.test.ts` as a blocking `test:bun` gate; the cutover gate ran before the daemon move.
 
 ## Stack 3 (in progress)
 

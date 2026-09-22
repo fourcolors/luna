@@ -60,8 +60,8 @@ Claims a neighboring product could not truthfully copy, all confirmed:
 
 ## Evidence on Hand
 
-- Real shipping apps: `apps/ui-moon-tauri` (releases through `moon-v0.0.65`), `apps/ui-web`, `apps/agent-cli`.
-  Studio (`apps/ui-studio-tauri`) was retired in PR #405 (2026-07-31); Moon is the only desktop GUI.
+- Real shipping apps: `apps/ui-moon-tauri` (releases through `moon-v0.0.65`), `apps/server` (the chat-server daemon), `apps/agent-cli`.
+  Studio (`apps/ui-studio-tauri`) was retired in PR #405 (2026-07-31); the `apps/ui-web` frontend was deleted in 54c99c5d after the daemon moved to `apps/server`; Moon is the only desktop GUI.
 - `DNA.md` (end-user-facing identity and operating contract) and `DESIGN.md` (architecture) are authoritative written sources.
 - UI truth is verified by rendered screenshots (project rule): Moon pages drive real HTML via `agent-browser` and `__MoonInternals.handleFrame`; a real-Tauri WKWebView glance precedes releases.
 - No customers, testimonials, pricing, or market claims exist; future work must not fabricate any.
