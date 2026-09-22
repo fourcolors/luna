@@ -95,7 +95,7 @@ const VALID_KINDS: ReadonlySet<string> = new Set<DreamOpKind>([
  * Derived from the values the model actually produced over 60 live beliefs:
  * user 20, infrastructure 29, process 6, system 4, engineering 1.
  */
-const BELIEF_DOMAINS = [
+export const BELIEF_DOMAINS = [
   "user", // about the operator: preferences, circumstances, habits
   "process", // about how the operator wants work done: rules, conventions
   "infrastructure", // about machines, services, deploys
@@ -331,7 +331,7 @@ export function buildDreamPrompt(
   const opShapeRule = structuredOutputEnabled
     ? [
         "2. The op field shape is enforced by the response schema. Example op:",
-        '   { "kind": "belief_candidate", "domain": "comms", "statement": "...",',
+        '   { "kind": "belief_candidate", "domain": "user", "statement": "...",',
         '     "confidence": 0.8, "evidence": ["session:s-1#m-1"], "rationale": "..." }',
       ]
     : [

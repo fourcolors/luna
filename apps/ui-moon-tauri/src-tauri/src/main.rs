@@ -283,6 +283,10 @@ fn main() {
                                 .zip(doc["moon"]["y"].as_f64());
                             // Restore each panel independently at its saved,
                             // clamped rect. No dock graph is reconstructed.
+                            // Rows may carry `params` (non-singleton instance
+                            // panels, e.g. a flow inspector for one job):
+                            // those replay through the deterministic instance
+                            // label so the exact window comes back.
                             for p in doc["panels"].as_array().unwrap_or(&Vec::new()) {
                                 let Some(kind) = p["kind"].as_str() else {
                                     continue;
@@ -298,9 +302,15 @@ fn main() {
                                 );
                                 let w = p["w"].as_f64().filter(|v| *v >= 220.0);
                                 let h = p["h"].as_f64().filter(|v| *v >= 120.0);
-                                if let Ok(label) =
-                                    windows::spawn_panel(&handle, desc, Some(x), Some(y), w, h)
-                                {
+                                if let Ok(label) = windows::spawn_panel_for_layout(
+                                    &handle,
+                                    desc,
+                                    p.get("params"),
+                                    Some(x),
+                                    Some(y),
+                                    w,
+                                    h,
+                                ) {
                                     // Restore must produce a VISIBLE window,
                                     // not an AX-only ghost: if anything (e.g.
                                     // AppKit saved state applied on relaunch)

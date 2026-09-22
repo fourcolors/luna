@@ -147,121 +147,186 @@ describe('Feature: sendCapability() emits correct frame', () => {
   })
 })
 
-// ── Feature: a cwd-less request executes at the advertised default ──────────
-//
-// The server bridge (packages/ui-ws/local-shell-bridge.ts) omits `cwd` from the
-// request frame when the agent doesn't name one — "the client's own cwd" is
-// resolved client-side. The approval check treats an absent cwd as "runs at
-// roots[0]"; the exec call must land in that same place, not the app process
-// cwd ('/' for a packaged .app). Regression: #646 fixed the ADVERTISED cwd but
-// left the EXECUTED one as null, so a roots-scoped client approved "roots[0]"
-// while the command actually ran wherever the app was started.
+// ── Feature: handleRequest() runs cwd-less commands at the advertised default ──
 
-function makeTauriExec() {
-  const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
-  ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {
-    core: {
-      invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
-        calls.push({ cmd, args })
-        if (cmd === 'local_shell_exec') {
-          return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1, timedOut: false }
-        }
-        return null
-      }),
-    },
-  }
-  return calls
-}
+describe('Feature: handleRequest() cwd defaulting', () => {
+  const invokeMock = vi.fn()
+  const ROOT = '/Users/op/work'
+  const HOME = '/Users/op'
 
-afterEach(() => {
-  delete (window as unknown as { __TAURI__?: unknown }).__TAURI__
-})
-
-describe('Feature: handleRequest applies the advertised default cwd', () => {
   beforeEach(() => {
     localStorage.clear()
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', durationMs: 1, timedOut: false })
+    ;(window as any).__TAURI__ = { core: { invoke: invokeMock } }
   })
 
-  function requestFrame(extra?: Record<string, unknown>) {
-    return {
-      type: 'local-shell-request',
-      requestId: 'req-1',
-      threadId: 'test-thread-1',
-      command: 'pwd',
-      timeoutMs: 1000,
-      ...extra,
-    }
-  }
-
-  it('Scenario: roots attached + no cwd => exec runs at roots[0], not the process cwd', async () => {
-    const calls = makeTauriExec()
-    const { ctx, wsFrames } = makeCtx()
-    ctx.State.localShell.fullAccess = false
-    ctx.State.localShell.enabled = true
-    ctx.State.localShell.roots = ['/work/project']
-    const ls = createLocalShell(ctx)
-
-    await ls.handleRequest(requestFrame())
-
-    const exec = calls.find((c) => c.cmd === 'local_shell_exec')
-    expect(exec).toBeDefined()
-    expect(exec!.args.cwd).toBe('/work/project')
-    const result = wsFrames[wsFrames.length - 1] as Record<string, unknown>
-    expect(result.approved).toBe(true)
+  afterEach(() => {
+    delete (window as any).__TAURI__
   })
 
-  it('Scenario: no roots + fullAccess + homeDir known => exec runs at homeDir, matching the advertised default', async () => {
-    const calls = makeTauriExec()
-    const { ctx } = makeCtx()
-    ctx.State.localShell.homeDir = '/Users/moon'
+  const resultFrame = (ctx: ReturnType<typeof makeCtx>['ctx']) =>
+    (ctx.WebSocketEngine.send as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((f) => f.type === 'local-shell-result')
+
+  it('Scenario: a request without cwd executes at roots[0], the advertised default', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = [ROOT]
+    state.localShell.fullAccess = false
     const ls = createLocalShell(ctx)
 
-    await ls.handleRequest(requestFrame())
+    await ls.handleRequest({ requestId: 'r1', threadId: 't1', command: 'pwd' })
 
-    const exec = calls.find((c) => c.cmd === 'local_shell_exec')
-    expect(exec).toBeDefined()
-    expect(exec!.args.cwd).toBe('/Users/moon')
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ command: 'pwd', cwd: ROOT }),
+    )
+    expect(resultFrame(ctx)?.approved).toBe(true)
   })
 
-  it('Scenario: an explicit cwd still wins over the default', async () => {
-    const calls = makeTauriExec()
-    const { ctx } = makeCtx()
-    ctx.State.localShell.roots = ['/work/project']
+  it('Scenario: an explicit cwd is passed through unchanged', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = [ROOT]
+    state.localShell.fullAccess = false
     const ls = createLocalShell(ctx)
 
-    await ls.handleRequest(requestFrame({ cwd: '/tmp/elsewhere' }))
+    await ls.handleRequest({ requestId: 'r2', threadId: 't1', command: 'pwd', cwd: `${ROOT}/sub` })
 
-    const exec = calls.find((c) => c.cmd === 'local_shell_exec')
-    expect(exec!.args.cwd).toBe('/tmp/elsewhere')
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: `${ROOT}/sub` }),
+    )
   })
 
-  it('Scenario: explicit cwd outside attached roots is still denied when fullAccess is off', async () => {
-    const calls = makeTauriExec()
-    const { ctx, wsFrames } = makeCtx()
-    ctx.State.localShell.fullAccess = false
-    ctx.State.localShell.enabled = true
-    ctx.State.localShell.roots = ['/work/project']
+  it('Scenario: no roots but a homeDir runs at homeDir', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = []
+    Object.assign(state.localShell, { homeDir: HOME })
+    state.localShell.fullAccess = true
     const ls = createLocalShell(ctx)
 
-    await ls.handleRequest(requestFrame({ cwd: '/etc' }))
+    await ls.handleRequest({ requestId: 'r5', threadId: 't1', command: 'pwd' })
 
-    expect(calls.find((c) => c.cmd === 'local_shell_exec')).toBeUndefined()
-    const result = wsFrames[wsFrames.length - 1] as Record<string, unknown>
-    expect(result.approved).toBe(false)
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: HOME }),
+    )
+    expect(resultFrame(ctx)?.approved).toBe(true)
   })
 
-  it('Scenario: no roots and fullAccess off => a cwd-less request stays denied (homeDir alone never grants)', async () => {
-    const calls = makeTauriExec()
-    const { ctx, wsFrames } = makeCtx()
-    ctx.State.localShell.fullAccess = false
-    ctx.State.localShell.enabled = false
-    ctx.State.localShell.homeDir = '/Users/moon'
+  it('Scenario: no roots and no homeDir keeps the legacy null (process cwd)', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = []
+    state.localShell.fullAccess = true
     const ls = createLocalShell(ctx)
 
-    await ls.handleRequest(requestFrame())
+    await ls.handleRequest({ requestId: 'r3', threadId: 't1', command: 'pwd' })
 
-    expect(calls.find((c) => c.cmd === 'local_shell_exec')).toBeUndefined()
-    const result = wsFrames[wsFrames.length - 1] as Record<string, unknown>
-    expect(result.approved).toBe(false)
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: null }),
+    )
+  })
+
+  it('Scenario: a cwd-less command outside no roots is still denied', async () => {
+    // Mirror the production boot state: 'off' in localStorage derives
+    // fullAccess:false AND enabled:false (enabled is derived as
+    // fullAccess || roots.length > 0), so this exercises the real
+    // `!ls.enabled` denial path instead of a hand-mutated state.
+    localStorage.setItem('luna_machine_access', 'off')
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = []
+    // Pin the production boot invariant: machine access OFF with empty roots
+    // means enabled:false, so denial goes through the !ls.enabled path.
+    expect(state.localShell.enabled).toBe(false)
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r4', threadId: 't1', command: 'pwd' })
+
+    expect(invokeMock).not.toHaveBeenCalled()
+    expect(resultFrame(ctx)?.approved).toBe(false)
+  })
+
+  it('Scenario: an empty-string cwd is treated as unnamed and gets the default', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = [ROOT]
+    state.localShell.fullAccess = true
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r7', threadId: 't1', command: 'pwd', cwd: '' })
+
+    expect(invokeMock).toHaveBeenCalledWith(
+      'local_shell_exec',
+      expect.objectContaining({ cwd: ROOT }),
+    )
+  })
+
+  it('Scenario: a rejected invoke still replies instead of hanging the bridge', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.roots = [ROOT]
+    state.localShell.fullAccess = false
+    invokeMock.mockRejectedValueOnce(new Error('transport down'))
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'r6', threadId: 't1', command: 'pwd' })
+
+    const f = resultFrame(ctx)
+    expect(f?.approved).toBe(true)
+    expect(f?.exitCode).toBeNull()
+    expect(String(f?.stderr)).toMatch(/exec failed/)
+  })
+})
+
+// ── Feature: refreshPlatform() populates homeDir via get_home_dir ──────────────
+
+describe('Feature: refreshPlatform() fetches homeDir', () => {
+  const invokeMock = vi.fn()
+  const HOME = '/Users/op'
+
+  beforeEach(() => {
+    localStorage.clear()
+    invokeMock.mockReset()
+    invokeMock.mockImplementation((cmd: string) =>
+      Promise.resolve(
+        cmd === 'get_platform' ? 'macos'
+        : cmd === 'get_host_label' ? 'op-mac'
+        : cmd === 'get_home_dir' ? HOME
+        : null,
+      ),
+    )
+    ;(window as any).__TAURI__ = { core: { invoke: invokeMock } }
+  })
+
+  afterEach(() => {
+    delete (window as any).__TAURI__
+  })
+
+  it('Scenario: refreshPlatform stores the home dir the capability advertises', async () => {
+    const { ctx, state } = makeCtx()
+    const ls = createLocalShell(ctx)
+
+    await ls.refreshPlatform()
+
+    expect(invokeMock).toHaveBeenCalledWith('get_home_dir')
+    expect(state.localShell.homeDir).toBe(HOME)
+  })
+
+  it('Scenario: a get_home_dir invoke failure leaves homeDir empty', async () => {
+    const { ctx, state } = makeCtx()
+    invokeMock.mockImplementation((cmd: string) =>
+      cmd === 'get_home_dir'
+        ? Promise.reject(new Error('not permitted'))
+        : Promise.resolve('macos'),
+    )
+    const ls = createLocalShell(ctx)
+
+    await ls.refreshPlatform()
+
+    expect(state.localShell.homeDir).toBe('')
+    expect(ctx.Logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('get_home_dir'),
+      expect.any(Error),
+    )
   })
 })

@@ -99,6 +99,16 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
 
   const clientRef = useRef<ReturnType<NonNullable<PanelCtx["connectWs"]>> | null>(null)
   const beginTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Epoch of the latest OAuth flow this panel started. Guards the async
+  // loopback chain: a stale flow's oauth_loopback_wait rejection (its Rust
+  // listener was retired by a newer oauth_loopback_start) must not cancel the
+  // NEW flow's listener or tear down its store state. Without this, starting
+  // a second connect while the first awaited browser consent killed the
+  // second flow with a misleading "Consent cancelled" banner.
+  const oauthEpochRef = useRef(0)
+  // Epoch of the flow whose oauth-begin-set is current — the flow a
+  // connector-oauth-redirect frame (and its wait chain) belongs to.
+  const oauthBeginEpochRef = useRef(0)
 
   function clearBeginTimer(): void {
     if (beginTimerRef.current) {
@@ -135,13 +145,27 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
       })
       return
     }
+    // Retire any in-flight flow's UI state BEFORE the new flow starts: its
+    // Rust listener is about to be cancelled by oauth_loopback_start, and its
+    // stale busy indicator / Cancel button must not linger (that Cancel would
+    // otherwise kill the new flow's listener). Must run before
+    // oauth-authorizing-start so the reducer's sweep of stale "authorizing"
+    // busy entries doesn't clear the new flow's own entry.
+    store.dispatch({ type: "oauth-superseded" })
+    const flowEpoch = ++oauthEpochRef.current
     store.dispatch({ type: "oauth-authorizing-start", defId: def.id })
     ctx.invoke("oauth_loopback_start")
       .then((port) => {
+        // A newer connectOauth started while this listener was binding — its
+        // begin would target a dead listener, so drop it silently.
+        if (flowEpoch !== oauthEpochRef.current) return
         const requestId = randomRequestId("oauth")
         store.dispatch({ type: "oauth-begin-set", requestId, defId: def.id })
+        oauthBeginEpochRef.current = flowEpoch
         clearBeginTimer()
         beginTimerRef.current = setTimeout(() => {
+          // Only the current flow's watchdog may cancel.
+          if (flowEpoch !== oauthEpochRef.current) return
           cancelOauth("Timed out starting the connection - please try again.")
         }, 30000)
         clientRef.current?.send({
@@ -154,6 +178,7 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
         })
       })
       .catch((e) => {
+        if (flowEpoch !== oauthEpochRef.current) return
         store.dispatch({ type: "busy-cleared", defId: def.id })
         store.dispatch({ type: "error-set", message: String(e) })
       })
@@ -167,6 +192,9 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     // null), never seeing the oauth-begin-set dispatched after mount.
     if (!frame || frame.requestId !== store.getState().oauthRequestId) return
     clearBeginTimer()
+    // Epoch of the flow this redirect belongs to. A stale flow's wait
+    // rejection below must not cancel a newer flow's listener.
+    const waitEpoch = oauthBeginEpochRef.current
     if (!ctx.hasTauri) return
     ctx.invoke("open_external_url", { url: frame.authUrl })
       .then(() => ctx.invoke("oauth_loopback_wait", { timeoutMs: 300000 }))
@@ -184,6 +212,11 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
         store.dispatch({ type: "oauth-code-sent" })
       })
       .catch((e) => {
+        // The Rust listener of a superseded flow is already dead (a newer
+        // oauth_loopback_start cancelled it). Swallow its wait rejection —
+        // cancelling here would kill the NEW flow's listener, and tearing
+        // down here would wipe the new flow's store state.
+        if (waitEpoch !== oauthEpochRef.current) return
         cancelOauth(formatOauthConsentError(e))
       })
   }

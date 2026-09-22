@@ -81,7 +81,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.82",
+      "version": "0.0.77",
       "dependencies": {
         "@astryxdesign/core": "0.1.8",
         "@luna/tools": "workspace:*",
