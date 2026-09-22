@@ -4,9 +4,10 @@ import { defineCommand } from "citty"
 /**
  * `luna update` — check for and apply server-v* releases on the host.
  *
- * Phase-1 scope: SYSTEM-UNIT case only (scripts/luna-update-server already
- * refuses anything but /etc/systemd/system units). Supervisor auto-detection
- * (--user / launchd) is Phase 2 and OUT OF SCOPE here.
+ * Scope: SYSTEM-UNIT case only — this command invokes the engine with no
+ * supervisor flags, so it targets the default 'stable' system unit. The
+ * engine's --user / launchd modes (scripts/luna-update-server) are not
+ * exposed here.
  *
  * Design mirrors `luna doctor` (doctor.ts): impure IO / network probes are
  * quarantined at the bottom; PURE functions — pickLatestServerRelease,
@@ -19,20 +20,20 @@ import { defineCommand } from "citty"
  *     client updater (Tauri/minisign). Disturbing it would silently break Moon.
  *   - The targeted asset is named "server-latest.json" on each release.
  *
- * Server identity probe (Phase-1 scope decision — deviates slightly from PRD §3.2):
+ * Server identity probe (scope decision — deviates slightly from PRD §3.2):
  *   PRD §3.2 step 1 specifies reading the running server identity from /readyz,
  *   "using the WS connection's hello frame as a fallback when the HTTP probe is
- *   not reachable." Phase-1 implements HTTP /readyz only. The WS-hello fallback
- *   is intentionally deferred to Phase 2 for one structural reason: `luna update`
+ *   not reachable." Only HTTP /readyz is implemented. The WS-hello fallback
+ *   is intentionally omitted for one structural reason: `luna update`
  *   runs on the SERVER HOST as an operator command and does not carry a UI WS
  *   token (unlike `luna doctor`, which runs on the client machine and resolves a
  *   token from ~/.luna/.env). Without a token the /ui WebSocket upgrade returns
  *   401, making the fallback impossible without first solving token distribution
- *   on the host. Phase-1 graceful degradation: when /readyz is unreachable,
+ *   on the host. Graceful degradation: when /readyz is unreachable,
  *   runningSha stays undefined → compareServerVersion returns "unknown" →
  *   the engine is invoked anyway (it has its own readiness gate + auto-rollback),
  *   which is safe and matches the "cannot prove up-to-date → let engine decide"
- *   rationale documented at lines 663-664.
+ *   rationale documented in the comparison block below.
  *
  * Active-session deferral (from PRD §3.3, §3.4):
  *   - Calls luna_active_ws_count() from scripts/lib/luna-deploy.sh — one
@@ -453,8 +454,8 @@ interface ReadyzResult {
  * Returns undefined when the server is unreachable (treated as "sha unknown").
  * A non-200 response also returns undefined — we don't crash on a stale server.
  *
- * Phase-1 scope: HTTP probe only (see module docblock for the WS-hello fallback
- * deferral rationale). When undefined is returned, the caller proceeds with
+ * HTTP probe only (see module docblock for the WS-hello fallback
+ * rationale). When undefined is returned, the caller proceeds with
  * runningSha=undefined, comparison returns "unknown", and the engine is invoked
  * anyway — its own readiness gate and auto-rollback cover the failure path.
  */
@@ -825,7 +826,7 @@ export const updateCommand = defineCommand({
   meta: {
     name: "update",
     description:
-      "Check for and apply server-v* releases. Runs on the server host (cwd = repo root). Phase-1: system-unit installs only (targets the default 'stable' system unit luna-chat-server.service). Non-default profiles and macOS launchd are Phase 2.",
+      "Check for and apply server-v* releases. Runs on the server host (cwd = repo root). System-unit installs only (targets the default 'stable' system unit luna-chat-server.service); the engine's --user / launchd modes are not exposed here.",
   },
   args: {
     check: {
@@ -863,8 +864,8 @@ export const updateCommand = defineCommand({
     const port = args.port !== undefined ? Number.parseInt(args.port, 10) : 4_753
     // Guard against `--port abc` or `--port 0` or `--port 99999` before the value
     // propagates to http://127.0.0.1:NaN/readyz or the engine --readiness-port flag.
-    // queryActiveSessionCount already guards its own parseInt with Number.isFinite
-    // (line ~410); this is the operator-facing entry point for the same value.
+    // queryActiveSessionCount already guards its own parseInt with Number.isFinite;
+    // this is the operator-facing entry point for the same value.
     if (!Number.isInteger(port) || port <= 0 || port > 65535) {
       process.stderr.write(`Error: --port must be a valid port number (1-65535), got: ${args.port}\n`)
       process.exit(1)
@@ -875,9 +876,6 @@ export const updateCommand = defineCommand({
     const dryRun = args["dry-run"] === true
     const pinnedRef = args.ref
 
-    // -------------------------------------------------------------------------
-    // Step 1: probe the running server (/readyz, ~3s timeout, tolerates failure)
-    // -------------------------------------------------------------------------
     if (!isCheck) {
       process.stdout.write("Checking for updates…\n")
     }
@@ -890,12 +888,8 @@ export const updateCommand = defineCommand({
       process.stdout.write(currentHeader)
     }
 
-    // -------------------------------------------------------------------------
-    // Step 2: discover latest release
-    //   If --ref given: use it directly (no GitHub API call).
-    //   Else: fetch releases, filter server-v*, pick newest, fetch its JSON.
-    // -------------------------------------------------------------------------
-
+    // If --ref is given, use it directly (no GitHub API call); otherwise fetch
+    // releases, filter server-v*, pick newest, and fetch its JSON.
     if (pinnedRef !== undefined) {
       // Air-gapped / pinned path: skip GitHub, skip SHA no-op check (we have no
       // targetSha from the asset), and go straight to apply or check-report.
@@ -919,11 +913,11 @@ export const updateCommand = defineCommand({
       return writeAndExit(renderUpdatePlan(classifyEngineExit(engineExit, pinnedRef)))
     }
 
-    // GitHub discovery path — three-step: refs → semver-pick → release-by-tag
+    // GitHub discovery path — three steps: refs → semver-pick → release-by-tag.
 
-    // Step 1: fetch all server-v* tag names from the matching-refs API.
-    // This endpoint is prefix-filtered server-side: moon-v* tags never appear,
-    // so there is no page-size cliff regardless of total tag count.
+    // Fetch all server-v* tag names from the matching-refs API. This endpoint
+    // is prefix-filtered server-side: moon-v* tags never appear, so there is
+    // no page-size cliff regardless of total tag count.
     let serverTags: ReadonlyArray<string>
     try {
       serverTags = await fetchServerRefTags()
@@ -938,9 +932,9 @@ export const updateCommand = defineCommand({
       process.exit(1)
     }
 
-    // Step 2: sort newest → oldest by semver (numeric — avoids "0.9.0" > "0.10.0" trap).
+    // Sort newest → oldest by semver (numeric — avoids the "0.9.0" > "0.10.0" trap).
     // We sort the WHOLE list (not just pick the max) because the newest tag may not
-    // have a published Release yet; step 3 walks candidates until one resolves.
+    // have a published Release yet; the next step walks candidates until one resolves.
     const sortedTags = sortServerTagsDesc(serverTags)
     if (sortedTags.length === 0) {
       return writeAndExit(
@@ -948,7 +942,7 @@ export const updateCommand = defineCommand({
       )
     }
 
-    // Step 3: resolve the newest tag that actually has a published Release. A 404
+    // Resolve the newest tag that actually has a published Release. A 404
     // for the newest tag (release CI mid-run, or failed post-tag) skips to the next
     // candidate; a transient error (403/network) propagates to the graceful path.
     let resolved: { readonly tag: string; readonly release: GithubRelease } | null
@@ -972,7 +966,7 @@ export const updateCommand = defineCommand({
     }
     const latestRelease = resolved.release
 
-    // Step 4: fetch the server-latest.json asset to get the canonical targetSha
+    // Fetch the server-latest.json asset to get the canonical targetSha.
     let latestJson: ServerLatestJson
     try {
       latestJson = await fetchServerLatestJson(latestRelease)
@@ -987,9 +981,6 @@ export const updateCommand = defineCommand({
 
     const { tag, targetSha } = latestJson
 
-    // -------------------------------------------------------------------------
-    // Step 3: compare
-    // -------------------------------------------------------------------------
     const comparison = compareServerVersion({ runningSha, targetSha })
 
     if (isCheck) {
@@ -1005,10 +996,6 @@ export const updateCommand = defineCommand({
       }
     }
 
-    // -------------------------------------------------------------------------
-    // Step 4: non-check path — act on comparison result
-    // -------------------------------------------------------------------------
-
     if (comparison === "up-to-date") {
       return writeAndExit(
         renderUpdatePlan({ kind: "up-to-date", tag, sha: runningSha! }),
@@ -1021,15 +1008,13 @@ export const updateCommand = defineCommand({
       process.stdout.write(`${tag} available (${runningSha ?? "unknown"} -> ${targetSha})\n`)
     }
 
-    // -------------------------------------------------------------------------
-    // Step 5: connect-aware defer
+    // Connect-aware defer.
     //
     // Skipped when --dry-run: the engine's --dry-run routes all actions through
     // luna_run in print-only mode — no service is stopped or restarted — so a
     // dry-run is always safe to execute during an active session. Blocking it
     // prevents the operator from previewing the update plan mid-conversation,
     // which is the one operation that is most useful in that window.
-    // -------------------------------------------------------------------------
     if (!allowActive && !dryRun) {
       const count = queryActiveSessionCount(repoDir, port)
       if (count === undefined) {
@@ -1039,9 +1024,6 @@ export const updateCommand = defineCommand({
       }
     }
 
-    // -------------------------------------------------------------------------
-    // Step 6: apply
-    // -------------------------------------------------------------------------
     const engineExit = applyUpdate(repoDir, tag, port, dryRun)
     return writeAndExit(renderUpdatePlan(classifyEngineExit(engineExit, targetSha)))
   },

@@ -238,8 +238,7 @@ export class LunaVaultFile {
   async readSecret(name: string): Promise<string | undefined> {
     const secrets = await this.loadSecretsOrMiss()
     if (secrets === undefined) return undefined
-    const value = secrets[name]
-    return value === undefined ? undefined : value
+    return secrets[name]
   }
 
   /**
@@ -614,13 +613,9 @@ export class LunaVaultFile {
       if (isEnoent(e)) return undefined
       throw e
     }
-    try {
-      const key = Buffer.from(raw.trim(), "base64")
-      if (key.length !== KEY_BYTES) return undefined
-      return key
-    } catch {
-      return undefined
-    }
+    const key = Buffer.from(raw.trim(), "base64")
+    if (key.length !== KEY_BYTES) return undefined
+    return key
   }
 
   /**
@@ -931,9 +926,7 @@ export class LunaVaultFile {
         typeof e === "object" && e !== null
           ? (e as NodeJS.ErrnoException).code
           : undefined
-      if (code === "EPERM") return true
-      if (code === "ESRCH") return false
-      return false
+      return code === "EPERM"
     }
   }
 
