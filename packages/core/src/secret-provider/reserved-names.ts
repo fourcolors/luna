@@ -21,8 +21,7 @@
  * avoid a cross-package import, by the same convention as ACCOUNT_LABEL_RE):
  *   - packages/vault/src/internal.ts `isEnvDenied` - now DELEGATES here.
  *   - packages/secret-tools/src/register-secret.ts `isEnvReserved` - keeps its
- *     documented inline copy (unit-testable without pulling @luna/core); an
- *     apps/ui-web cross-package drift test pins behavioural equality.
+ *     documented inline copy (unit-testable without pulling @luna/core).
  */
 
 /** The single non-prefix reserved name. */

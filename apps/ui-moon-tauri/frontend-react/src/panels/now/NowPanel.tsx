@@ -23,7 +23,7 @@
  *
  * State model: unlike the vanilla module's hand-rolled `workflows`/
  * `pendingCards` variables + imperative DOM mutation, this dispatches every
- * inbound frame into the SAME shared reducer ui-web already relies on
+ * inbound frame into the SAME shared reducer
  * (@luna/ui-shared/core - see UIState.workflows / pendingInputRequests,
  * modeled for exactly this PRD slice) and reads it back out via
  * useMoonSelector (useSyncExternalStore underneath) - mirrors FlowPanel.tsx's

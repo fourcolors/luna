@@ -7,8 +7,7 @@
 // apps/ui-moon-tauri/frontend-react/src/panels/settings-general/SettingsGeneralPanel.tsx.
 //
 // Rendering uses React's own createRoot + act (no testing-library dependency
-// - mirrors apps/ui-web/src/studio/vault-panel.test.jsx, itself ported from
-// the same real-DOM-driving convention the old panel-window.test.ts harness
+// - the same real-DOM-driving convention the old panel-window.test.ts harness
 // used). Kept as a plain .test.ts (no JSX in this file) so it stays inside
 // the root vitest.config.ts `apps/**/*.test.ts` include glob; the component
 // under test is authored as .tsx and JSX-transformed on import same as

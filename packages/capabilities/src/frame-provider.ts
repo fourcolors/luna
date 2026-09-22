@@ -1,7 +1,7 @@
 /**
  * createFrameCapabilityProvider — a CapabilityProvider (the Cycle-3 port) backed by a
  * request/response FRAME channel. Generic over any transport that can send a frame and
- * deliver server frames (Moon WS, ui-web WS, …), so "add a backend" reuses this instead
+ * deliver server frames (Moon WS, agent-cli, …), so "add a backend" reuses this instead
  * of re-implementing the port per frontend.
  *
  * It consumes server->client `capability-catalog` frames (decoded at the boundary to

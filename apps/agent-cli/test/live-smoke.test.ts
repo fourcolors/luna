@@ -35,8 +35,8 @@ const LIVE = process.env["LUNA_LIVE_SMOKE"] === "1"
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined"
 // `AccountBrokerLayer.fromSql` resolves `bun:sqlite` at boot. Under
 // stock vitest+node the module is unavailable — skip cleanly so the
-// suite stays green. The manual smoke (`bun run --filter '@luna/ui-web'
-// server:chat`) is the canonical end-to-end verification.
+// suite stays green. The manual smoke (`bun run scripts/luna-chat-server-entry.ts`)
+// is the canonical end-to-end verification.
 const d = LIVE && isBun ? describe : describe.skip
 
 const CANONICAL_LUNA_OP_REF =
@@ -121,8 +121,8 @@ d("Phase 25d live smoke — broker → RoutedOpSecretProvider → Redacted<sk-an
     }
   }, 30_000)
 
-  // Phase 25e/5: full chain proof, folded in from the now-deleted
-  // apps/ui-web/scripts/broker-smoke.ts. Exercises:
+  // Phase 25e/5: full chain proof, folded in from the retired
+  // broker-smoke ops script. Exercises:
   //   keychain × 3  →  OnePasswordSecretProvider × 3  →  RoutedOpSecretProvider
   //   →  AccountBrokerLayer.fromSql  →  acquireSession
   //   →  Redacted<sk-ant-oat-...>

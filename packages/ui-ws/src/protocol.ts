@@ -1696,16 +1696,16 @@ export interface WireAttachment {
 /**
  * Small identity blob clients attach to each user-message so the server (and
  * Luna) can see *which* surface the operator is typing through — e.g. the
- * agent-cli TUI, the web UI, the Tauri "moon" client, etc.
+ * agent-cli TUI, the Tauri "moon" client, etc.
  *
  * Additive and optional: older clients omit it; older servers ignore it.
  * No protocol bump required.
  *
  * Conventions for `name`:
  *   - "luna-tui"     — apps/agent-cli TUI
- *   - "luna-web"     — apps/ui-web (browser)
+ *   - "luna-web"     — retired browser client
  *   - "luna-moon"    — apps/ui-moon-tauri (desktop)
- *   - "luna-tauri"   — apps/ui-tauri (legacy wrapper)
+ *   - "luna-tauri"   — retired legacy wrapper
  * Anything else is accepted; the server treats it as a string.
  */
 export interface ClientInfo {

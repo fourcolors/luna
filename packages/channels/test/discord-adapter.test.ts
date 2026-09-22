@@ -302,7 +302,7 @@ const makeFakeTransport = (opts?: {
      * Proxy log) and honours an injected failure. NOTE a fake structurally
      * CANNOT catch a global-endpoint impl (it records whatever guildId it is
      * handed) — endpoint choice is pinned at the REST layer by the ops-script
-     * test (apps/ui-web/scripts/discord-commands.test.ts) and by the auditor
+     * test (apps/server/src/discord-commands.test.ts) and by the auditor
      * reading the real transport.
      */
     registerGuildCommands: async (guildId: string, commands: ReadonlyArray<unknown>) => {
@@ -2247,12 +2247,12 @@ describe("Slice 3a — registration manifest as data (wired to Discord by 3b)", 
  *   - packages/channels/src/service.ts           (ONE line: the
  *     buildDeliveryTarget metadata spread reorder — see the R3 test in
  *     channels.test.ts; NOTHING else in this file)
- *   - apps/ui-web/scripts/discord-commands.ts    (NEW ops script)
+ *   - apps/server/src/discord-commands.ts        (NEW ops script)
  * Explicitly NOT to be touched: telegram.ts, delivery.ts, commands.ts,
  * index.ts (the ops script reaches the manifest by relative import — do NOT
  * add an index re-export, it drags index.ts into scope), dedup.ts, types.ts,
  * this test file, discord-inbound-invariant.test.ts, channels.test.ts.
- * NOTE: task #10 also names apps/ui-web/scripts/chat-server.ts (:4791-:4817,
+ * NOTE: task #10 also names apps/server/src/chat-server.ts (:4791-:4817,
  * LUNA_DISCORD_GUILD_ID -> config.guildId wiring) while the 3b dispatch's
  * allowed list omits it; that conflict is bubbled to the lead in the task's
  * Ping (spec) section — pong must NOT touch chat-server.ts without the

@@ -11,7 +11,7 @@
  * The effectful steps (running `op`, writing the keychain/file, triggering the
  * restart) are injected as `deps` so THIS orchestration is unit-tested without
  * spawning processes or exiting — chat-server.ts (which wires the real deps)
- * has no tsc gate and is not unit-tested, so the decision logic lives here.
+ * is not unit-tested, so the decision logic lives here.
  *
  * SECURITY: the token is sensitive. It is never logged and never placed in a
  * returned `message`; `deps.log` receives only a label-keyed audit line.

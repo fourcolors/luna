@@ -7,7 +7,7 @@
  * unchanged. These tests pin the parts of the contract a future edit could
  * silently break:
  *   - the shared @luna/ui-shared store binding (createMoonStore) behaves
- *     like the reducer contract ui-web already relies on;
+ *     like the reducer contract the clients rely on;
  *   - each of the four HTML shells still boots via a deferred React module
  *     script AFTER the existing vendor scripts, and still references
  *     vendor/* assets the way Vite's publicDir passthrough requires

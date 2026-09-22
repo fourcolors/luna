@@ -1091,7 +1091,7 @@ export interface GuildCommandsRest {
 
 /**
  * The ONE authority for the guild-commands endpoint, used by the real
- * transport and by apps/ui-web/scripts/discord-commands.ts. Built from
+ * transport and by apps/server/src/discord-commands.ts. Built from
  * discord-api-types' Routes so the app AND the guild are always in the path:
  * the global endpoint (/applications/{appId}/commands, no /guilds/ segment)
  * propagates lazily for up to an hour and pollutes every guild the bot is

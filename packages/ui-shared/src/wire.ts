@@ -517,8 +517,8 @@ export interface ArtifactUnpinFrame {
 /* Widget summon-by-name (mirror packages/ui-ws/src/protocol.ts). A host that
  * can open panels announces its directory after hello (widget-directory); the
  * agent's open_widget / open_artifact tools then push widget-open /
- * open-artifact-widget frames back to it. ui-web is such a host (it summons
- * board panels), so it carries these too — additive, ignored by older clients. */
+ * open-artifact-widget frames back to it. A host that summons panels (e.g.
+ * board panels) carries these too — additive, ignored by older clients. */
 export interface WidgetDirectoryEntry {
   readonly kind: string
   readonly title: string
@@ -751,8 +751,8 @@ export interface ForkProposalRespondFrame {
 }
 
 /** Marks the true end of an agentic turn (SDK `result`). Consumed by clients
- *  that group consecutive assistant turns (the moon timeline); ui-web is
- *  seq-keyed and treats it as a no-op. */
+ *  that group consecutive assistant turns (the moon timeline); seq-keyed
+ *  clients treat it as a no-op. */
 export interface TurnCompleteFrame {
   readonly type: "turn-complete"
   readonly threadId: string

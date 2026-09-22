@@ -40,9 +40,8 @@
  * native <select>: Astryx's Selector is a popover component whose click-open
  * interaction needs real layout (getBoundingClientRect) plus
  * @testing-library/user-event to drive in a test, and neither is available
- * in this app's test setup (see apps/ui-moon-tauri/vitest.config.ts) - the
- * same kind of documented, justified native-control carve-out
- * apps/ui-web/src/studio/vault-panel.jsx makes for its password field.
+ * in this app's test setup (see apps/ui-moon-tauri/vitest.config.ts) - a
+ * documented, justified native-control carve-out.
  */
 import { useEffect, useRef } from "react"
 import "./VoicePanel.css"

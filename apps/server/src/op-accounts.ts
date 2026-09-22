@@ -79,8 +79,8 @@ export const resolveOpAccounts = (
  * Read an account's service-account token from its fallback env var.
  * Returns the trimmed value, or `undefined` when the var is unset or
  * blank. This is the Linux/fallback half of `discoverOpTokens` —
- * factored out so the read path is unit-tested (chat-server.ts has no
- * tsc gate and is not unit-tested).
+ * factored out so the read path is unit-tested (chat-server.ts is not
+ * unit-tested).
  */
 export const envTokenFor = (
   acct: OpAccountConfig,
@@ -103,7 +103,7 @@ export const tokenFilePathFor = (label: string): string =>
  * Returns the trimmed value, or `undefined` when the file is absent,
  * unreadable, or blank. The last fallback in `discoverOpTokens`. `readFile`
  * is injectable so the read path is unit-tested without touching disk
- * (chat-server.ts has no tsc gate and is not unit-tested).
+ * (chat-server.ts is not unit-tested).
  */
 export const fileTokenFor = (
   acct: OpAccountConfig,

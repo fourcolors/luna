@@ -10,8 +10,7 @@
  * from hand-rolled DOM (watercolor "blot" divs, role="switch" rows) onto
  * real Astryx primitives:
  *   - TextInput for search, ToggleButton (standalone, not ToggleButtonGroup -
- *     see apps/ui-web/src/studio/skills-panel.jsx's module doc for why the
- *     group's single-select-with-deselect semantics are wrong here) for the
+ *     the group's single-select-with-deselect semantics are wrong here) for the
  *     filter chips, Badge for the source/category tags.
  *   - Switch (real role="switch" input, keyboard-native) replaces the
  *     vanilla row's hand-rolled role="switch"/tabIndex/keydown handling -

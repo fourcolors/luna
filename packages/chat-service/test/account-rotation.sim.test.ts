@@ -36,7 +36,7 @@
  * ever computed `true` when a REAL `AccountBroker` sees ≥2 uncooled
  * same-kind accounts (packages/core/src/overflow-chain.ts:241-247) and no
  * `boundAccountId` pin - production always wires `SDKAdapter.WithBroker`
- * (apps/ui-web/scripts/chat-server.ts:2120-2126: "we MUST use WithBroker for
+ * (apps/server/src/chat-server.ts:2237: "we MUST use WithBroker for
  * rotation to take effect"). So this test seeds a real two-account
  * `AccountBrokerLayer.fromAccounts` (not a fake - `SDKClient.fake` is the
  * ONLY fake here) instead of `SDKAdapter.Default`, which never computes

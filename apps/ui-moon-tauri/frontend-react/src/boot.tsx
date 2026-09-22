@@ -50,8 +50,7 @@ declare global {
 
 // One store per document (each Moon page/window is its own document - Tauri
 // gives every window/webview its own JS realm - so a module-level singleton
-// here is exactly the ui-web pattern's per-mount equivalent, not a cross-page
-// global).
+// here is a per-mount store, not a cross-page global).
 let sharedStore: MoonStore | null = null
 function getSharedStore(): MoonStore {
   if (sharedStore === null) sharedStore = createMoonStore()

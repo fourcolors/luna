@@ -81,7 +81,7 @@ export const createAppRouter = (buildSha: string = "unknown") =>
   control: t.router({
     /**
      * Restart the chat server, platform-correctly. Mirrors
-     * scheduleServerRestart in apps/ui-web/scripts/chat-server.ts (the
+     * scheduleServerRestart in apps/server/src/chat-server.ts (the
      * reference implementation for this exact branch):
      *
      *   darwin — `launchctl kickstart -k` of the launchd job; KeepAlive

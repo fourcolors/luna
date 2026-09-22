@@ -9,11 +9,11 @@
  * `luna.*` bridge, a postMessage channel gated by the widget's `bridge_caps`
  * allowlist (read-only obs-event subscribe in v1).
  *
- * This is the ES-module source of truth consumed by the WEB client (ui-web via
- * ui-shared-solid). Moon cannot import ES (its frontend is raw <script src>
- * vendored IIFE), so it keeps apps/ui-moon-tauri/frontend/vendor/widget-sandbox.js;
+ * This is the ES-module source of truth. Moon cannot import ES (its frontend
+ * is raw <script src> vendored IIFE), so it keeps
+ * apps/ui-moon-tauri/frontend/vendor/widget-sandbox.js;
  * `widget-sandbox.parity.test.ts` asserts the two produce BYTE-IDENTICAL output
- * so the security cage can never drift between the two clients.
+ * so the security cage can never drift between source and vendored copy.
  *
  * Pure + side-effect-free: the sandbox-assembly and the cap-gating — the
  * load-bearing security logic — are unit-testable in isolation. The host wires

@@ -136,7 +136,7 @@ export class WakeLogStore extends Context.Service<WakeLogStore, WakeLogStoreApi>
             "FROM wake_log ORDER BY woke_at DESC LIMIT ?",
         )
         // next_actions (+ goals) are installed by the enable-wake installer
-        // (apps/ui-web/scripts/enable-wake.ts) from the canonical DDL in
+        // (apps/server/scripts/enable-wake.ts) from the canonical DDL in
         // workspace-schema.ts — NOT here. A workspace that was never wake-enabled
         // reads as a "skip" (hasWakeSchema / runWake) instead of having an empty
         // next_actions silently materialised under it.

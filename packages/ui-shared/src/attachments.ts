@@ -1,9 +1,8 @@
 /**
  * Attachment helpers — framework-agnostic.
  *
- * Hoisted out of apps/ui-web/src/App.tsx so the Solid app
- * (apps/ui-web-solid) can reuse the same File → base64 conversion,
- * media-type allowlist, and size limits without re-implementing them.
+ * Shared File → base64 conversion, media-type allowlist, and size
+ * limits so multiple clients don't re-implement them.
  *
  * Stays a leaf module: no React, no Solid, no DOM event types — just
  * `File`, `FileReader`, `URL.createObjectURL` (all standard browser

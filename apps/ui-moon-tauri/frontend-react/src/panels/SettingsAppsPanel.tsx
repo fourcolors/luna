@@ -27,7 +27,7 @@
  *
  * State model: unlike the vanilla module's hand-rolled `artifacts` variable +
  * imperative re-render, this dispatches every inbound frame into the SAME
- * shared reducer ui-web already relies on (@luna/ui-shared/core -
+ * shared reducer (@luna/ui-shared/core -
  * UIState.capabilities.artifacts / UIState.pinnedArtifacts, already modeled
  * for exactly this PRD slice) and reads it back out via useMoonSelector
  * (useSyncExternalStore underneath) - mirrors FlowPanel.tsx's identical
@@ -54,12 +54,10 @@
  * interactive children. The Kind picker stays a native <select>: Astryx's
  * Selector is a popover-based combobox (needs the Popover API / floating
  * positioning), not a drop-in for a native select, and this app's test
- * harness has no testing-library/jsdom popover shims to drive it - the exact
- * call apps/ui-web's settings-panel.jsx makes for its Model dropdown, and
- * FlowPanel.tsx's sibling conversion for its status chips. The list rows and
- * composer container stay hand-rolled div markup, same call
- * artifacts-panel.jsx (ui-web) makes for its own rows: Astryx has no
- * equivalent that produces this DOM shape (a row hosting several nested
+ * harness has no testing-library/jsdom popover shims to drive it - the same
+ * call FlowPanel.tsx's sibling conversion makes for its status chips. The
+ * list rows and composer container stay hand-rolled div markup: Astryx has
+ * no equivalent that produces this DOM shape (a row hosting several nested
  * interactive Buttons), and forcing a Card/ClickableCard here would fork
  * `.app-row` styling for a shape it isn't built for.
  */

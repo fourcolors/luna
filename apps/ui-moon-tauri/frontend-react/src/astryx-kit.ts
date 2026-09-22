@@ -1,12 +1,11 @@
 // astryx-kit.ts - single re-export surface for @astryxdesign/core primitives
-// used inside Moon's React surface. Mirrors apps/ui-web/src/studio/astryx-kit.tsx
-// (same convention, same rationale): import Astryx components from here, not
+// used inside Moon's React surface. Import Astryx components from here, not
 // from "@astryxdesign/core/*" or the top-level barrel directly, so the
 // subpath-import convention that keeps a non-tree-shaking consumer from
 // pulling in every Astryx component stays enforced from one place.
 //
 // Panel-by-panel conversion phase: add re-exports here as panels convert,
-// following ui-web's per-component subpath pattern. Each export appears
+// following the per-component subpath pattern. Each export appears
 // exactly ONCE in this file even when more than one panel uses it (concurrent
 // panel conversions have landed duplicate `export { X } from ...` lines for
 // the same component before - that is a SyntaxError, not a harmless

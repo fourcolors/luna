@@ -7,7 +7,7 @@
  *
  * Moved verbatim from chat-service.ts - no behavior change. `chat-service.ts`
  * re-exports `ThreadToolsProviderTag` so existing consumers (`@luna/chat-
- * service` barrel, ui-web's chat-server) see no import-path change.
+ * service` barrel, apps/server's chat-server) see no import-path change.
  */
 import { Context } from "effect"
 import { type ThreadToolsProvider } from "./types.js"

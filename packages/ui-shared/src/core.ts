@@ -3,7 +3,7 @@
  *
  * No React (or any UI framework) imports. Safe to import from Solid,
  * Svelte, vanilla, server, or test code. Use this entry point from any
- * non-React UI surface (e.g. apps/ui-web-solid during the migration).
+ * non-React UI surface (e.g. a Solid or vanilla-JS client).
  *
  * The default barrel (`@luna/ui-shared`) re-exports everything in here
  * PLUS the React-bound CodeBlock and MarkdownView components — importing

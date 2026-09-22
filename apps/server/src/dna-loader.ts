@@ -19,7 +19,7 @@ import { resolve as resolvePath } from "node:path"
  *
  * `scriptDir` is the directory that contains the calling script (i.e.
  * `dirname(fileURLToPath(import.meta.url))`). The repo DNA.md lives three
- * levels up from `apps/ui-web/scripts/` — pass a fake path in tests.
+ * levels up from `apps/server/src/` — pass a fake path in tests.
  *
  * `personalDnaPath` overrides the default `~/.luna/DNA.md` location.
  * Pass `null` to skip the personal override entirely (useful in tests

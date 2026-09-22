@@ -20,7 +20,7 @@
 // packages/core/src/secret-provider/routed-op-provider.ts. Inlined (not imported
 // from @luna/core) so this orchestration stays unit-testable without pulling the
 // whole core barrel into the test runner. The grammar is frozen, so this mirror
-// cannot drift. Identical to apps/ui-web/scripts/register-op-token.ts.
+// cannot drift. Identical to apps/server/src/register-op-token.ts.
 const ACCOUNT_LABEL_RE = /^[a-z][a-z0-9-]{0,30}$/
 const RESERVED_LABELS: ReadonlySet<string> = new Set(["env", "file", "op"])
 
@@ -41,8 +41,7 @@ const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
  * so secret-tools stays unit-testable without pulling @luna/core. The predicate
  * is CASE-INSENSITIVE (audit finding): an agent calling request_secret with
  * var_name "luna_x" or "ui_ws_token" must be rejected just like the uppercase
- * form. Normalise to uppercase before every comparison. A cross-package drift
- * test (apps/ui-web) pins behavioural equality with the canonical module.
+ * form. Normalise to uppercase before every comparison.
  */
 const ENV_RESERVED_DENYLIST: ReadonlySet<string> = new Set(["UI_WS_TOKEN"])
 const isEnvReserved = (varName: string): boolean => {

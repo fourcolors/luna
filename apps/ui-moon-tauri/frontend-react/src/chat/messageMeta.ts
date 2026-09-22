@@ -38,7 +38,7 @@ const MSG_COPY_FLASH_MS = 1200;
 // Build the small always-visible "copy this message" button for a bubble.
 // Copies `text` (the message's RAW source — markdown for assistant turns,
 // the typed text for user turns) so a paste preserves structure/code,
-// mirroring both apps/ui-web's MessageBubble and the code-block copy.
+// mirroring the code-block copy convention.
 // Returns a fresh <button>; callers append it on every paint (the
 // reconciler rebuilds bubble contents, so the button is re-created too).
 export function buildMessageCopyButton(text: string): HTMLButtonElement {
@@ -105,9 +105,8 @@ export function buildMessageCopyButton(text: string): HTMLButtonElement {
 
 // Compact relative send-time for the message meta stamp: "just now",
 // "9m ago", "2h ago", "5d ago". `now` is injectable for deterministic
-// tests (mirrors humanizeRelTime in ui-shared-solid, but compact — that
-// one can't be imported into this standalone page). Luna always knows
-// "now"; each message carries its send-time — we render the difference.
+// tests. Luna always knows "now"; each message carries its send-time —
+// we render the difference.
 export function formatRelTime(ts: number, now?: number): string {
   if (typeof ts !== 'number' || !isFinite(ts)) return '';
   const ref = typeof now === 'number' ? now : Date.now();

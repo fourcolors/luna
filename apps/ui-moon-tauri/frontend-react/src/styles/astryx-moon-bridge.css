@@ -5,15 +5,15 @@
  * paper/ink/accent look as the rest of the app, across every palette
  * (dawn/meadow/tide/etc.) and both light and dark mode.
  *
- * Ported from apps/ui-web/src/styles/astryx-watercolor-theme.css - Moon's
+ * Ported from the retired web client's astryx-watercolor-theme - Moon's
  * palette tokens use the EXACT same names (--paper, --paper-2, --ink,
  * --ink-soft, --ink-faint, --accent - see vendor/moon-palette.css) because
- * both clients share the same watercolor design vocabulary, so the mapping
+ * the clients share the same watercolor design vocabulary, so the mapping
  * ports over verbatim modulo the scope class and the font token (Moon
  * defines --font-body directly rather than hardcoding a family name).
  *
- * WHY PLAIN CSS, NOT ASTRYX'S <Theme> PROVIDER: see the ui-web file for the
- * full rationale - short version: Moon's own vendor/moon-appearance.js
+ * WHY PLAIN CSS, NOT ASTRYX'S <Theme> PROVIDER: short version: Moon's own
+ * vendor/moon-appearance.js
  * already owns data-theme/data-palette on <html> pre-paint; mounting
  * Astryx's <Theme> would fight that. Plain CSS custom-property overrides,
  * scoped to `.moon-astryx-root`, is a complete lower-risk substitute: any
@@ -32,7 +32,7 @@
  *
  * Load order (see boot.tsx): astryx/reset.css -> astryx/astryx.css -> this
  * file. Layers make the ordering non-load-bearing for safety, but keeping it
- * matches the documented Astryx usage note and the ui-web convention.
+ * matches the documented Astryx usage note.
  */
 
 .moon-astryx-root {

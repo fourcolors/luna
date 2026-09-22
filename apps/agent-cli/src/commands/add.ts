@@ -15,7 +15,7 @@
  *
  *   `file:<path>` / `file:///<path>` refs are REJECTED. FileSecretProvider
  *   is not wired into the chat-server's production SecretProvider chain
- *   (apps/ui-web/scripts/chat-server.ts), so an account added with a
+ *   (apps/server/src/chat-server.ts), so an account added with a
  *   `file:` ref would silently never resolve at runtime.
  *
  * NEVER resolves the secret. The CLI is a pointer-mover only.
