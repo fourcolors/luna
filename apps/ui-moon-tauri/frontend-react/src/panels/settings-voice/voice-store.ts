@@ -21,6 +21,8 @@
  * apps/ui-moon-tauri/test/panel-voice.test.ts.
  */
 
+import { formatMb } from "@luna/ui-shared/core"
+
 export type VoiceMode = "off" | "ptt" | "auto"
 
 export const VOICE_MODES: readonly VoiceMode[] = ["off", "ptt", "auto"]
@@ -107,11 +109,6 @@ export function clampSilenceHang(value: number): number {
   return Number.isFinite(value)
     ? Math.max(MIN_SILENCE_HANG_MS, Math.min(MAX_SILENCE_HANG_MS, value))
     : DEFAULT_SILENCE_HANG_MS
-}
-
-/** MB formatter, mirrors the vanilla module's `mb()` helper. */
-export function formatMb(bytes: number): string {
-  return (bytes / (1024 * 1024)).toFixed(1)
 }
 
 /** Progress status text, mirrors voice-model-progress's non-error/non-done branch. */

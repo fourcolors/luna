@@ -22,6 +22,8 @@
  * transport subscriptions.
  */
 
+import { formatMb } from "@luna/ui-shared/core"
+
 export type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "verifying" | "ready" | "error"
 
 // Mirrors UpdateStateDto.phase in the Rust UpdateManager. "verifying" is an
@@ -203,11 +205,6 @@ function applySnapshot(state: UpdateState, dto: UpdateStateDto): UpdateState {
 }
 
 // ── Pure view-projection helpers (shared by UpdatesPanel.tsx + tests) ──────
-
-/** MB formatter, byte-identical to the vanilla module's `mb()` helper. */
-export function formatMb(bytes: number): string {
-  return (Number(bytes) / (1024 * 1024)).toFixed(1)
-}
 
 /** Phases that show the card (any phase that knows a target version). */
 export function phaseHasCard(phase: UpdatePhase): boolean {

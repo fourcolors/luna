@@ -45,8 +45,8 @@ import React, { act } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { createRoot } from "react-dom/client"
 import { UpdatesPanel } from "../frontend-react/src/panels/settings-updates/UpdatesPanel"
+import { formatMb } from "@luna/ui-shared/core"
 import {
-  formatMb,
   initialUpdateState,
   notesLines,
   phaseHasCard,
