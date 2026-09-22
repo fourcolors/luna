@@ -95,6 +95,15 @@ Available: `WebSocketEngine`, `ChatState`, `ChatLoop`, `ChatEngine`, `MoonFace`,
 `Attachments`, `ComposerConfig`, `SlashMenu`, `SmartBarEngine`, `ThreadDrawerEngine`, `LunaThreadDrag`.
 `MoonFace.setBusy(true)` and friends drive the avatar directly.
 
+**Scripted-turn ordering decides whether assistant text is a visible bubble.** Text that
+arrives *before* the last tool-call is folded into the run timeline and is invisible once it
+collapses into the "Worked for N steps" pill; text *after* the last tool-call is a trailing
+`TextItem` - the visible `.msg.assistant` bubble. To assert on-screen text, send the delta/done
+AFTER the tool frames, and omit `threadId` (a frame whose `threadId` ≠ `State.activeThreadId` is
+silently dropped by thread isolation). If a render doesn't match expectations, inspect
+`ChatState.turns` (`segs`/`_cumText`/`_settled`) - the text may be in the model but hidden inside
+a collapsed timeline.
+
 > `window.__MoonInternals` exists on the **hub page (`index.html`)** - `MoonHubApp.tsx` publishes it
 > in its mount effect (search for `window.__MoonInternals = {` in `src/hub/MoonHubApp.tsx`):
 > `handleFrame(frame)`, `dispatch(action)`, `getState()`, `SetupWizard.{open, close, goTo,
