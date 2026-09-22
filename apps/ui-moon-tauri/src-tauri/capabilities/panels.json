@@ -31,6 +31,7 @@
     "allow-set-panel-last-thread",
     "allow-get-platform",
     "allow-get-host-label",
+    "allow-get-home-dir",
     "allow-close-widget",
     "allow-updater",
     "allow-hub-event",

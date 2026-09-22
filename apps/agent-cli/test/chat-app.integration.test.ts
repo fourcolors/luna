@@ -427,6 +427,9 @@ describe("luna chat app", () => {
     expect(result).toMatchObject({
       type: "local-shell-result",
       requestId: "req-danger",
+      // The server only accepts results from a clientId this connection
+      // registered via the capability frame — results without it are dropped.
+      clientId: expect.any(String),
       approved: true,
       stdout: "dangerous-ok",
       timedOut: false,
@@ -513,6 +516,7 @@ describe("luna chat app", () => {
     expect(result).toMatchObject({
       type: "local-shell-result",
       requestId: "req-danger-cwd",
+      clientId: expect.any(String),
       approved: false,
       stderr: "local shell cwd outside approved root",
       timedOut: false,
@@ -673,6 +677,7 @@ describe("luna chat app", () => {
     const result = await waitFor(denied)
     expect(result).toMatchObject({
       type: "local-shell-result",
+      clientId: expect.any(String),
       approved: false,
       stderr: "local shell disabled",
     })

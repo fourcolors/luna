@@ -82,6 +82,14 @@ export function createLocalShell(ctx: LocalShellCtx) {
       } catch (e) {
         Logger.warn('get_host_label failed; falling back to platform as label:', e);
       }
+      try {
+        // The no-roots fallback cwd advertised in sendCapability() and applied
+        // in handleRequest(). Without it a cwd-less command runs at the app
+        // process cwd ('/' for a packaged .app).
+        State.localShell.homeDir = await window.__TAURI__.core.invoke('get_home_dir');
+      } catch (e) {
+        Logger.warn('get_home_dir failed; cwd-less commands keep the process cwd:', e);
+      }
     },
     // Tell the server this client's scope. Sent ONCE PER CONNECTION and on every
     // scope change — deliberately NOT per active thread.
@@ -139,7 +147,15 @@ export function createLocalShell(ctx: LocalShellCtx) {
         Logger.warn(`local-shell refused an unattended-origin request (tags=${tags.join(',')})`);
         return denied('refused: unattended thread may not run commands on this machine');
       }
-      const approved = ls.fullAccess || this.withinRoots(frame.cwd ?? null, ls.roots);
+      // The bridge omits `cwd` when the agent doesn't name one, and "the
+      // client's own cwd" — the default this client advertises — is resolved
+      // HERE: roots[0] when a root is attached, else homeDir, matching the
+      // sendCapability() frame and the CLI (request.cwd ?? options.cwd).
+      // Passing null would run the command at the APP process cwd ('/' for a
+      // packaged .app): outside the attached root the approval just vouched
+      // for, and not the cwd the server reports as effective.
+      const cwd = frame.cwd ?? (ls.roots[0] || ls.homeDir || null);
+      const approved = ls.fullAccess || this.withinRoots(cwd, ls.roots);
       if (!approved) return denied('command outside attached scope');
       if (!(window.__TAURI__ && window.__TAURI__.core)) {
         return denied('local shell unavailable (no Tauri runtime)');
@@ -147,7 +163,7 @@ export function createLocalShell(ctx: LocalShellCtx) {
       try {
         const r = await window.__TAURI__.core.invoke('local_shell_exec', {
           command: frame.command,
-          cwd: frame.cwd ?? null,
+          cwd,
           timeoutMs: frame.timeoutMs ?? null
         });
         reply({

@@ -61,6 +61,12 @@ export interface LocalCommandResult {
   readonly type: "local-shell-result"
   readonly requestId: string
   readonly threadId: string
+  /**
+   * This client's own id, matching the capability frame. The server drops
+   * results without it: with several machines attached, it only accepts a
+   * result from a clientId the connection actually registered.
+   */
+  readonly clientId: string
   readonly approved: boolean
   readonly exitCode: number | null
   readonly stdout: string
@@ -71,6 +77,8 @@ export interface LocalCommandResult {
 
 export interface ExecuteLocalCommandOptions {
   readonly request: LocalCommandRequest
+  /** This client's id — stamped on every result frame so the server accepts it. */
+  readonly clientId: string
   readonly cwd: string
   readonly env?: Record<string, string | undefined>
   readonly timeoutMs: number
@@ -244,6 +252,7 @@ export const executeLocalCommand = async (
     type: "local-shell-result",
     requestId: request.requestId,
     threadId: request.threadId,
+    clientId: options.clientId,
     durationMs: Date.now() - startedAt,
   })
 

@@ -12,7 +12,7 @@
  * from vitest.config.ts), direct module imports, vi spies on Storage.prototype
  * (the vitest-setup.ts patch makes these reliable under Bun).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createState } from '../frontend-react/src/chat/state'
 import { createLocalShell } from '../frontend-react/src/chat/localShell'
 
@@ -144,5 +144,124 @@ describe('Feature: sendCapability() emits correct frame', () => {
     ls.sendCapability()
     const frame = wsFrames[0] as Record<string, unknown>
     expect(frame.approvalMode).not.toBe('prompt')
+  })
+})
+
+// ── Feature: a cwd-less request executes at the advertised default ──────────
+//
+// The server bridge (packages/ui-ws/local-shell-bridge.ts) omits `cwd` from the
+// request frame when the agent doesn't name one — "the client's own cwd" is
+// resolved client-side. The approval check treats an absent cwd as "runs at
+// roots[0]"; the exec call must land in that same place, not the app process
+// cwd ('/' for a packaged .app). Regression: #646 fixed the ADVERTISED cwd but
+// left the EXECUTED one as null, so a roots-scoped client approved "roots[0]"
+// while the command actually ran wherever the app was started.
+
+function makeTauriExec() {
+  const calls: Array<{ cmd: string; args: Record<string, unknown> }> = []
+  ;(window as unknown as { __TAURI__: unknown }).__TAURI__ = {
+    core: {
+      invoke: vi.fn(async (cmd: string, args: Record<string, unknown>) => {
+        calls.push({ cmd, args })
+        if (cmd === 'local_shell_exec') {
+          return { exitCode: 0, stdout: 'ok', stderr: '', durationMs: 1, timedOut: false }
+        }
+        return null
+      }),
+    },
+  }
+  return calls
+}
+
+afterEach(() => {
+  delete (window as unknown as { __TAURI__?: unknown }).__TAURI__
+})
+
+describe('Feature: handleRequest applies the advertised default cwd', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  function requestFrame(extra?: Record<string, unknown>) {
+    return {
+      type: 'local-shell-request',
+      requestId: 'req-1',
+      threadId: 'test-thread-1',
+      command: 'pwd',
+      timeoutMs: 1000,
+      ...extra,
+    }
+  }
+
+  it('Scenario: roots attached + no cwd => exec runs at roots[0], not the process cwd', async () => {
+    const calls = makeTauriExec()
+    const { ctx, wsFrames } = makeCtx()
+    ctx.State.localShell.fullAccess = false
+    ctx.State.localShell.enabled = true
+    ctx.State.localShell.roots = ['/work/project']
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest(requestFrame())
+
+    const exec = calls.find((c) => c.cmd === 'local_shell_exec')
+    expect(exec).toBeDefined()
+    expect(exec!.args.cwd).toBe('/work/project')
+    const result = wsFrames[wsFrames.length - 1] as Record<string, unknown>
+    expect(result.approved).toBe(true)
+  })
+
+  it('Scenario: no roots + fullAccess + homeDir known => exec runs at homeDir, matching the advertised default', async () => {
+    const calls = makeTauriExec()
+    const { ctx } = makeCtx()
+    ctx.State.localShell.homeDir = '/Users/moon'
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest(requestFrame())
+
+    const exec = calls.find((c) => c.cmd === 'local_shell_exec')
+    expect(exec).toBeDefined()
+    expect(exec!.args.cwd).toBe('/Users/moon')
+  })
+
+  it('Scenario: an explicit cwd still wins over the default', async () => {
+    const calls = makeTauriExec()
+    const { ctx } = makeCtx()
+    ctx.State.localShell.roots = ['/work/project']
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest(requestFrame({ cwd: '/tmp/elsewhere' }))
+
+    const exec = calls.find((c) => c.cmd === 'local_shell_exec')
+    expect(exec!.args.cwd).toBe('/tmp/elsewhere')
+  })
+
+  it('Scenario: explicit cwd outside attached roots is still denied when fullAccess is off', async () => {
+    const calls = makeTauriExec()
+    const { ctx, wsFrames } = makeCtx()
+    ctx.State.localShell.fullAccess = false
+    ctx.State.localShell.enabled = true
+    ctx.State.localShell.roots = ['/work/project']
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest(requestFrame({ cwd: '/etc' }))
+
+    expect(calls.find((c) => c.cmd === 'local_shell_exec')).toBeUndefined()
+    const result = wsFrames[wsFrames.length - 1] as Record<string, unknown>
+    expect(result.approved).toBe(false)
+  })
+
+  it('Scenario: no roots and fullAccess off => a cwd-less request stays denied (homeDir alone never grants)', async () => {
+    const calls = makeTauriExec()
+    const { ctx, wsFrames } = makeCtx()
+    ctx.State.localShell.fullAccess = false
+    ctx.State.localShell.enabled = false
+    ctx.State.localShell.homeDir = '/Users/moon'
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest(requestFrame())
+
+    expect(calls.find((c) => c.cmd === 'local_shell_exec')).toBeUndefined()
+    const result = wsFrames[wsFrames.length - 1] as Record<string, unknown>
+    expect(result.approved).toBe(false)
   })
 })

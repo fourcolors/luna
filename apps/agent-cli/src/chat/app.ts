@@ -133,11 +133,13 @@ const localShellLabel = (): string => {
 
 const deniedLocalShellResult = (
   frame: Extract<ServerFrame, { type: "local-shell-request" }>,
+  clientId: string,
   stderr: string,
 ): LocalCommandResult => ({
   type: "local-shell-result",
   requestId: frame.requestId,
   threadId: frame.threadId,
+  clientId,
   approved: false,
   exitCode: null,
   stdout: "",
@@ -299,15 +301,15 @@ export async function runLunaCli(
 
   const runLocalShellRequest = (frame: Extract<ServerFrame, { type: "local-shell-request" }>): void => {
     if (!localShell.enabled) {
-      client.send(deniedLocalShellResult(frame, "local shell disabled"))
+      client.send(deniedLocalShellResult(frame, localShell.clientId, "local shell disabled"))
       return
     }
     if (frame.threadId !== session.threadId) {
-      client.send(deniedLocalShellResult(frame, "local shell unavailable for thread"))
+      client.send(deniedLocalShellResult(frame, localShell.clientId, "local shell unavailable for thread"))
       return
     }
     if (cfg.dangerouslyAutoApproveLocalShell && !isAutoApprovedLocalShellCwd(frame.cwd, cfg.dangerousLocalShellRoot)) {
-      client.send(deniedLocalShellResult(frame, "local shell cwd outside approved root"))
+      client.send(deniedLocalShellResult(frame, localShell.clientId, "local shell cwd outside approved root"))
       return
     }
 
@@ -324,6 +326,7 @@ export async function runLunaCli(
     const task = (async (): Promise<void> => {
       const result = await executeLocalCommand({
         request: frame,
+        clientId: localShell.clientId,
         cwd: localShell.cwd,
         env: localCommandEnv,
         timeoutMs: DEFAULT_LOCAL_COMMAND_TIMEOUT_MS,

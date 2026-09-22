@@ -223,6 +223,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
         type: "local-shell-result",
         requestId: frame.requestId,
         threadId: frame.threadId,
+        clientId: localShell.clientId,
         approved: false,
         exitCode: null,
         stdout: "",
@@ -239,6 +240,7 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
     void (async () => {
       const result = await executeLocalCommand({
         request: frame,
+        clientId: localShell.clientId,
         cwd: localShell.cwd,
         env: localCommandEnv,
         timeoutMs: 30_000,

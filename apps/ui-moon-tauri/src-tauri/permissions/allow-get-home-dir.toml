@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-get-home-dir"
+description = "Allows reading the user's home directory, advertised as the local-shell default cwd when no root is attached"
+
+[permission.commands]
+allow = [
+  "get_home_dir"
+]
