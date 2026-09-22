@@ -9,7 +9,7 @@ interface RmArgs {
   dbPath?: string
 }
 
-const runRm = (args: RmArgs): CmdResult => {
+export const removeAccount = (args: RmArgs): CmdResult => {
   if (args.id === undefined || args.id.length === 0) {
     return {
       exitCode: 1,
@@ -46,6 +46,3 @@ const runRm = (args: RmArgs): CmdResult => {
     db.close()
   }
 }
-
-/** Citty-friendly alias for runRm — returns exit code directly. */
-export const removeAccount = runRm

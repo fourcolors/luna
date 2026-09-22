@@ -80,7 +80,7 @@ const validateSecretRef = (ref: string): boolean => {
     return name.length > 0 && !name.includes("/")
   }
   // file:<path> / file:///<path> fall through to `return false` here.
-  // Rejected with a dedicated, actionable message in runAdd - see FILE_REF_ERROR.
+  // Rejected with a dedicated, actionable message in addAccount - see FILE_REF_ERROR.
   return false
 }
 
@@ -88,7 +88,7 @@ const FILE_REF_ERROR =
   "error: file: refs are not resolvable by the Luna server. " +
   "Use env:NAME (value stored via the Vault) or luna-op://<label>/... for 1Password.\n"
 
-const runAdd = (args: AddArgs): CmdResult => {
+export const addAccount = (args: AddArgs): CmdResult => {
   const missing: string[] = []
   if (args.id === undefined || args.id.length === 0) missing.push("--id")
   if (args.label === undefined || args.label.length === 0)
@@ -167,6 +167,3 @@ const runAdd = (args: AddArgs): CmdResult => {
     db.close()
   }
 }
-
-/** Citty-friendly alias for runAdd — returns exit code directly. */
-export const addAccount = runAdd
