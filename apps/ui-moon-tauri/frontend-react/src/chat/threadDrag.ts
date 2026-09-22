@@ -43,7 +43,7 @@
  *
  * `engine` is the live ThreadDrawerEngine, passed rather than bound because
  * the body both reads and WRITES engine state (`self._ghost`,
- * `self._renderPendingDuringDrag`). `deps` carries the six chat.html globals
+ * `self._renderPendingDuringDrag`). `deps` carries the chat.html globals
  * the body closes over; destructuring them here is what let the body itself
  * stay untouched.
  */
@@ -209,13 +209,6 @@ export interface ThreadDragDeps {
   readonly DOM: ThreadDragDom
   readonly Logger: { warn(...args: unknown[]): void }
   readonly moonDragDebugNote: (kind: string, data?: Record<string, unknown> | null) => void
-  /**
-   * Destructured and never read - the body reaches for `window.LunaThreadDrag`
-   * directly, exactly like the vanilla original did. Typed `unknown` and left
-   * in place rather than deleted: removing it would change the emitted
-   * destructuring, which is the one thing this module may not do.
-   */
-  readonly LunaThreadDrag: unknown
 }
 
 export function wireThreadRow(
@@ -224,7 +217,7 @@ export function wireThreadRow(
   t: ThreadDragRow,
   deps: ThreadDragDeps,
 ): void {
-  const { State, DOM, Logger, moonDragDebugNote, LunaThreadDrag } = deps
+  const { State, DOM, Logger, moonDragDebugNote } = deps
   const self = engine
   // Cursor sits this far inside the floater top-left (logical points, y down).
   // Must match begin_native_pullout_drag grab defaults so the window sticks.

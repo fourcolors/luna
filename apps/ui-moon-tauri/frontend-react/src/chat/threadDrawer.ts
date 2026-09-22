@@ -95,7 +95,6 @@ export interface ThreadDrawerCtx {
    *  suggestion engine is constructed after this one, so the drawer holds a
    *  callback rather than the engine. */
   readonly onThreadSwitch?: (threadId: string) => void
-  readonly LunaThreadDrag: unknown
   /**
    * Single-writer gate for user-driven thread selection (see state.ts
    * setActiveThread). Passed as a callback so threadDrawer.ts does not need
@@ -113,7 +112,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
   const {
     Logger, DOM, State, WebSocketEngine, ChatState, ChatLoop, MoonFace,
     ThreadListLogic, ThreadStrip, ThreadCacheLogic, ThreadCreateLogic,
-    ThreadDrag, formatRelTime, LunaThreadDrag, onThreadSwitch, setActiveThread,
+    ThreadDrag, formatRelTime, onThreadSwitch, setActiveThread,
   } = ctx
 
   const ThreadCache = {
@@ -916,7 +915,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     // exercise is still the gate that matters for it.
     //
     // `this` is handed over because the body both reads and WRITES engine
-    // state (_ghost, _renderPendingDuringDrag); the six globals it closes
+    // state (_ghost, _renderPendingDuringDrag); the globals it closes
     // over are passed alongside so the body itself needed no edits.
     _wireRow(row, t) {
       ThreadDrag.wireThreadRow(this, row, t, {
@@ -924,7 +923,6 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         DOM,
         Logger,
         moonDragDebugNote,
-        LunaThreadDrag,
       });
     },
 
