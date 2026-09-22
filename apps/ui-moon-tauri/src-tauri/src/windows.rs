@@ -22,15 +22,19 @@ use tauri::Manager;
 // no IPC at all (fails closed). The REAL artifact id rides in the URL query so
 // the widget page knows what to render; the label is just an opaque handle.
 
-/// Deterministic, capability-glob-matching window label for an artifact id.
-/// djb2 → hex; stable across processes so "focus if already open" and restore
-/// reconcile to the same window.
-fn widget_label(artifact_id: &str) -> String {
+/// djb2 → u64; stable across processes so "focus if already open" and the
+/// boot restore reconcile to the same window.
+fn djb2(s: &str) -> u64 {
     let mut hash: u64 = 5381;
-    for b in artifact_id.bytes() {
+    for b in s.bytes() {
         hash = hash.wrapping_mul(33).wrapping_add(u64::from(b));
     }
-    format!("widget-{hash:x}")
+    hash
+}
+
+/// Deterministic, capability-glob-matching window label for an artifact id.
+fn widget_label(artifact_id: &str) -> String {
+    format!("widget-{:x}", djb2(artifact_id))
 }
 
 /// Percent-encode a query-parameter VALUE (RFC 3986 unreserved set kept raw).
@@ -62,10 +66,6 @@ pub(crate) struct WidgetDescriptor {
     title: String,
     page: String,
     trust: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    // all v1 panels are singletons; instance suffixes come with non-singleton kinds
-    singleton: bool,
     #[serde(default = "default_panel_width")]
     width: f64,
     #[serde(default = "default_panel_height")]
@@ -107,12 +107,7 @@ fn panel_label(kind: &str) -> String {
 /// hash of its params (e.g. panel-flow-1a2b3c) — same params focus the same
 /// window, different params open siblings. djb2, like widget_label.
 fn panel_instance_label(kind: &str, params: &serde_json::Value) -> String {
-    let canon = params.to_string();
-    let mut hash: u64 = 5381;
-    for b in canon.bytes() {
-        hash = hash.wrapping_mul(33).wrapping_add(u64::from(b));
-    }
-    format!("{}-{hash:x}", panel_label(kind))
+    format!("{}-{:x}", panel_label(kind), djb2(&params.to_string()))
 }
 
 /// Append registry params as query parameters onto a descriptor page URL
@@ -206,7 +201,7 @@ fn panel_label_to_kind_and_params(label: &str) -> Option<(String, Option<serde_j
 }
 
 /// Pure layout-persistence guard (testable without a webview), same shape as
-/// `is_closable_widget_label`. The launcher is a transient, summoned-on-demand
+/// `is_dock_label`. The launcher is a transient, summoned-on-demand
 /// command palette: `write_panel_layout` records every open panel and the boot
 /// restore replays everything it recorded, so persisting the palette would make
 /// a single quit-with-it-open reopen it on EVERY subsequent launch. Every other
@@ -363,24 +358,26 @@ const TRAFFIC_LIGHT_INSET_X: f64 = 14.0;
 #[cfg(target_os = "macos")]
 const TRAFFIC_LIGHT_INSET_Y: f64 = 8.0;
 
-/// spawn_panel with an explicit label + url (non-singleton instances).
-#[allow(clippy::too_many_arguments)]
-fn spawn_panel_at(
+/// Shared frameless-card window build for panels and artifact widgets:
+/// decorations/transparent/shadow/always_on_top/skip_taskbar/maximizable,
+/// the macOS Overlay title-bar chrome, an optional logical top-left
+/// `position` (None leaves initial placement to the OS), then build +
+/// `finalize_native_window_chrome`.
+fn build_card_window(
     app: &tauri::AppHandle,
-    desc: &WidgetDescriptor,
     label: &str,
     url: &str,
-    x: Option<f64>,
-    y: Option<f64>,
-    width: Option<f64>,
-    height: Option<f64>,
+    title: &str,
+    inner_size: (f64, f64),
+    min_inner_size: (f64, f64),
+    position: Option<(f64, f64)>,
 ) -> Result<tauri::WebviewWindow, String> {
     let mut builder = tauri::WebviewWindowBuilder::new(
         app,
         label,
         tauri::WebviewUrl::App(url.to_string().into()),
     )
-    .title(&desc.title)
+    .title(title)
     // Native decorations ONLY on macOS, where the Overlay block below turns
     // them into floating traffic-lights over the transparent CSS card. On
     // other platforms decorations(true) would draw a full opaque OS title bar
@@ -402,10 +399,10 @@ fn spawn_panel_at(
     // focus-reactive edge on the rounded card.
     .shadow(cfg!(target_os = "macos"))
     // Panels/screens do NOT float above other apps by default. The page itself
-    // (vendor/moon-window-float.js, loaded by chat.html/panel.html) re-enables
-    // always-on-top at boot when the user has explicitly turned on the
-    // "Always on Top" setting (luna_always_on_top === "true"). The orb window
-    // (index.html) keeps its own default-on behavior independently.
+    // (vendor/moon-window-float.js, loaded by chat.html/panel.html/widget.html)
+    // re-enables always-on-top at boot when the user has explicitly turned on
+    // the "Always on Top" setting (luna_always_on_top === "true"). The orb
+    // window (index.html) keeps its own default-on behavior independently.
     .always_on_top(false)
     .skip_taskbar(true)
     .visible(true)
@@ -414,8 +411,8 @@ fn spawn_panel_at(
     // FullScreenNone (see configure_native_window_chrome) keeps a green click an
     // in-screen zoom, never a jump to a fullscreen Space.
     .maximizable(true)
-    .inner_size(width.unwrap_or(desc.width), height.unwrap_or(desc.height))
-    .min_inner_size(220.0, 120.0);
+    .inner_size(inner_size.0, inner_size.1)
+    .min_inner_size(min_inner_size.0, min_inner_size.1);
     // Tauri/Wry owns the native controls for the full window lifetime. A static
     // builder position keeps them aligned with the CSS header without the old
     // focus/resize/hover AppKit bridge.
@@ -429,12 +426,35 @@ fn spawn_panel_at(
                 TRAFFIC_LIGHT_INSET_Y,
             ));
     }
-    if let (Some(px), Some(py)) = (x, y) {
+    if let Some((px, py)) = position {
         builder = builder.position(px, py);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
     finalize_native_window_chrome(&window);
     Ok(window)
+}
+
+/// spawn_panel with an explicit label + url (non-singleton instances).
+#[allow(clippy::too_many_arguments)]
+fn spawn_panel_at(
+    app: &tauri::AppHandle,
+    desc: &WidgetDescriptor,
+    label: &str,
+    url: &str,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<tauri::WebviewWindow, String> {
+    build_card_window(
+        app,
+        label,
+        url,
+        &desc.title,
+        (width.unwrap_or(desc.width), height.unwrap_or(desc.height)),
+        (220.0, 120.0),
+        x.zip(y),
+    )
 }
 
 /// Allowlisted hub actions a settings panel may request. Panels own their
@@ -607,46 +627,15 @@ pub(crate) async fn open_artifact_widget(
     // A dedicated, self-contained page (NOT index.html) — keeps the widget
     // runtime isolated from the moon monolith. The real id rides in the query.
     let url = format!("widget.html?id={}", encode_query_value(&artifact_id));
-    let mut builder =
-        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-            .title(if title.is_empty() { "Artifact" } else { &title })
-            // Native decorations ONLY on macOS, where the Overlay block below turns
-            // them into floating traffic-lights over the transparent CSS card. On
-            // other platforms decorations(true) would draw a full opaque OS title bar
-            // + frame around the transparent rounded card (broken chrome) — keep those
-            // borderless, exactly as before this feature.
-            .decorations(cfg!(target_os = "macos"))
-            .transparent(true)
-            // No native OS shadow — the CSS card-shell halo is the single depth cue
-            // (see spawn_panel_at above for the full rationale).
-            // See spawn_panel_at: the frame owner owns the shadow.
-            .shadow(cfg!(target_os = "macos"))
-            // Artifact widgets do NOT float by default — same rule as panels above.
-            // vendor/moon-window-float.js (loaded by widget.html) re-enables it at boot
-            // when luna_always_on_top === "true".
-            .always_on_top(false)
-            .skip_taskbar(true)
-            .maximizable(true)
-            .inner_size(width.unwrap_or(360.0), height.unwrap_or(440.0))
-            .min_inner_size(220.0, 160.0);
-    // Match system panels: Tauri/Wry owns the native controls for the window
-    // lifetime, including focus, hover, resize and hit testing.
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(
-                TRAFFIC_LIGHT_INSET_X,
-                TRAFFIC_LIGHT_INSET_Y,
-            ));
-    }
-    builder = builder.visible(true);
-    if let (Some(px), Some(py)) = (x, y) {
-        builder = builder.position(px, py);
-    }
-    let window = builder.build().map_err(|e| e.to_string())?;
-    finalize_native_window_chrome(&window);
+    build_card_window(
+        &app,
+        &label,
+        &url,
+        if title.is_empty() { "Artifact" } else { &title },
+        (width.unwrap_or(360.0), height.unwrap_or(440.0)),
+        (220.0, 160.0),
+        x.zip(y),
+    )?;
     Ok(label)
 }
 
@@ -660,19 +649,13 @@ pub(crate) async fn open_artifact_widget(
 /// sandboxed agent content, so this guard is defence-in-depth.
 #[tauri::command]
 pub(crate) async fn close_widget(app: tauri::AppHandle, label: String) -> Result<(), String> {
-    if !is_closable_widget_label(&label) {
+    if !is_dock_label(&label) {
         return Ok(()); // refuse to close anything but a widget window
     }
     if let Some(win) = app.get_webview_window(&label) {
         win.close().map_err(|e| e.to_string())?;
     }
     Ok(())
-}
-
-/// Pure label-namespace guard for `close_widget` (testable without a webview).
-/// widget-* AND panel-* close; the hub never does.
-fn is_closable_widget_label(label: &str) -> bool {
-    is_dock_label(label)
 }
 
 /// Pure `redock-thread` payload builder (testable without a webview).
@@ -719,7 +702,7 @@ pub(crate) async fn redock_thread(
         return Ok(false);
     }
     // Only a dockable panel/widget may be closed this way; never redock into self.
-    if !is_closable_widget_label(&caller_label) || owner_label == caller_label {
+    if !is_dock_label(&caller_label) || owner_label == caller_label {
         return Ok(false);
     }
     // Owner must be a real dock window (main line is panel-chat; never the hub).
@@ -758,7 +741,7 @@ fn center_in_rect(px: f64, py: f64, rx: f64, ry: f64, rw: f64, rh: f64) -> bool 
 
 /// Horizontal proximity to the owner's left dock strip, in `[0, 1]`.
 /// Ramps from 0 outside an approach band to 1 deep inside the strip.
-fn redock_proximity(center_x: f64, owner_x: f64, strip_w: f64, owner_w: f64) -> f64 {
+fn redock_proximity(center_x: f64, owner_x: f64, strip_w: f64) -> f64 {
     let strip_right = owner_x + strip_w;
     let approach = strip_w.max(80.0); // soft band to the right of the strip
     if center_x <= strip_right {
@@ -773,7 +756,6 @@ fn redock_proximity(center_x: f64, owner_x: f64, strip_w: f64, owner_w: f64) -> 
     if dist >= approach {
         return 0.0;
     }
-    let _ = owner_w; // reserved for future full-window attraction
     (1.0 - dist / approach).clamp(0.0, 1.0)
 }
 
@@ -797,11 +779,11 @@ mod redock_geometry_tests {
         let owner_x = 100.0;
         let strip = 300.0;
         // Deep inside strip
-        assert!((redock_proximity(200.0, owner_x, strip, 800.0) - 1.0).abs() < 1e-9);
+        assert!((redock_proximity(200.0, owner_x, strip) - 1.0).abs() < 1e-9);
         // Far to the right of strip+approach
-        assert!((redock_proximity(1000.0, owner_x, strip, 800.0) - 0.0).abs() < 1e-9);
+        assert!((redock_proximity(1000.0, owner_x, strip) - 0.0).abs() < 1e-9);
         // Just outside strip edge (strip_right = 400): mid approach
-        let mid = redock_proximity(400.0 + 150.0, owner_x, strip, 800.0);
+        let mid = redock_proximity(400.0 + 150.0, owner_x, strip);
         assert!(mid > 0.4 && mid < 0.6, "mid proximity was {mid}");
     }
 }
@@ -1452,16 +1434,150 @@ fn resize_frame(a: Anchor, m: objc2_core_foundation::CGPoint) -> objc2_core_foun
     }
 }
 
-/// Holds the two live monitor tokens for one resize gesture. Lives in an
-/// `Rc<RefCell<…>>` created and used ENTIRELY on the main thread (the monitors
-/// and their handler blocks only ever run there, so `Rc`/`RefCell` is correct —
-/// no `Send` needed, and these tokens are not Send anyway). `ended` guards the
-/// teardown so the local + global monitors firing don't double-remove.
+/// Holds the two live monitor tokens for one mouse gesture (native resize,
+/// redock drag, pull-out drag). Lives in an `Rc<RefCell<…>>` created and used
+/// ENTIRELY on the main thread (the monitors and their handler blocks only
+/// ever run there, so `Rc`/`RefCell` is correct — no `Send` needed, and these
+/// tokens are not Send anyway). `ended` guards the teardown so the local +
+/// global monitors firing don't double-remove.
 #[cfg(target_os = "macos")]
-struct ResizeMonitors {
+struct MouseMonitors {
     local: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     global: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
     ended: bool,
+}
+
+/// Remove both monitors exactly once, under the `ended` guard. Returns false
+/// when the gesture already ended — the second block to fire must not run the
+/// settle a second time.
+#[cfg(target_os = "macos")]
+fn end_mouse_monitors(state: &std::cell::RefCell<MouseMonitors>) -> bool {
+    let (local, global) = {
+        let mut s = state.borrow_mut();
+        if s.ended {
+            return false;
+        }
+        s.ended = true;
+        (s.local.take(), s.global.take())
+    };
+    unsafe {
+        if let Some(tok) = local.as_ref() {
+            let obj: &objc2::runtime::AnyObject = tok;
+            objc2_app_kit::NSEvent::removeMonitor(obj);
+        }
+        if let Some(tok) = global.as_ref() {
+            let obj: &objc2::runtime::AnyObject = tok;
+            objc2_app_kit::NSEvent::removeMonitor(obj);
+        }
+    }
+    true
+}
+
+/// Install the shared local+global NSEvent monitor pair for one mouse
+/// gesture. MUST be called on the main thread (inside
+/// `with_appkit_main_thread`): the state cell, the handler blocks, and the
+/// monitor tokens all live there only — everything below is `Rc`/`RefCell`.
+///
+/// `on_drag` runs on each LeftMouseDragged, `on_up` runs ONCE on mouse-up,
+/// after the monitors are torn down. The local monitor watches
+/// LeftMouseDragged | LeftMouseUp for events delivered to our app; the global
+/// monitor always ends on a LeftMouseUp delivered to ANOTHER app (the local
+/// monitor never sees those — without it the monitors could get stuck when
+/// the release lands off-window). When `track_global_drag` is set the global
+/// mask gains LeftMouseDragged and off-app drags also dispatch to `on_drag` —
+/// pull-out needs it because the local monitor starves while the cursor is
+/// over another app's window; resize and redock only need the global up.
+#[cfg(target_os = "macos")]
+fn install_mouse_monitors<Drag, Up>(on_drag: Drag, on_up: Up, track_global_drag: bool)
+where
+    Drag: Fn() + 'static,
+    Up: Fn() + 'static,
+{
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventType};
+    use std::cell::RefCell;
+    use std::ptr::NonNull;
+    use std::rc::Rc;
+
+    // Shared monitor state. Cloned into each handler block BEFORE the
+    // monitors exist; the tokens are stored back in once `add*Monitor`
+    // returns (chicken-and-egg: the block must be able to remove the
+    // monitors, but they don't exist until after the block is built).
+    let state = Rc::new(RefCell::new(MouseMonitors {
+        local: None,
+        global: None,
+        ended: false,
+    }));
+    let on_drag = Rc::new(on_drag);
+
+    // Teardown: remove BOTH monitors (once — guarded by `ended`), then run
+    // the gesture's settle. Runs on the main thread (we're always called
+    // from a monitor handler, which AppKit delivers on the main thread).
+    let end = {
+        let state = state.clone();
+        let on_up = Rc::new(on_up);
+        move || {
+            if end_mouse_monitors(&state) {
+                on_up();
+            }
+        }
+    };
+
+    // Local monitor: every LeftMouseDragged / LeftMouseUp delivered to our
+    // app. On up (or no left button pressed) → end; else on_drag.
+    // Returns the event unchanged (does NOT consume it).
+    let local_block = {
+        let end = end.clone();
+        let on_drag = on_drag.clone();
+        block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            let ev = unsafe { event.as_ref() };
+            let up = ev.r#type() == NSEventType::LeftMouseUp
+                || NSEvent::pressedMouseButtons() & 1 == 0;
+            if up {
+                end();
+            } else {
+                on_drag();
+            }
+            event.as_ptr()
+        })
+    };
+
+    // Global monitor: same up-test → end; else on_drag (reached only when the
+    // mask includes LeftMouseDragged).
+    let global_block = {
+        let end = end.clone();
+        let on_drag = on_drag.clone();
+        block2::RcBlock::new(move |event: NonNull<NSEvent>| {
+            let ev = unsafe { event.as_ref() };
+            let up = ev.r#type() == NSEventType::LeftMouseUp
+                || NSEvent::pressedMouseButtons() & 1 == 0;
+            if up {
+                end();
+            } else {
+                on_drag();
+            }
+        })
+    };
+
+    let global_mask = if track_global_drag {
+        NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp
+    } else {
+        NSEventMask::LeftMouseUp
+    };
+
+    unsafe {
+        let local: Option<Retained<AnyObject>> =
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
+                &local_block,
+            );
+        let global: Option<Retained<AnyObject>> =
+            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(global_mask, &global_block);
+        let mut s = state.borrow_mut();
+        s.local = local;
+        s.global = global;
+    }
 }
 
 /// Begin a native-speed resize of the calling card window. The whole gesture
@@ -1482,13 +1598,7 @@ pub(crate) fn begin_native_resize(window: tauri::WebviewWindow, direction: Strin
     // are Copy, and the `WebviewWindow`); the non-Send pieces are created inside
     // and never cross threads, so the closure stays `Send + 'static`.
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2::rc::Retained;
-        use objc2::runtime::AnyObject;
-        use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
-        use objc2_core_foundation::CGPoint;
-        use std::cell::RefCell;
-        use std::ptr::NonNull;
-        use std::rc::Rc;
+        use objc2_app_kit::{NSEvent, NSWindow};
 
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
 
@@ -1530,99 +1640,28 @@ pub(crate) fn begin_native_resize(window: tauri::WebviewWindow, direction: Strin
             }
         };
 
-        // Shared monitor state. Cloned into each handler block BEFORE the
-        // monitors exist; the tokens are stored back in once `add*Monitor`
-        // returns (chicken-and-egg: the block must be able to remove the
-        // monitors, but they don't exist until after the block is built).
-        let state = Rc::new(RefCell::new(ResizeMonitors {
-            local: None,
-            global: None,
-            ended: false,
-        }));
-
-        // Tear down: remove BOTH monitors (once — guarded by `ended`), then run
-        // the settle and persist layout. Runs on the main thread (we're always
-        // called from a monitor handler, which AppKit
-        // delivers on the main thread).
-        let end = {
-            let state = state.clone();
-            let win = win.clone();
-            let app = win.app_handle().clone();
+        let win = win.clone();
+        let app = win.app_handle().clone();
+        install_mouse_monitors(
+            // Drag: recompute the frame from the fixed anchor and apply it.
             move || {
-                let (local, global) = {
-                    let mut s = state.borrow_mut();
-                    if s.ended {
-                        return;
-                    }
-                    s.ended = true;
-                    (s.local.take(), s.global.take())
-                };
+                let m = NSEvent::mouseLocation();
+                let frame = resize_frame(anchor, m);
                 unsafe {
-                    if let Some(tok) = local.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                    if let Some(tok) = global.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
+                    let ns_win: &NSWindow = &*ns_win_ptr.cast();
+                    ns_win.setFrame_display(frame, true);
                 }
-                // Notify JS the resize ended so it always resets the cursor
-                // override and __LUNA_NATIVE_RESIZING__ — the webview never sees a
-                // pointerup when the button is released outside the window.
+            },
+            // Up: notify JS the resize ended so it always resets the cursor
+            // override and __LUNA_NATIVE_RESIZING__ — the webview never sees a
+            // pointerup when the button is released outside the window. Then
+            // persist layout.
+            move || {
                 let _ = win.emit("luna-resize-ended", ());
                 write_panel_layout(&app);
-            }
-        };
-
-        // Local monitor: every LeftMouseDragged / LeftMouseUp delivered to our
-        // app. On up (or no left button pressed) → end; else apply the frame.
-        // Returns the event unchanged (does NOT consume it).
-        let local_block = {
-            let end = end.clone();
-            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-                let ev = unsafe { event.as_ref() };
-                let up = ev.r#type() == NSEventType::LeftMouseUp
-                    || NSEvent::pressedMouseButtons() & 1 == 0;
-                if up {
-                    end();
-                } else {
-                    let m: CGPoint = NSEvent::mouseLocation();
-                    let frame = resize_frame(anchor, m);
-                    unsafe {
-                        let ns_win: &NSWindow = &*ns_win_ptr.cast();
-                        ns_win.setFrame_display(frame, true);
-                    }
-                }
-                event.as_ptr()
-            })
-        };
-
-        // Global monitor: LeftMouseUp delivered to ANOTHER app (the local
-        // monitor never sees these). Just end — keeps the monitors from getting
-        // stuck if the mouse is released over a different window.
-        let global_block = {
-            let end = end.clone();
-            block2::RcBlock::new(move |_event: NonNull<NSEvent>| {
-                end();
-            })
-        };
-
-        unsafe {
-            let local: Option<Retained<AnyObject>> =
-                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
-                    &local_block,
-                );
-            let global: Option<Retained<AnyObject>> =
-                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseUp,
-                    &global_block,
-                );
-            let mut s = state.borrow_mut();
-            s.local = local;
-            s.global = global;
-        }
+            },
+            false,
+        );
 
         Ok(())
     })
@@ -1649,15 +1688,113 @@ pub(crate) fn begin_native_resize(_window: tauri::WebviewWindow, _direction: Str
 //
 // No IPC from JS on the hot path. No modal event loop. Cocoa screen coords.
 
-/// Shared monitor tokens for one redock-drag gesture (main thread only).
+/// Throttle for `redock_preview_emitter`: coarse deltas keep JS sticky-insert
+/// + FLIP owning the feel instead of flooding the owner with sub-pixel
+/// yRatio churn.
 #[cfg(target_os = "macos")]
-struct RedockMonitors {
-    local: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
-    global: Option<objc2::rc::Retained<objc2::runtime::AnyObject>>,
-    ended: bool,
+struct RedockThrottle {
     last_over: bool,
     last_prox: f64,
     last_y: f64,
+}
+
+/// Build the shared per-drag preview emitter for the redock strip gestures
+/// (`begin_redock_drag` and `begin_native_pullout_drag`): throttled
+/// `redock-preview` to the owner + `redock-self-preview` to the floater, fed
+/// by each gesture's own Cocoa geometry step. `from_label` is the dragged
+/// window's own label.
+#[cfg(target_os = "macos")]
+fn redock_preview_emitter(
+    app: tauri::AppHandle,
+    floater: tauri::WebviewWindow,
+    owner_label: String,
+    thread_id: String,
+    from_label: String,
+    title: String,
+) -> impl Fn(bool, f64, f64) + Clone {
+    let throttle = std::rc::Rc::new(std::cell::RefCell::new(RedockThrottle {
+        last_over: false,
+        last_prox: -1.0,
+        last_y: -1.0,
+    }));
+    move |over: bool, proximity: f64, y_ratio: f64| {
+        {
+            let mut s = throttle.borrow_mut();
+            // Coarser thresholds: JS sticky-insert + FLIP own the feel;
+            // avoid flooding the owner with sub-pixel yRatio churn.
+            let prox_delta = (proximity - s.last_prox).abs();
+            let y_delta = (y_ratio - s.last_y).abs();
+            let changed = over != s.last_over || prox_delta > 0.06 || y_delta > 0.04;
+            if !changed && s.last_prox >= 0.0 {
+                return;
+            }
+            s.last_over = over;
+            s.last_prox = proximity;
+            s.last_y = y_ratio;
+        }
+        let _ = app.emit_to(
+            tauri::EventTarget::labeled(&owner_label),
+            "redock-preview",
+            serde_json::json!({
+                "active": true,
+                "over": over,
+                "proximity": proximity,
+                "yRatio": y_ratio,
+                "threadId": thread_id,
+                "title": title,
+                "from": from_label,
+            }),
+        );
+        let _ = floater.emit(
+            "redock-self-preview",
+            serde_json::json!({
+                "active": true,
+                "over": over,
+                "proximity": proximity,
+            }),
+        );
+    }
+}
+
+/// Build the shared gesture-end settle emitter for the redock strip gestures:
+/// clears the preview chrome on both windows, then emits `redock-drag-ended`
+/// to the floater — the owner session still owns the pointerUp outcome; the
+/// floater emit is for path parity (title-bar redock listeners). `pullout`
+/// marks pull-out drags (`"pullout": true` on the ended payload).
+#[cfg(target_os = "macos")]
+fn redock_end_emitter(
+    app: tauri::AppHandle,
+    floater: tauri::WebviewWindow,
+    owner_label: String,
+    thread_id: String,
+    from_label: String,
+    pullout: bool,
+) -> impl Fn(bool, f64) + Clone {
+    move |over: bool, y_ratio: f64| {
+        let _ = app.emit_to(
+            tauri::EventTarget::labeled(&owner_label),
+            "redock-preview",
+            serde_json::json!({
+                "active": false,
+                "threadId": thread_id,
+                "from": from_label,
+            }),
+        );
+        let _ = floater.emit(
+            "redock-self-preview",
+            serde_json::json!({ "active": false, "over": false, "proximity": 0.0 }),
+        );
+        let mut payload = serde_json::json!({
+            "over": over,
+            "yRatio": y_ratio,
+            "threadId": thread_id,
+            "ownerLabel": owner_label,
+        });
+        if pullout {
+            payload["pullout"] = serde_json::json!(true);
+        }
+        let _ = floater.emit("redock-drag-ended", payload);
+    }
 }
 
 /// Default strip band when JS does not report live sidebar width (pt).
@@ -1715,7 +1852,7 @@ unsafe fn redock_hit_cocoa(
         strip,
         of.size.height + 2.0 * magnet,
     );
-    let proximity = redock_proximity(ccx, of.origin.x, strip, of.size.width);
+    let proximity = redock_proximity(ccx, of.origin.x, strip);
     // Map mouse into the list band (webview top → list top/height, Cocoa y up).
     let owner_top = of.origin.y + of.size.height;
     let top_inset = if strip_top_inset.is_finite() && strip_top_inset >= 0.0 {
@@ -1759,7 +1896,7 @@ pub(crate) fn begin_redock_drag(
         return Ok(());
     }
     let caller_label = window.label().to_string();
-    if !is_closable_widget_label(&caller_label) || owner_label == caller_label {
+    if !is_dock_label(&caller_label) || owner_label == caller_label {
         return Ok(());
     }
     let strip_w = strip_width
@@ -1773,12 +1910,7 @@ pub(crate) fn begin_redock_drag(
         .unwrap_or(0.0);
 
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2::rc::Retained;
-        use objc2::runtime::AnyObject;
-        use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
-        use std::cell::RefCell;
-        use std::ptr::NonNull;
-        use std::rc::Rc;
+        use objc2_app_kit::NSWindow;
 
         let floater_ptr = win.ns_window().map_err(|e| e.to_string())?;
         let app = win.app_handle().clone();
@@ -1788,164 +1920,48 @@ pub(crate) fn begin_redock_drag(
         };
         let owner_ptr = owner.ns_window().map_err(|e| e.to_string())?;
 
-        let state = Rc::new(RefCell::new(RedockMonitors {
-            local: None,
-            global: None,
-            ended: false,
-            last_over: false,
-            last_prox: -1.0,
-            last_y: -1.0,
-        }));
-
         let title = title.unwrap_or_default();
 
+        // This gesture's distinct geometry step: the Cocoa strip hit probe.
+        let hit = move || unsafe {
+            let floater: &NSWindow = &*floater_ptr.cast();
+            let owner_w: &NSWindow = &*owner_ptr.cast();
+            redock_hit_cocoa(floater, owner_w, strip_w, strip_top, strip_h)
+        };
+
         // Emit throttled previews while the native drag is in flight.
+        let preview = redock_preview_emitter(
+            app.clone(),
+            win.clone(),
+            owner_label.clone(),
+            thread_id.clone(),
+            caller_label.clone(),
+            title,
+        );
         let tick = {
-            let owner_label = owner_label.clone();
-            let thread_id = thread_id.clone();
-            let caller_label = caller_label.clone();
-            let title = title.clone();
-            let app = app.clone();
-            let win = win.clone();
-            let state = state.clone();
+            let hit = hit.clone();
             move || {
-                let (over, proximity, y_ratio) = unsafe {
-                    let floater: &NSWindow = &*floater_ptr.cast();
-                    let owner_w: &NSWindow = &*owner_ptr.cast();
-                    redock_hit_cocoa(floater, owner_w, strip_w, strip_top, strip_h)
-                };
-                {
-                    let mut s = state.borrow_mut();
-                    // Coarser thresholds: JS sticky-insert + FLIP own the feel;
-                    // avoid flooding the owner with sub-pixel yRatio churn.
-                    let prox_delta = (proximity - s.last_prox).abs();
-                    let y_delta = (y_ratio - s.last_y).abs();
-                    let changed = over != s.last_over || prox_delta > 0.06 || y_delta > 0.04;
-                    if !changed && s.last_prox >= 0.0 {
-                        return;
-                    }
-                    s.last_over = over;
-                    s.last_prox = proximity;
-                    s.last_y = y_ratio;
-                }
-                let _ = app.emit_to(
-                    tauri::EventTarget::labeled(&owner_label),
-                    "redock-preview",
-                    serde_json::json!({
-                        "active": true,
-                        "over": over,
-                        "proximity": proximity,
-                        "yRatio": y_ratio,
-                        "threadId": thread_id,
-                        "title": title,
-                        "from": caller_label,
-                    }),
-                );
-                let _ = win.emit(
-                    "redock-self-preview",
-                    serde_json::json!({
-                        "active": true,
-                        "over": over,
-                        "proximity": proximity,
-                    }),
-                );
+                let (over, proximity, y_ratio) = hit();
+                preview(over, proximity, y_ratio);
+            }
+        };
+        let end_settle = redock_end_emitter(
+            app.clone(),
+            win.clone(),
+            owner_label.clone(),
+            thread_id.clone(),
+            caller_label.clone(),
+            false,
+        );
+        let on_up = {
+            let hit = hit.clone();
+            move || {
+                let (over, _prox, y_ratio) = hit();
+                end_settle(over, y_ratio);
             }
         };
 
-        let end = {
-            let state = state.clone();
-            let app = app.clone();
-            let win = win.clone();
-            let owner_label = owner_label.clone();
-            let thread_id = thread_id.clone();
-            let caller_label = caller_label.clone();
-            move || {
-                let (local, global) = {
-                    let mut s = state.borrow_mut();
-                    if s.ended {
-                        return;
-                    }
-                    s.ended = true;
-                    (s.local.take(), s.global.take())
-                };
-                unsafe {
-                    if let Some(tok) = local.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                    if let Some(tok) = global.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                }
-                let (over, _prox, y_ratio) = unsafe {
-                    let floater: &NSWindow = &*floater_ptr.cast();
-                    let owner_w: &NSWindow = &*owner_ptr.cast();
-                    redock_hit_cocoa(floater, owner_w, strip_w, strip_top, strip_h)
-                };
-                let _ = app.emit_to(
-                    tauri::EventTarget::labeled(&owner_label),
-                    "redock-preview",
-                    serde_json::json!({
-                        "active": false,
-                        "threadId": thread_id,
-                        "from": caller_label,
-                    }),
-                );
-                let _ = win.emit(
-                    "redock-self-preview",
-                    serde_json::json!({ "active": false, "over": false, "proximity": 0.0 }),
-                );
-                let _ = win.emit(
-                    "redock-drag-ended",
-                    serde_json::json!({
-                        "over": over,
-                        "yRatio": y_ratio,
-                        "threadId": thread_id,
-                        "ownerLabel": owner_label,
-                    }),
-                );
-            }
-        };
-
-        let local_block = {
-            let end = end.clone();
-            let tick = tick.clone();
-            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-                let ev = unsafe { event.as_ref() };
-                let up = ev.r#type() == NSEventType::LeftMouseUp
-                    || NSEvent::pressedMouseButtons() & 1 == 0;
-                if up {
-                    end();
-                } else {
-                    tick();
-                }
-                event.as_ptr()
-            })
-        };
-
-        let global_block = {
-            let end = end.clone();
-            block2::RcBlock::new(move |_event: NonNull<NSEvent>| {
-                end();
-            })
-        };
-
-        unsafe {
-            let local: Option<Retained<AnyObject>> =
-                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
-                    &local_block,
-                );
-            let global: Option<Retained<AnyObject>> =
-                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseUp,
-                    &global_block,
-                );
-            let mut s = state.borrow_mut();
-            s.local = local;
-            s.global = global;
-        }
+        install_mouse_monitors(tick.clone(), on_up, false);
 
         tick();
         Ok(())
@@ -1999,7 +2015,7 @@ pub(crate) fn begin_native_pullout_drag(
     if thread_id.is_empty() {
         return Ok(());
     }
-    if !is_dock_label(&owner_label) || !is_closable_widget_label(&floater_label) {
+    if !is_dock_label(&owner_label) || !is_dock_label(&floater_label) {
         return Ok(());
     }
     if owner_label == floater_label {
@@ -2030,13 +2046,8 @@ pub(crate) fn begin_native_pullout_drag(
     let owner_label = owner_label.clone();
 
     with_appkit_main_thread(floater.clone(), move |win| {
-        use objc2::rc::Retained;
-        use objc2::runtime::AnyObject;
-        use objc2_app_kit::{NSEvent, NSEventMask, NSEventType, NSWindow};
+        use objc2_app_kit::{NSEvent, NSWindow};
         use objc2_core_foundation::{CGPoint, CGRect, CGSize};
-        use std::cell::RefCell;
-        use std::ptr::NonNull;
-        use std::rc::Rc;
 
         let floater_ptr = win.ns_window().map_err(|e| e.to_string())?;
         let app = win.app_handle().clone();
@@ -2048,204 +2059,75 @@ pub(crate) fn begin_native_pullout_drag(
 
         // Place the window so the grab point is under the cursor NOW (Cocoa),
         // fixing any LogicalPosition vs NSWindow.frame mismatch from open_widget.
-        let place_under_cursor = {
-            let floater_ptr = floater_ptr;
-            move || unsafe {
-                let floater_w: &NSWindow = &*floater_ptr.cast();
-                let f = floater_w.frame();
-                let win_w = f.size.width;
-                let win_h = f.size.height;
-                let m = NSEvent::mouseLocation();
-                // top-left grab → Cocoa bottom-left origin:
-                // origin.x = mouse.x - grab_x
-                // origin.y = mouse.y - (height - grab_y)
-                let origin = CGPoint {
-                    x: m.x - grab_x,
-                    y: m.y - (win_h - grab_y),
-                };
-                let frame = CGRect {
-                    origin,
-                    size: CGSize {
-                        width: win_w,
-                        height: win_h,
-                    },
-                };
-                floater_w.setFrame_display(frame, true);
-            }
+        let place_under_cursor = move || unsafe {
+            let floater_w: &NSWindow = &*floater_ptr.cast();
+            let f = floater_w.frame();
+            let win_w = f.size.width;
+            let win_h = f.size.height;
+            let m = NSEvent::mouseLocation();
+            // top-left grab → Cocoa bottom-left origin:
+            // origin.x = mouse.x - grab_x
+            // origin.y = mouse.y - (height - grab_y)
+            let origin = CGPoint {
+                x: m.x - grab_x,
+                y: m.y - (win_h - grab_y),
+            };
+            let frame = CGRect {
+                origin,
+                size: CGSize {
+                    width: win_w,
+                    height: win_h,
+                },
+            };
+            floater_w.setFrame_display(frame, true);
         };
         place_under_cursor();
 
-        let state = Rc::new(RefCell::new(RedockMonitors {
-            local: None,
-            global: None,
-            ended: false,
-            last_over: false,
-            last_prox: -1.0,
-            last_y: -1.0,
-        }));
+        // This gesture's distinct geometry step: place under the cursor, then
+        // the same Cocoa strip hit probe as begin_redock_drag.
+        let hit = move || unsafe {
+            let floater_w: &NSWindow = &*floater_ptr.cast();
+            let owner_w: &NSWindow = &*owner_ptr.cast();
+            redock_hit_cocoa(floater_w, owner_w, strip_w, strip_top, strip_h)
+        };
 
+        let preview = redock_preview_emitter(
+            app.clone(),
+            win.clone(),
+            owner_label.clone(),
+            thread_id.clone(),
+            floater_label.clone(),
+            title,
+        );
         let move_tick = {
-            let floater_ptr = floater_ptr;
-            let owner_ptr = owner_ptr;
-            let owner_label = owner_label.clone();
-            let thread_id = thread_id.clone();
-            let floater_label = floater_label.clone();
-            let title = title.clone();
-            let app = app.clone();
-            let win = win.clone();
-            let state = state.clone();
-            let place_under_cursor = place_under_cursor;
+            let hit = hit.clone();
+            let place_under_cursor = place_under_cursor.clone();
             move || {
                 place_under_cursor();
-                let (over, proximity, y_ratio) = unsafe {
-                    let floater_w: &NSWindow = &*floater_ptr.cast();
-                    let owner_w: &NSWindow = &*owner_ptr.cast();
-                    redock_hit_cocoa(floater_w, owner_w, strip_w, strip_top, strip_h)
-                };
-                {
-                    let mut s = state.borrow_mut();
-                    // Match begin_redock_drag: coarser so sticky insert + FLIP own feel.
-                    let prox_delta = (proximity - s.last_prox).abs();
-                    let y_delta = (y_ratio - s.last_y).abs();
-                    let changed = over != s.last_over || prox_delta > 0.06 || y_delta > 0.04;
-                    if !changed && s.last_prox >= 0.0 {
-                        return;
-                    }
-                    s.last_over = over;
-                    s.last_prox = proximity;
-                    s.last_y = y_ratio;
-                }
-                let _ = app.emit_to(
-                    tauri::EventTarget::labeled(&owner_label),
-                    "redock-preview",
-                    serde_json::json!({
-                        "active": true,
-                        "over": over,
-                        "proximity": proximity,
-                        "yRatio": y_ratio,
-                        "threadId": thread_id,
-                        "title": title,
-                        "from": floater_label,
-                    }),
-                );
-                let _ = win.emit(
-                    "redock-self-preview",
-                    serde_json::json!({
-                        "active": true,
-                        "over": over,
-                        "proximity": proximity,
-                    }),
-                );
+                let (over, proximity, y_ratio) = hit();
+                preview(over, proximity, y_ratio);
             }
         };
-
-        let end = {
-            let state = state.clone();
-            let app = app.clone();
-            let win = win.clone();
-            let owner_label = owner_label.clone();
-            let thread_id = thread_id.clone();
-            let floater_label = floater_label.clone();
+        let end_settle = redock_end_emitter(
+            app.clone(),
+            win.clone(),
+            owner_label.clone(),
+            thread_id.clone(),
+            floater_label.clone(),
+            true,
+        );
+        let on_up = {
+            let hit = hit.clone();
             move || {
-                let (local, global) = {
-                    let mut s = state.borrow_mut();
-                    if s.ended {
-                        return;
-                    }
-                    s.ended = true;
-                    (s.local.take(), s.global.take())
-                };
-                unsafe {
-                    if let Some(tok) = local.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                    if let Some(tok) = global.as_ref() {
-                        let obj: &AnyObject = tok;
-                        NSEvent::removeMonitor(obj);
-                    }
-                }
-                let (over, _prox, y_ratio) = unsafe {
-                    let floater_w: &NSWindow = &*floater_ptr.cast();
-                    let owner_w: &NSWindow = &*owner_ptr.cast();
-                    redock_hit_cocoa(floater_w, owner_w, strip_w, strip_top, strip_h)
-                };
-                let _ = app.emit_to(
-                    tauri::EventTarget::labeled(&owner_label),
-                    "redock-preview",
-                    serde_json::json!({
-                        "active": false,
-                        "threadId": thread_id,
-                        "from": floater_label,
-                    }),
-                );
-                let _ = win.emit(
-                    "redock-self-preview",
-                    serde_json::json!({ "active": false, "over": false, "proximity": 0.0 }),
-                );
-                // Owner session still owns pointerUp outcome; emit for floater
-                // path parity (title-bar redock listeners).
-                let _ = win.emit(
-                    "redock-drag-ended",
-                    serde_json::json!({
-                        "over": over,
-                        "yRatio": y_ratio,
-                        "threadId": thread_id,
-                        "ownerLabel": owner_label,
-                        "pullout": true,
-                    }),
-                );
+                let (over, _prox, y_ratio) = hit();
+                end_settle(over, y_ratio);
             }
         };
 
-        let local_block = {
-            let end = end.clone();
-            let move_tick = move_tick.clone();
-            block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-                let ev = unsafe { event.as_ref() };
-                let up = ev.r#type() == NSEventType::LeftMouseUp
-                    || NSEvent::pressedMouseButtons() & 1 == 0;
-                if up {
-                    end();
-                } else {
-                    move_tick();
-                }
-                event.as_ptr()
-            })
-        };
-
-        // Global: when the cursor is outside every app window the local monitor
-        // may starve — still follow the pointer and still end on mouse-up.
-        let global_block = {
-            let end = end.clone();
-            let move_tick = move_tick.clone();
-            block2::RcBlock::new(move |event: NonNull<NSEvent>| {
-                let ev = unsafe { event.as_ref() };
-                let up = ev.r#type() == NSEventType::LeftMouseUp
-                    || NSEvent::pressedMouseButtons() & 1 == 0;
-                if up {
-                    end();
-                } else {
-                    move_tick();
-                }
-            })
-        };
-
-        unsafe {
-            let local: Option<Retained<AnyObject>> =
-                NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
-                    &local_block,
-                );
-            let global: Option<Retained<AnyObject>> =
-                NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
-                    NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp,
-                    &global_block,
-                );
-            let mut s = state.borrow_mut();
-            s.local = local;
-            s.global = global;
-        }
+        // Global drag tracking: when the cursor is outside every app window
+        // the local monitor may starve — still follow the pointer and still
+        // end on mouse-up.
+        install_mouse_monitors(move_tick.clone(), on_up, true);
 
         move_tick();
         Ok(())
@@ -2286,7 +2168,6 @@ mod tests {
             upd.page.starts_with("panel.html?type="),
             "system kinds resolve only to shipped pages"
         );
-        assert!(upd.singleton, "settings panels are singletons");
     }
 
     #[test]
@@ -2416,8 +2297,8 @@ mod tests {
         assert!(is_dock_label("panel-settings-updates"));
         assert!(!is_dock_label("main"));
         assert!(!is_dock_label("settings"));
-        assert!(is_closable_widget_label("panel-settings-updates"));
-        assert!(!is_closable_widget_label("main"));
+        assert!(is_dock_label("panel-settings-updates"));
+        assert!(!is_dock_label("main"));
     }
 
     // ── the deck: widget window label + query encoding (PRD W2) ──────────────
@@ -2472,11 +2353,11 @@ mod tests {
     fn close_widget_refuses_to_close_non_widget_windows() {
         // The per-window boundary the widgets capability documents: a widget may
         // only close widget-* windows, NEVER the main chat window (review G3).
-        assert!(is_closable_widget_label("widget-deadbeef"));
-        assert!(is_closable_widget_label(&widget_label("anything")));
-        assert!(!is_closable_widget_label("main"));
-        assert!(!is_closable_widget_label("setup"));
-        assert!(!is_closable_widget_label(""));
+        assert!(is_dock_label("widget-deadbeef"));
+        assert!(is_dock_label(&widget_label("anything")));
+        assert!(!is_dock_label("main"));
+        assert!(!is_dock_label("setup"));
+        assert!(!is_dock_label(""));
     }
 
     // ── build_redock_thread_payload (plan Step 3: view mode rides redock) ───
