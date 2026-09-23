@@ -30,8 +30,25 @@ export const isEffort = (v: unknown): v is EffortLevel =>
  * Effort-validity matrix — returns the subset of effort levels valid for the
  * given model id. An empty array means the model takes no effort parameter.
  *
- * Pattern rules (lowest-specificity first — SDK capability evidence in
- * @anthropic-ai/claude-agent-sdk@0.3.202/0.3.219 sdk.mjs model catalog):
+ * CAPABILITY EVIDENCE. Through SDK 0.3.219 the model catalog was a readable
+ * table in sdk.mjs; from 0.3.257 onward it moved into the native binary and can
+ * no longer be grepped. The current source of truth is the SDK's own
+ * `query().supportedModels()`. Probed against 0.3.280 on 2026-09-23:
+ *
+ *   default   → claude-opus-5-5[1m]  "Default (recommended)"
+ *               supportsEffort: true, levels [low, medium, high, xhigh, max]
+ *   opus[1m]  → claude-opus-5-5[1m]  same five levels
+ *   fable-5-1 → claude-fable-5-1     same five levels
+ *   sonnet    → claude-sonnet-5      same five levels
+ *   haiku     → claude-haiku-4-5-*   no effort field at all
+ *
+ * That probe confirms Opus 5.5 is xhigh-capable, so it correctly inherits the
+ * full matrix (and ultracode eligibility) from the /opus-5/ branch below even
+ * though its DEFAULT effort is deliberately "medium" — see
+ * defaultEffortForModel. Re-run the probe when adding a model rather than
+ * inferring capability from an id's shape.
+ *
+ * Pattern rules (lowest-specificity first):
  *   - Haiku / Mythos / Opus 4.0–4.5 → no effort (no effort capability in SDK).
  *   - Fable / Opus 4.7 / Opus 4.8 / Opus 5 / Sonnet 5 → all five levels
  *     including xhigh (SDK: xhigh_effort capability present for these models).
@@ -73,6 +90,16 @@ export const effortsForModel = (id: string): ReadonlyArray<EffortLevel> => {
  */
 export const defaultEffortForModel = (id: string): EffortLevel | undefined => {
   const m = id.toLowerCase()
+  // Opus 5.5 is the recommended default model, and it defaults to "medium"
+  // rather than "high": it is the strongest model Luna offers, so the
+  // out-of-the-box level is deliberately one notch below the family default to
+  // keep the default thread's cost and latency reasonable. The operator can
+  // still raise it per-thread from the effort dropdown.
+  //
+  // ORDER MATTERS: "opus-5" is a SUBSTRING of "claude-opus-5-5", so this branch
+  // MUST precede the generic /opus-5/ branch below or 5.5 would silently
+  // inherit "high". A test pins this exact precedence.
+  if (/opus-5-5|opus-5\.5/.test(m)) return "medium"
   // SDK: claude-fable-5, claude-opus-5, and claude-sonnet-5 all have default_effort: "high"
   if (/fable|opus-5|sonnet-5/.test(m)) return "high"
   return undefined

@@ -2257,12 +2257,12 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
   // "omitted model = broker default lane". ChatService must never pre-stamp a
   // concrete model, or the SDK adapter would acquire that model's lane instead
   // of the broker's "default" lane, bypassing any configured default overflow
-  // chain and breaking deployments with no Anthropic account. The Sonnet 5
+  // chain and breaking deployments with no Anthropic account. The Opus 5.5
   // preference lives in the adapter's default-lane resolution (see
   // adapter-sdk provider-routing.sim.test.ts), gated on Anthropic actually
   // being available.
   it(
-    "createThread leaves an omitted model on the broker default lane (no pre-stamp)",
+    "createThread leaves an omitted model on the broker default lane (no pre-stamp) but still applies that model's default effort",
     async () => {
       let capturedOptions: Record<string, unknown> | undefined
       const fakeLayer = SDKClient.fake((p) => {
@@ -2289,16 +2289,29 @@ describe("ChatService — ThreadRegistry-backed recovery", () => {
       )
 
       // No model reaches the SDK options — the adapter resolves the default
-      // lane per session build (chain > Sonnet-5-on-Anthropic > provider).
+      // lane per session build (chain > Opus-5.5-on-Anthropic > provider), so
+      // the thread is NOT pinned to a model and follows the lane on every
+      // recovery. That half of the original contract is unchanged.
       expect(capturedOptions?.["model"]).toBeUndefined()
-      expect(capturedOptions?.["effort"]).toBeUndefined()
-      // Nothing persisted either: the thread keeps resolving through the
-      // default lane on every recovery instead of being pinned.
       expect(row?.model ?? null).toBeNull()
-      expect(row?.effort ?? null).toBeNull()
       const sdkOpts = storedOptions?.sdkOptions as Record<string, unknown> | undefined
       expect(sdkOpts?.["model"]).toBeUndefined()
-      expect(sdkOpts?.["effort"]).toBeUndefined()
+
+      // EFFORT, by contrast, IS now resolved and pinned. Previously a
+      // model-less thread carried no effort at all, which meant the default
+      // model's own default effort never applied to the most common thread
+      // there is. The effort default is therefore resolved against the same
+      // daily-driver model the adapter will pick (Opus 5.5 → "medium").
+      //
+      // Deliberate asymmetry: the MODEL stays unpinned so the lane keeps
+      // resolving it, while the EFFORT is pinned at creation. The cost is that
+      // a thread created today keeps "medium" even if the daily-driver default
+      // is later repointed at a model whose default differs; the benefit is
+      // that effort is a visible per-thread control and a thread's level does
+      // not silently change under the operator between restarts.
+      expect(capturedOptions?.["effort"]).toBe("medium")
+      expect(row?.effort).toBe("medium")
+      expect(sdkOpts?.["effort"]).toBe("medium")
     },
     { timeout: 10_000 },
   )

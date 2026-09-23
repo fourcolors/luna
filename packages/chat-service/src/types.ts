@@ -208,7 +208,7 @@ export interface CreateThreadOptions {
   /** Model for the thread's SDK session. Omitted ⇒ the broker's "default"
    *  lane, resolved per session build by the SDK adapter: a configured default
    *  overflow chain wins; a native-Anthropic default lane prefers the
-   *  daily-driver default (`claude-sonnet-5`); a non-Anthropic default lane
+   *  daily-driver default (`claude-opus-5-5`); a non-Anthropic default lane
    *  leaves the model to the provider. ChatService never stamps a model, so
    *  restart-recovery threads with no persisted model keep resolving through
    *  the default lane instead of being pinned to whatever it prefers today. */

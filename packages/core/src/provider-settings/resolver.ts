@@ -32,13 +32,20 @@ import type { ProviderSettingsPayload, RoleName } from "./types.js"
  * v1 default model per role when the store has no binding for it.
  *
  * advisor      → claude-opus-4-8    (most capable)
- * daily-driver → claude-sonnet-5    (balanced default)
+ * daily-driver → claude-opus-5-5    (recommended default)
  * wake         → claude-sonnet-4-6  (cheapest capable)
  * dream        → claude-haiku-4-5   (cheapest)
+ *
+ * NOTE: `daily-driver` is THE server-side default model. A thread created with
+ * no explicit model resolves through here (adapter.ts's
+ * DEFAULT_LANE_PREFERRED_MODEL), so this constant — not chat-server's
+ * BASE_MODELS[0], which only orders the UI list — is what actually runs. The
+ * two are kept pointing at the same id deliberately; if they drift, the UI
+ * advertises one model while the server runs another.
  */
 const DEFAULT_ROLE_MODELS: Record<RoleName, string> = {
   advisor: "claude-opus-4-8",
-  "daily-driver": "claude-sonnet-5",
+  "daily-driver": "claude-opus-5-5",
   wake: "claude-sonnet-4-6",
   dream: "claude-haiku-4-5",
 }

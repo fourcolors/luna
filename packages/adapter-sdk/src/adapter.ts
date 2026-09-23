@@ -76,7 +76,7 @@ const DEFAULT_IDLE_TIMEOUT_MS = 120_000
 
 /**
  * Model the "default" lane PREFERS when it lands on a native Anthropic
- * account (#253): the daily-driver role default (claude-sonnet-5). Resolved
+ * account (#253): the daily-driver role default (claude-opus-5-5). Resolved
  * through the same table chat-server's role priming uses so the two cannot
  * drift. This is a default-lane RESOLUTION preference, not a pre-stamp:
  * threads with no model still acquire the broker's "default" lane, so a

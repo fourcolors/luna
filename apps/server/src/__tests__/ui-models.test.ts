@@ -169,10 +169,12 @@ describe("buildAvailableModels", () => {
 
   it("returns the built-in base list when LUNA_UI_MODELS is absent", () => {
     const result = buildAvailableModels({})
-    // Order is: Sonnet 5 (default), Fable 5, Fable 5.1, Mythos 5, Opus 5, Opus 4.8,
-    // Sonnet 4.6, Haiku 4.5. Mythos 5 and Haiku 4.5 take no effort param.
+    // Order is: Opus 5.5 (default), Sonnet 5, Fable 5, Fable 5.1, Mythos 5,
+    // Opus 5, Opus 4.8, Sonnet 4.6, Haiku 4.5. Mythos 5 and Haiku 4.5 take no
+    // effort param. Opus 5.5 is the only model defaulting to "medium".
     expect(result).toEqual([
-      { id: "claude-sonnet-5",   label: "Claude Sonnet 5 — balanced default",      efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
+      { id: "claude-opus-5-5",   label: "Claude Opus 5.5 — recommended default",   efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "medium" },
+      { id: "claude-sonnet-5",   label: "Claude Sonnet 5 — balanced",              efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-fable-5",    label: "Fable 5 (1M context, xhigh reasoning)",   efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-fable-5-1",  label: "Fable 5.1 (1M context, xhigh reasoning)", efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-mythos-5",   label: "Mythos 5 (1M context, first-party only)", efforts: [] },
@@ -189,7 +191,7 @@ describe("buildAvailableModels", () => {
     })
     // Extra is first (recommended default), base models follow.
     expect(result[0]).toEqual({ id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", efforts: [] })
-    expect(result[1]).toEqual({ id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced default", efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" })
+    expect(result[1]).toEqual({ id: "claude-opus-5-5", label: "Claude Opus 5.5 — recommended default", efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "medium" })
   })
 
   it("dedupes by id — extra overrides base model of same id (keeps extra's position and label)", () => {
@@ -215,7 +217,7 @@ describe("buildAvailableModels", () => {
     const result = buildAvailableModels({ LUNA_UI_MODELS: "   " })
     // Falls back to the base list.
     expect(result.length).toBeGreaterThan(0)
-    expect(result[0]?.id).toBe("claude-sonnet-5")
+    expect(result[0]?.id).toBe("claude-opus-5-5")
   })
 
   it("preserves multiple extras in declaration order before base models", () => {
@@ -225,7 +227,7 @@ describe("buildAvailableModels", () => {
     expect(result[0]?.id).toBe("extra-a")
     expect(result[1]?.id).toBe("extra-b")
     // Base models follow after the extras.
-    expect(result[2]?.id).toBe("claude-sonnet-5")
+    expect(result[2]?.id).toBe("claude-opus-5-5")
   })
 
   it("attaches effort matrix to extras via effortsForModel", () => {
@@ -237,18 +239,39 @@ describe("buildAvailableModels", () => {
     expect(entry?.efforts).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"])
   })
 
-  it("advertises defaultEffort 'high' for the xhigh-reasoning Claude 5 models", () => {
+  it("advertises a defaultEffort for exactly the xhigh-reasoning Claude 5 models", () => {
     const result = buildAvailableModels({})
-    // Per the SDK catalog, Fable 5 / Fable 5.1 / Opus 5 / Sonnet 5 all carry
-    // default_effort "high"; every other base model has no opinion.
+    // Fable 5 / Fable 5.1 / Opus 5 / Sonnet 5 carry default_effort "high".
+    // Opus 5.5 is the deliberate exception: it is the recommended default
+    // model, so it starts one notch lower at "medium" to keep the default
+    // thread's cost and latency reasonable. Every other base model has no
+    // opinion and advertises no defaultEffort at all.
     const withDefault = result.filter((m) => m.defaultEffort !== undefined)
     expect(withDefault.map((m) => m.id).sort()).toEqual([
       "claude-fable-5",
       "claude-fable-5-1",
       "claude-opus-5",
+      "claude-opus-5-5",
       "claude-sonnet-5",
     ])
-    for (const m of withDefault) expect(m.defaultEffort).toBe("high")
+    for (const m of withDefault) {
+      expect(m.defaultEffort).toBe(m.id === "claude-opus-5-5" ? "medium" : "high")
+    }
+  })
+
+  // Regression pin for a substring-precedence trap: "opus-5" is a SUBSTRING of
+  // "claude-opus-5-5", so the generic /opus-5/ branch in defaultEffortForModel
+  // matches 5.5 too. If the 5.5 branch is ever reordered after it, 5.5 would
+  // silently inherit "high" and this test is the thing that catches it.
+  it("Opus 5.5 does not inherit Opus 5's 'high' default via substring match", () => {
+    const result = buildAvailableModels({})
+    const opus55 = result.find((m) => m.id === "claude-opus-5-5")
+    const opus5 = result.find((m) => m.id === "claude-opus-5")
+    expect(opus55?.defaultEffort).toBe("medium")
+    expect(opus5?.defaultEffort).toBe("high")
+    // ...and 5.5 still gets the full xhigh-capable effort matrix from the same
+    // generic branch, so the narrower default did not cost it any capability.
+    expect(opus55?.efforts).toEqual(ALL_LEVELS_PLUS_ULTRACODE)
   })
 
   // Contract test rather than a catalog snapshot: this holds for ANY future

@@ -200,7 +200,11 @@ describe("resolveOverflowConfig", () => {
 describe("resolveRoleModel", () => {
   it("returns default when store is null", () => {
     expect(resolveRoleModel("advisor", null)).toBe("claude-opus-4-8")
-    expect(resolveRoleModel("daily-driver", null)).toBe("claude-sonnet-5")
+    // daily-driver is THE server-side default model for any thread created
+    // without an explicit one. It must stay in lockstep with chat-server's
+    // BASE_MODELS[0] and Moon's DEFAULT_ROLE_MODEL, or the UI advertises one
+    // model while the server runs another.
+    expect(resolveRoleModel("daily-driver", null)).toBe("claude-opus-5-5")
     expect(resolveRoleModel("wake", null)).toBe("claude-sonnet-4-6")
     expect(resolveRoleModel("dream", null)).toBe("claude-haiku-4-5")
   })

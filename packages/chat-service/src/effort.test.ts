@@ -141,8 +141,29 @@ describe("defaultEffortForModel — per-model default effort", () => {
     expect(defaultEffortForModel("claude-opus-5")).toBe("high")
   })
 
+  // Opus 5.5 is Luna's recommended default model, so it deliberately starts at
+  // "medium" rather than the Opus family's "high" — one notch down keeps the
+  // default thread's cost and latency reasonable without capping what the
+  // operator can select.
+  it("defaults Opus 5.5 to 'medium', not the family's 'high'", () => {
+    expect(defaultEffortForModel("claude-opus-5-5")).toBe("medium")
+  })
+
+  // PRECEDENCE PIN: "opus-5" is a SUBSTRING of "claude-opus-5-5", so the
+  // generic /opus-5/ branch also matches 5.5. The 5.5 branch only wins because
+  // it is ordered FIRST. Reorder them and this test goes red — which is the
+  // entire point of it.
+  it("Opus 5.5's 'medium' survives the substring overlap with Opus 5", () => {
+    expect(defaultEffortForModel("claude-opus-5-5")).not.toBe(
+      defaultEffortForModel("claude-opus-5"),
+    )
+    // The overlap is real, not hypothetical: the generic branch is what grants
+    // 5.5 its full effort matrix, so 5.5 must still be xhigh-capable.
+    expect(effortsForModel("claude-opus-5-5")).toEqual(EFFORT_LEVELS)
+  })
+
   it("returns a value that is always a member of the model's effort matrix", () => {
-    for (const id of ["claude-sonnet-5", "claude-fable-5", "claude-opus-5"]) {
+    for (const id of ["claude-sonnet-5", "claude-fable-5", "claude-opus-5", "claude-opus-5-5"]) {
       const dflt = defaultEffortForModel(id)
       expect(dflt).toBeDefined()
       expect(effortsForModel(id)).toContain(dflt!)
