@@ -86,8 +86,11 @@ other's edges:
 The snap graph is emergent geometry, never stored: a window is attached to
 whichever dock window it is flush against (edge gap `<= SNAP_FLUSH` with
 real perpendicular overlap). `layout.json` stores plain positions only; boot
-restore re-derives attachments (`windows::reattach_flushed_windows`), so a
-saved stack tows again with no schema change.
+restore runs the same settle a mouse-up would on every dock window
+(`windows::reattach_flushed_windows`), so a window restored inside the snap
+zone goes flush and attaches — no gutter hovering next to a neighbor — and
+a saved stack tows again with no schema change. Windows parked further out
+stay put and stay detached.
 
 One deliberate exception unchanged: the moon orb (window `main`) and any
 window being revealed by boot restore, expand-from-moon, or collapse-to-moon

@@ -2882,34 +2882,20 @@ pub(crate) fn reflush_snap_children(win: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn reflush_snap_children(_win: &tauri::WebviewWindow) {}
 
-/// Re-derive every attachment from restored geometry: each dock window
-/// flush against a neighbor becomes its AppKit child. Called once after the
-/// boot layout restore, so a saved stack tows again without any snap state
-/// in layout.json. Order-independent: cycles are refused by the ancestor
-/// walk inside set_snap_parent_ns.
+/// Re-derive every attachment from restored geometry — and TIDY it: each
+/// dock window runs the same settle a mouse-up would, so a window restored
+/// inside the snap zone (a seam's width from a neighbor) goes flush and
+/// attaches as an AppKit child instead of hovering a visible gutter away.
+/// Windows parked further out stay put and stay detached — the same
+/// geometry-derived truth a drop produces. Called once after the boot
+/// layout restore, so a saved stack tows again without any snap state in
+/// layout.json. Each settle reads live positions, so the pass converges;
+/// cycles are refused by the ancestor walk inside set_snap_parent_ns.
 #[cfg(target_os = "macos")]
 pub(crate) fn reattach_flushed_windows(app: &tauri::AppHandle) {
-    let rects = dock_rects(app, "");
     for (label, win) in app.webview_windows() {
-        if !is_dock_label(&label) {
-            continue;
-        }
-        let Some((x, y, w, h)) = window_logical_rect(&win) else {
-            continue;
-        };
-        let wr = SnapRect {
-            x: x as f64,
-            y: y as f64,
-            w: w as f64,
-            h: h as f64,
-        };
-        let others: Vec<(String, SnapRect)> = rects
-            .iter()
-            .filter(|(l, _)| *l != label)
-            .cloned()
-            .collect();
-        if flush_parent(wr, &others).is_some() {
-            attach_to_flush_neighbor(&win);
+        if is_dock_label(&label) {
+            settle_snap(&win);
         }
     }
 }
