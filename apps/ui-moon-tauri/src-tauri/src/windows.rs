@@ -216,6 +216,14 @@ pub(crate) fn is_dock_label(label: &str) -> bool {
     label.starts_with("widget-") || label.starts_with("panel-")
 }
 
+/// A chat window (panel-chat, or a parallel instance) is the snap cluster's
+/// hub: widgets dock onto a chat and tow with it, never the other way around.
+fn is_chat_label(label: &str) -> bool {
+    panel_label_to_kind_and_params(label)
+        .map(|(kind, _)| kind == "chat")
+        .unwrap_or(false)
+}
+
 /// ~/.luna/layout.json — positions of OPEN system panels (and nothing else:
 /// pin state for content widgets stays server-side; design doc Persistence).
 pub(crate) fn layout_path() -> Option<std::path::PathBuf> {
@@ -2226,6 +2234,13 @@ pub(crate) fn begin_native_pullout_drag(
 // ride along); a leaf grab peels off alone. A parent RESIZE re-flushes its
 // children on the Resized event so stacks never open a seam. Cycles are
 // refused by walking the candidate parent's NSWindow ancestor chain.
+//
+// Attachment direction is "dragged window becomes the child" — with one
+// exception: the chat is the cluster hub. When the CHAT settles onto a
+// neighbor, the neighbor docks under the chat instead, so a widget snapped
+// on any side always tows with the chat rather than being stranded the next
+// time the chat moves (a dragged child detaches; only a dragged parent
+// tows).
 
 /// Max edge gap (logical pt) that still snaps flush on release.
 const SNAP_GAP: f64 = 20.0;
@@ -2630,6 +2645,7 @@ fn attach_to_flush_neighbor(win: &tauri::WebviewWindow) {
     let Some(parent) = app.get_webview_window(&parent_label) else {
         return;
     };
+    let chat_is_win = is_chat_label(&label);
     let _ = with_appkit_main_thread(win.clone(), move |w| {
         use objc2_app_kit::NSWindow;
         let wp = w.ns_window().map_err(|e| e.to_string())?;
@@ -2637,7 +2653,13 @@ fn attach_to_flush_neighbor(win: &tauri::WebviewWindow) {
         unsafe {
             let cns: &NSWindow = &*wp.cast();
             let pns: &NSWindow = &*pp.cast();
-            set_snap_parent_ns(cns, Some(pns));
+            if chat_is_win {
+                // The chat is the hub: the flush neighbor docks under it so
+                // the next chat drag tows the neighbor.
+                set_snap_parent_ns(pns, Some(cns));
+            } else {
+                set_snap_parent_ns(cns, Some(pns));
+            }
         }
         Ok(())
     });
@@ -2731,7 +2753,17 @@ fn settle_snap(win: &tauri::WebviewWindow) {
         None => None,
     };
     unsafe {
-        set_snap_parent_ns(win_ns, parent);
+        match parent {
+            // The chat is the hub: whatever it settles onto docks UNDER the
+            // chat, so the next chat drag tows that widget. Without this the
+            // chat would attach as the neighbor's child — and since a dragged
+            // child detaches instead of towing, the next chat drag would
+            // leave the widget behind with a visible gap.
+            Some(pns) if is_chat_label(&label) => {
+                set_snap_parent_ns(pns, Some(win_ns));
+            }
+            parent => set_snap_parent_ns(win_ns, parent),
+        }
     }
 }
 
