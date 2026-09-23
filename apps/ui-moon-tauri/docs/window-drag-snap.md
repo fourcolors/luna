@@ -79,7 +79,11 @@ other's edges:
   (`NSWindow.addChildWindow`/`removeChildWindow`). Moving a window tows its
   snapped children natively in the same gesture — atomic, zero IPC. A
   middle-of-stack grab tows the tail; a leaf grab peels off alone. Cycles
-  are refused by walking the candidate parent's ancestor chain.
+  are refused by walking the candidate parent's ancestor chain. The dragged
+  window becomes the child — EXCEPT the chat, which is the cluster hub:
+  whatever the chat settles onto docks under the chat, so a widget snapped
+  on any side tows with the next chat drag instead of being stranded with
+  a visible gap when the chat moves away.
 - **Resize re-flush:** AppKit children follow position, never size — a
   parent's `Resized` event re-flushes each snapped child against its
   nearest parent edge (`windows::reflush_snap_children`) so stacks never
