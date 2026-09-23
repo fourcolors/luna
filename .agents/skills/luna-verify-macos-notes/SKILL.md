@@ -137,12 +137,17 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
   trigger. Orb click → expand_from_moon restores every dock window.
 - Saved positions do NOT round-trip for windows restored near the screen
   bottom: `builder.position(x,y)` gets constrained inside tao/AppKit at build
-  (observed: written y=760/800/900 → landed y=675/715/755, roughly
-  `top = min(req−85, visibleFrame_maxY − h)`, then drifts to the requested
-  value a beat later). The boot settle can run on the INTERMEDIATE position —
-  a "far" parked window can land inside a neighbor's snap zone and dock.
-  When crafting a parked-window scenario in layout.json, aim ~150pt+ clear
-  of neighbors OR verify the spawn-landed position first.
+  (observed: written y=760/800/900/945 → spawned y=675/715/755/755, i.e.
+  `top = min(req−85, visibleFrame_maxY − h)`), then drifts to the requested
+  value a beat later. The e89dcd79 re-assert (set_position right after
+  build()) fixes the FINAL frame but NOT the boot-reattach read — tao defers
+  the frame apply past the synchronous settle pass, so `reattach_flushed_windows`
+  still evaluates the constrained position (observed live: settle logged
+  (811,671) for a window written at 756 → detached instead of attaching).
+  Same deferred-set_position explains why a hub snap leaves a transient seam:
+  the child attaches before the parent's corrective move lands, then tows it.
+  When crafting a parked-window scenario, aim ~150pt+ clear of neighbors AND
+  verify the settle-time position (instrument settle_snap), not just layout.json.
 - Geometry ground truth: `~/.luna/layout.json` stores each panel's logical
   rect — use it to assert flushness exactly (child.y == parent.bottom).
 - Coordinate scale on the Devin box: 1 tool px = 1.5625 logical pt, so
