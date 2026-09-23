@@ -109,11 +109,19 @@ Findings:
 Deviation from the pre-registered ship rule, stated openly: no config can meet rule 1 (a significant LongMemEval gain) without failing rule 2 (memory-suite), so no config becomes the default for per-turn recall.
 The locked candidate makes a narrower claim, tested as follows.
 
-LOCKED CONFIG: `hybrid-weighted:w=0:e=0.5:s=lucene` with agent keywords (`memory_search` only; with no keywords it is identical to production `hybrid`).
+LOCKED CONFIG: `hybrid-weighted:w=0:e=0.5:s=lucene` with agent keywords (`memory_search` only; with no keywords it ranks like `vec`, which equals production `hybrid` whenever hybrid's exact-phrase arm finds nothing, i.e. on all 60 tuning questions).
 
 Held-out test, run once:
 1. Safety: LongMemEval S questions 61-260 (fresh), evidence@5 vs `hybrid`, for each of 3 Sonnet and 3 Haiku keyword samples: it must not be significantly worse (two-sided sign test, losses > wins with p < 0.05 fails).
 2. Efficacy replication: memory-suite with the 3 HAIKU keyword samples (not used for selection): vocab-mismatch recall@5 must beat `hybrid` with more wins than losses on every sample, and no other slice may lose more than 2 net queries.
+
+## Correction (2026-09-23, after a code review): the memory-suite keyword numbers above are contaminated
+
+The keyword generator ran `claude -p` from the repo, which loaded the user's and the project's CLAUDE.md and auto-memory.
+The memory-suite corpus describes Luna itself, so generated keywords named internal terms the query never mentioned but the target record contains (vectorlite, LUNA_* variables; in 24/180 Sonnet and 35/180 Haiku vocab-mismatch samples), and some carried personal details.
+So the "+7.8 points, 14/0" vocab-mismatch result for Sonnet keywords, and the Haiku replication, over-state what query-only keywords can do.
+The LongMemEval keyword files show no such leakage (their questions are about fictional users' lives), and no relevance-judge config uses keywords, so the judge results are unaffected.
+Fix: `bench/isolated-claude.ts` (no setting sources, tools, MCP or session persistence; fresh temp cwd; verified it no longer knows the user); every keyword file is regenerated and the keyword measurements re-run; the contaminated files never entered git history.
 
 ## Held-out result (2026-09-23, run once, recorded before any further change)
 
@@ -133,7 +141,7 @@ Outcome against the locked rules:
 2. Efficacy replication: FAIL. Haiku sample #0 has more losses than wins on vocab-mismatch.
 Verdict: agent-keyword expansion alone is promising (large with Sonnet keywords on the tuning set, small with Haiku) but NOT proven; it does not ship on this evidence.
 
-The held-out set strongly confirms the other finding: bag-of-words BM25 (`hybrid-terms`) finds far more evidence on conversational memory (+15.1 points, 54 vs 3), and 63 of the 64 extra evidence turns sit at vector ranks 11-50, i.e. inside production's own candidate pool but ranked too low.
+The held-out set strongly confirms the other finding: bag-of-words BM25 (`hybrid-terms`) finds far more evidence on conversational memory (+15.1 points, 54 vs 3). Of the evidence turns `hybrid-terms` alone finds but `hybrid` misses, 54 of 55 sit at vector ranks 11-50 (the sweep's diagnostic counts all non-baseline configs together: 63 of 64), i.e. inside production's own candidate pool but ranked too low.
 That makes a relevance judge over a wider pool the next hypothesis (see `rr=` in `src/search-config.ts`).
 
 ## Relevance judge: tuning results and second lock (recorded 2026-09-23, BEFORE its held-out run)
@@ -143,7 +151,7 @@ Tuning sets as above; judge = the local Qwen3-Reranker-0.6B cross-encoder produc
 | config | memory-suite vocab-mismatch r@5 (W/L vs hybrid) | LongMemEval evidence@5 (W/L vs hybrid) | memory-suite p50 on an M-series Mac |
 |---|---:|---:|---:|
 | `hybrid` (production recall) | 0.683 | 49/104 | 26 ms |
-| `hybrid:rr=ce@8` (production `memory_search` today: rerank cap 8) | 0.767 (6/1) | 58/104 (10/3) | 300 ms |
+| `hybrid:rr=ce@8` (approximates `memory_search` with rerank on: cap 8) | 0.767 (6/1) | 58/104 (10/3) | 300 ms |
 | `hybrid:rr=ce@20` | 0.817 (11/3) | 69/104 (19/3) | 440 ms |
 | `hybrid:rr=ce@40` | 0.850 (14/4) | 73/104 (23/2) | 885 ms |
 | `hybrid-terms:rr=ce@40` | 0.783 (10/4) | 77/104 (26/2) | 886 ms |
@@ -156,7 +164,8 @@ LOCKED CANDIDATES: `hybrid:rr=ce@20` and `hybrid:rr=ce@40` (no lexical change, n
 
 Held-out test, run once, on FRESH LongMemEval S questions 261-460 (never used; 61-260 was spent on the keyword test):
 1. Each candidate must beat `hybrid` on evidence@5 with a paired two-sided sign test p < 0.025 (Bonferroni for two candidates).
-2. Each candidate must also beat `hybrid:rr=ce@8` (what `memory_search` ships today) with p < 0.025, or it is not worth raising the production cap.
+2. Each candidate must also beat `hybrid:rr=ce@8` with p < 0.025, or it is not worth raising the production cap.
+   `hybrid:rr=ce@8` approximates `memory_search` with rerank enabled; production additionally drops candidates scoring below 40/100, sorts on rounded scores, over-fetches 20 and filters by kind, and does not cap documents at 2000 characters, so gains transfer directionally, not one-for-one.
 memory-suite has no held-out split; its role stays a regression guard (above: no slice with net losses).
 Latency is NOT settled by these numbers: the production GPU (the production server GPU) measured ~7.5 s for 8 candidates, so depth 20-40 is not shippable there as-is; a faster judge (e.g. Jev, hosted) or faster hardware is a precondition for rollout.
 
