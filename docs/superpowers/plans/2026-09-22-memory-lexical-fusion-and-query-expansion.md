@@ -88,6 +88,33 @@ It becomes the recommended default only if:
 4. memory-suite p95 latency stays within 20 ms of `hybrid` (a sanity check only; the real latency check is on a stable-DB copy in the rollout PR).
 Expansion ships on top only if it adds a further held-out improvement under rule 1 across both keyword models.
 
+## Tuning results and locked config (recorded 2026-09-23, BEFORE any held-out run)
+
+Tuning sets: LongMemEval S questions 1-60 (54 answerable, 104 evidence turns) and memory-suite (230 queries), recall@5.
+
+| config | LongMemEval evidence@5 (vs hybrid) | memory-suite vocab-mismatch r@5 (W/L vs hybrid) |
+|---|---:|---:|
+| `hybrid` (production) | 49/104 | 0.683 |
+| `hybrid-terms` | 62/104 (15/3, p = 0.008) | 0.333 (6/27) |
+| `bm25` | 65/104 (19/3, p = 0.001) | 0.117 (2/36) |
+| weighted, query words only, w 0.1 to 1, any stopword set | 52 to 62 | 0.217 to 0.633, always net losses |
+| weighted, query words must match 2+ terms (m = 2) | 50 to 56 | 0.567 to 0.600, always net losses |
+| **vector + agent keywords only (w = 0, e = 0.5), Sonnet, 3 samples** | **47 to 50 (neutral)** | **0.761 (14/0 summed)** |
+
+Findings:
+1. The two benches disagree about matching the question's OWN words: LongMemEval questions share words with their evidence (the user's own turns), so lexical matching helps; memory-suite vocab-mismatch queries are casual questions about technically worded memories (the Luna pattern: agent-written facts, user-worded questions), and any query-word lexical arm promotes wrong records, at every weight tried, with or without stopwords (stopwords did not fix it, refuting the function-word hypothesis) and with a 2-term minimum match.
+2. RRF at k = 60 is flat enough that even weight 0.25 lets a lexical rank-1 overtake the vector rank-1 from vector rank ~6.
+3. Agent keywords used as their own lexical arm, with the question's words kept out of lexical matching, are the only variant that never hurts: +7.8 points vocab-mismatch recall@5 on memory-suite, neutral on LongMemEval.
+
+Deviation from the pre-registered ship rule, stated openly: no config can meet rule 1 (a significant LongMemEval gain) without failing rule 2 (memory-suite), so no config becomes the default for per-turn recall.
+The locked candidate makes a narrower claim, tested as follows.
+
+LOCKED CONFIG: `hybrid-weighted:w=0:e=0.5:s=lucene` with agent keywords (`memory_search` only; with no keywords it is identical to production `hybrid`).
+
+Held-out test, run once:
+1. Safety: LongMemEval S questions 61-260 (fresh), evidence@5 vs `hybrid`, for each of 3 Sonnet and 3 Haiku keyword samples: it must not be significantly worse (two-sided sign test, losses > wins with p < 0.05 fails).
+2. Efficacy replication: memory-suite with the 3 HAIKU keyword samples (not used for selection): vocab-mismatch recall@5 must beat `hybrid` with more wins than losses on every sample, and no other slice may lose more than 2 net queries.
+
 ## Rollout PR (separate, after results)
 
 - `LUNA_MEMORY_SEARCH_MODE` validated at startup (unknown value = loud failure), default unchanged.
