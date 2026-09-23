@@ -61,7 +61,12 @@ async function startTestServer(opts: {
   port?: number
 }): Promise<TestServer> {
   return new Promise((resolve, reject) => {
-    const wss = new WebSocketServer({ port: opts.port ?? 0 })
+    // Bind the loopback address the tests dial, not the dual-stack wildcard:
+    // listen(0) with no host binds '::', and a client dialing 127.0.0.1 then
+    // reaches the listener only through IPv4-mapped-IPv6 routing — an extra
+    // hop that loopback packet filters / VPN clients / stealth-mode firewalls
+    // can interpose on. Binding the dialed address removes that hop.
+    const wss = new WebSocketServer({ host: "127.0.0.1", port: opts.port ?? 0 })
     wss.on("error", reject)
     wss.on("listening", () => {
       const addr = wss.address()
@@ -185,13 +190,19 @@ async function startTestServer(opts: {
             client.close(1001, "drop")
           }
         },
-        close: () =>
+        close: () => {
+          // Terminate live clients first: wss.close() only stops accepting and
+          // leaves established sockets open, so a client still mid-handshake or
+          // a just-disposed socket lingers in the kernel's connection table past
+          // the test boundary. terminate() aborts them deterministically.
+          for (const client of wss.clients) client.terminate()
           // Close with a 500ms timeout to avoid hanging if underlying HTTP
           // server keeps-alive prevent immediate shutdown.
-          Promise.race([
+          return Promise.race([
             new Promise<void>((res, rej) => wss.close((e) => (e ? rej(e) : res()))),
             new Promise<void>((res) => setTimeout(res, 500)),
-          ]),
+          ])
+        },
       }
 
       resolve(serverHandle)
