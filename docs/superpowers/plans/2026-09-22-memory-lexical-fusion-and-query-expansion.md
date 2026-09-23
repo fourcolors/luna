@@ -119,7 +119,7 @@ Held-out test, run once:
 
 The keyword generator ran `claude -p` from the repo, which loaded the user's and the project's CLAUDE.md and auto-memory.
 The memory-suite corpus describes Luna itself, so generated keywords named internal terms the query never mentioned but the target record contains (vectorlite, LUNA_* variables; in 24/180 Sonnet and 35/180 Haiku vocab-mismatch samples), and some carried personal details.
-So the "+7.8 points, 14/0" vocab-mismatch result for Sonnet keywords, and the Haiku replication, over-state what query-only keywords can do.
+So the "+7.8 points, 14/0" vocab-mismatch result for Sonnet keywords, and the Haiku replication, over-state what query-only keywords can do (the clean re-run below measures about +2 points).
 The LongMemEval keyword files show no such leakage (their questions are about fictional users' lives), and no relevance-judge config uses keywords, so the judge results are unaffected.
 Fix: `bench/isolated-claude.ts` (no setting sources, tools, MCP or session persistence; fresh temp cwd; verified it no longer knows the user); every keyword file is regenerated and the keyword measurements re-run; the contaminated files never entered git history.
 
@@ -190,6 +190,28 @@ Outcome against the locked rules: BOTH candidates PASS (beat `hybrid` and `hybri
 Conclusion: the biggest single improvement available to Luna's memory is judging more candidates, not changing lexical matching.
 Production retrieval already has most of the right memories in its top 40; it ranks them too low, and today's rerank (when enabled) only looks at 8.
 The open question is purely operational: latency of judging 20-40 candidates on the production hardware (a precondition for rollout, below).
+
+## Clean keyword re-run (2026-09-23, isolated generator, identity-scrubbed keywords)
+
+Every keyword measurement above was repeated with the regenerated keywords; these numbers REPLACE the contaminated ones.
+
+memory-suite vocab-mismatch recall@5 (`hybrid` 0.683), locked config `hybrid-weighted:w=0:e=0.5:s=lucene`, per keyword sample:
+
+| keywords | #0 | #1 | #2 |
+|---|---:|---:|---:|
+| Sonnet | 0.700 (1/0) | 0.700 (1/0) | 0.717 (2/0) |
+| Haiku | 0.683 (0/0) | 0.700 (1/0) | 0.700 (1/0) |
+
+Other slices unchanged except one temporal loss on one Sonnet sample; keyword weight 0.25 to 1 barely matters at w = 0.
+Adding the query's own words back (w 0.1 / 0.25 / 1) again loses vocab-mismatch queries (net -3 / -35 / -68 summed over samples).
+Keywords on top of the judge (`:rr=ce@20`) give 0.817, the same as the judge alone: no added value.
+
+LongMemEval tuning (1-60): keyword-only configs 45-51/104 vs `hybrid` 49 (neutral).
+LongMemEval held-out (61-260), locked config: Sonnet 39.3% / 42.2% / 42.5%, Haiku 41.6% / 41.9% / 40.7% vs `hybrid` 41.6%; no sample significantly different (smallest p = 0.15, Sonnet #0, 3 / 9).
+
+Corrected verdict: query-only agent keywords are SAFE (never significantly worse) and give a small vocab-mismatch gain (about +2 points, not significant), far below the contaminated "+7.8".
+The efficacy replication still fails (Haiku #0 has no wins).
+The relevance judge makes them redundant.
 
 ## Rollout (separate PRs; revised 2026-09-23 after the judge result)
 
