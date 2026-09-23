@@ -454,6 +454,11 @@ export class LunaWsAdapter implements ClientTransportAdapter {
         // Socket is open but waiting for hello — "connecting" already emitted.
       })
 
+      // The most recent socket 'error' payload, kept for the close handler so
+      // a pre-hello rejection can carry the real cause (ECONNREFUSED, ECONNRESET,
+      // "Unexpected server response: 426", ...) instead of a bare 1006.
+      let lastSocketError: unknown
+
       ws.addEventListener("message", (ev) => {
         // Guard: ignore events from a superseded socket (after #doReconnect nulls #ws
         // and opens a fresh one). Without this, a late close re-fire on a dead socket
@@ -522,7 +527,10 @@ export class LunaWsAdapter implements ClientTransportAdapter {
           } else {
             this.#publishConnectionState({ status: "down", reason })
           }
-          reject(new Error(`LunaWsAdapter(${this.routeKey}): socket closed before hello (${reason})`))
+          const errDetail = lastSocketError instanceof Error
+            ? ` | socket error: ${lastSocketError.message}`
+            : ""
+          reject(new Error(`LunaWsAdapter(${this.routeKey}): socket closed before hello (${reason})${errDetail}`))
           return
         }
 
@@ -540,11 +548,13 @@ export class LunaWsAdapter implements ClientTransportAdapter {
         this.#scheduleReconnect()
       })
 
-      ws.addEventListener("error", () => {
+      ws.addEventListener("error", (ev) => {
         if (this.#ws !== ws) return
         // In both browser WebSocket and the ws package, an error event is
         // always followed by a close event. Let the close handler do the
-        // definitive settle so it can read the close code.
+        // definitive settle so it can read the close code — but keep the
+        // error payload so the rejection can report the underlying cause.
+        lastSocketError = (ev as { error?: unknown }).error ?? ev
       })
     })
   }
