@@ -119,15 +119,15 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
   grab spot (even the native-zone strip ~4px below the top edge) settles on
   release. To verify a settle ran, use a temporary `eprintln!` in
   `settle_snap` / `take_moved_labels` ([SNAPDBG] tags) and grep the dev log.
-- The watcher settles EVERY moved window on each mouse-up, and a settle that
-  moves a frame re-marks it — so one drop can visibly re-dock OTHER windows
-  (including flipping parent/child direction). Convergence, not a bug — but
-  expect the "settled" set to sometimes contain windows you didn't drag.
-- Boot settle (`reattach_flushed_windows` now settles every dock window):
-  restore moves + boot settles leave EVERY restored window marked, so the
-  first post-boot left-up re-settles ALL of them against current geometry —
-  parked windows can visibly re-dock on the first real drag. When testing
-  boot-snap, drive the FIRST gesture deliberately and expect side-settles.
+- `note_dock_moved` only marks while the left button is HELD
+  (`LEFT_BUTTON_DOWN`, set by the watcher's Down monitors) — boot restores,
+  settle re-moves, and resize re-flushes never mark, so the first post-boot
+  gesture settles only what it actually dragged. Children TOWED mid-drag
+  still mark (their Moved fires during the parent's drag), so a release can
+  visibly re-dock towed siblings — convergence, not a bug.
+- Boot settle (`reattach_flushed_windows` settles every dock window on
+  launch): a window restored inside the snap zone goes flush and attaches;
+  parked windows stay put and stay detached.
 - Launcher row clicks occasionally miss the row hit-area; pressing Enter on
   the filtered row reliably invokes open_widget.
   Caveat: Enter activates the highlighted index-0 row (often "Luna"), not
