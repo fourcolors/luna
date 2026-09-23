@@ -1,0 +1,6862 @@
+{
+  "source": "longmemeval",
+  "model": "haiku",
+  "promptHash": "8a3361b317a6e81f",
+  "generatedAt": "2026-09-23T09:25:05.409Z",
+  "samples": 3,
+  "keywords": {
+    "59524333": [
+      [
+        "workout schedule",
+        "exercise routine",
+        "fitness habit tracking",
+        "regular gym visits",
+        "workout timing"
+      ],
+      [
+        "workout schedule",
+        "exercise routine",
+        "gym routine",
+        "training time",
+        "fitness habit"
+      ],
+      [
+        "workout schedule timing",
+        "fitness routine time",
+        "gym visit frequency",
+        "exercise timing habit",
+        "daily gym schedule",
+        "typical exercise time",
+        "fitness schedule",
+        "workout time pattern"
+      ]
+    ],
+    "945e3d21": [
+      [
+        "meditation practices",
+        "mental health management",
+        "wellness routine",
+        "therapeutic exercise",
+        "stress relief activities",
+        "mindfulness training",
+        "self-care practices",
+        "anxiety coping strategies"
+      ],
+      [
+        "anxiety management strategy",
+        "stress relief routine",
+        "exercise for mental health",
+        "weekly yoga schedule",
+        "mindfulness practice habit",
+        "wellness routine schedule",
+        "anxiety coping mechanism",
+        "health treatment method"
+      ],
+      [
+        "anxiety management techniques",
+        "meditation practice routine",
+        "stress relief activities",
+        "mental health wellness",
+        "exercise frequency tracking",
+        "therapeutic practice schedule"
+      ]
+    ],
+    "gpt4_59149c78": [
+      [
+        "gallery opening",
+        "art exhibition",
+        "creative workshop",
+        "venue location",
+        "September 2026 event",
+        "event venue details",
+        "art community participation",
+        "past activities"
+      ],
+      [
+        "venue address location",
+        "gallery or studio name",
+        "event location details",
+        "art exhibition space",
+        "workshop venue address",
+        "cultural center location",
+        "artist gathering location",
+        "event venue type"
+      ],
+      [
+        "gallery opening venue",
+        "art exhibition location",
+        "museum event details",
+        "creative event space",
+        "artist gathering place",
+        "art show venue details"
+      ]
+    ],
+    "726462e0": [
+      [
+        "introductory offer",
+        "new customer discount",
+        "clothing retailer",
+        "promotional code",
+        "purchase history",
+        "brand discount policy",
+        "first order savings",
+        "retail promotion"
+      ],
+      [
+        "discount percentage amount",
+        "retail store name",
+        "coupon promo code",
+        "clothing retailer name",
+        "savings amount",
+        "brand name",
+        "new shop opening deal",
+        "first purchase offer"
+      ],
+      [
+        "new brand launch discount",
+        "first time buyer deal",
+        "promotional offer amount",
+        "inaugural purchase savings",
+        "clothing retailer promotion",
+        "shopping discount percentage"
+      ]
+    ],
+    "gpt4_468eb063": [
+      [
+        "Emma encounter",
+        "timeline of events",
+        "contact history",
+        "meeting date",
+        "person interaction",
+        "relationship history",
+        "social meeting",
+        "recent contacts"
+      ],
+      [
+        "Emma contact relationship",
+        "friend history",
+        "person Emma identity",
+        "meeting date",
+        "interaction history",
+        "past encounter",
+        "specific date",
+        "contact timeline"
+      ],
+      [
+        "Emma meeting timeline",
+        "friend encounter date",
+        "social connection timing",
+        "personal relationship history",
+        "Emma personal connection",
+        "specific person meeting date"
+      ]
+    ],
+    "001be529": [
+      [
+        "immigration application",
+        "application processing time",
+        "legal decision timeline",
+        "immigration status",
+        "application outcome",
+        "waiting period duration",
+        "bureaucratic timeline",
+        "immigration process"
+      ],
+      [
+        "government decision timeline",
+        "legal case status",
+        "visa permit type",
+        "immigration agency",
+        "application outcome date",
+        "case number",
+        "bureaucratic process duration",
+        "legal outcome"
+      ],
+      [
+        "immigration application timeline",
+        "legal proceeding duration",
+        "asylum processing wait",
+        "government decision timeline",
+        "bureaucratic waiting period",
+        "application status decision"
+      ]
+    ],
+    "577d4d32": [
+      [
+        "email checking schedule",
+        "work communication boundaries",
+        "end of workday routine",
+        "message checking habits",
+        "work-life separation",
+        "digital boundaries",
+        "evening routine",
+        "communication timeout"
+      ],
+      [
+        "time to stop working",
+        "work schedule boundary",
+        "business hours ending",
+        "offline time start",
+        "evening routine timing",
+        "work communication cutoff",
+        "daily end time",
+        "rest period start"
+      ],
+      [
+        "work-life boundary time",
+        "email cutoff schedule",
+        "digital detox routine",
+        "end of workday habit",
+        "work message monitoring",
+        "communication boundary setting"
+      ]
+    ],
+    "561fabcd": [
+      [
+        "zombie character naming",
+        "fictional entity naming",
+        "creative naming decision",
+        "past discussion topic",
+        "character development",
+        "naming convention",
+        "conversation history",
+        "creative project decisions"
+      ],
+      [
+        "character name chosen",
+        "game creature type",
+        "design decision made",
+        "zombie variant naming",
+        "creative project name",
+        "design choice outcome",
+        "naming consensus reached",
+        "project naming decision"
+      ],
+      [
+        "zombie game character",
+        "creature naming decision",
+        "game development naming",
+        "fictional monster name",
+        "character design discussion",
+        "gaming project naming choice"
+      ]
+    ],
+    "gpt4_2655b836": [
+      [
+        "vehicle maintenance problems",
+        "post-service issues",
+        "car repair history",
+        "mechanical problems",
+        "maintenance experience",
+        "vehicle reliability",
+        "service appointment",
+        "car troubleshooting"
+      ],
+      [
+        "problem type symptom",
+        "car model",
+        "service center name",
+        "mechanical defect",
+        "repair issue type",
+        "car brand",
+        "initial problem",
+        "maintenance complaint"
+      ],
+      [
+        "vehicle maintenance problem",
+        "car repair issue",
+        "post-service vehicle problem",
+        "mechanical failure incident",
+        "automotive issue timeline",
+        "new vehicle malfunction"
+      ]
+    ],
+    "ba61f0b9": [
+      [
+        "team demographics",
+        "Rachel's team",
+        "manager's staff",
+        "workplace diversity",
+        "team size and composition",
+        "former workplace",
+        "management structure",
+        "team member count"
+      ],
+      [
+        "team size count",
+        "Rachel department",
+        "team member count",
+        "women employees number",
+        "gender composition",
+        "former boss team",
+        "department roster",
+        "staff count women"
+      ],
+      [
+        "team gender demographics",
+        "workplace diversity metrics",
+        "former workplace team composition",
+        "management team structure",
+        "female employee count",
+        "team personnel statistics"
+      ]
+    ],
+    "c14c00dd": [
+      [
+        "hair care products",
+        "personal hygiene routine",
+        "product preferences",
+        "cosmetic brands",
+        "beauty routine",
+        "hair product selection",
+        "toiletry choices",
+        "grooming habits"
+      ],
+      [
+        "specific brand name",
+        "hair product line",
+        "grooming brand",
+        "beauty product type",
+        "toiletries brand",
+        "shampoo variant",
+        "personal care line",
+        "hair care product"
+      ],
+      [
+        "personal care product choice",
+        "hair care routine",
+        "grooming product preference",
+        "beauty product brand",
+        "haircare regimen selection",
+        "cosmetic product brand preference"
+      ]
+    ],
+    "b759caee": [
+      [
+        "bespoke jewelry design",
+        "gem variety selection",
+        "independent jewelry maker",
+        "custom band designer",
+        "jewelry Instagram profile",
+        "luxury engagement stones"
+      ],
+      [
+        "bespoke jewelry designer UK",
+        "custom gemstone engagement rings",
+        "ethical alternative stone supplier",
+        "colored gems luxury artisan",
+        "independent jewelry maker Instagram",
+        "alternative gemstone sourcing",
+        "handcrafted custom engagement jewelry",
+        "non-traditional stone jewelry"
+      ],
+      [
+        "jewelry designer Instagram contact",
+        "custom engagement ring maker UK",
+        "unconventional gemstone rings designer",
+        "bespoke jewelry creator social media",
+        "alternative stone engagement ring designer",
+        "UK jeweler unusual gems"
+      ]
+    ],
+    "d905b33f": [
+      [
+        "book sale event",
+        "author promotion code",
+        "retail purchase discount",
+        "book promotional offer",
+        "discount percentage savings"
+      ],
+      [
+        "book purchase discount amount",
+        "author sale promotion",
+        "literature discount percentage off",
+        "favorite author merchandise sale",
+        "book retailer promotion deal",
+        "reading material discount code"
+      ],
+      [
+        "favorite author book purchase discount",
+        "literature sale percentage off",
+        "author book deal received",
+        "book price reduction applied"
+      ]
+    ],
+    "e4e14d04": [
+      [
+        "membership start date",
+        "club member since",
+        "reading community",
+        "club event attendance",
+        "book club joining"
+      ],
+      [
+        "book club membership duration",
+        "reading group first meetup",
+        "literary club member history",
+        "book club event attendance",
+        "reading community membership length",
+        "book group member timeline",
+        "club joining membership date"
+      ],
+      [
+        "Book Lovers Unite club membership",
+        "book club join date",
+        "reading group member since",
+        "club meeting attendance date"
+      ]
+    ],
+    "gpt4_2f91af09": [
+      [
+        "writing journal",
+        "creative output volume",
+        "story completion count",
+        "poem collection",
+        "writing challenge submission",
+        "creative productivity total"
+      ],
+      [
+        "creative writing completion count",
+        "poetry short story output",
+        "writing challenge submission entries",
+        "recent authorship work count",
+        "literary pieces production total",
+        "writing project completions",
+        "manuscript writing output"
+      ],
+      [
+        "writing output three weeks",
+        "short story completion count",
+        "poem writing total",
+        "writing challenge entries completed",
+        "creative writing pieces finished"
+      ]
+    ],
+    "4fd1909e": [
+      [
+        "concert venue location",
+        "live performance",
+        "ticket purchase",
+        "tour stop",
+        "arena show"
+      ],
+      [
+        "rock band concert venue",
+        "live music performance location",
+        "concert attendance venue details",
+        "band tour stop location",
+        "music event venue address",
+        "concert location memory"
+      ],
+      [
+        "Imagine Dragons concert venue",
+        "live music event location",
+        "band show attended where"
+      ]
+    ],
+    "2133c1b5_abs": [
+      [
+        "move-in date",
+        "apartment lease",
+        "housing tenure",
+        "relocation date",
+        "Tokyo housing"
+      ],
+      [
+        "Tokyo Shinjuku apartment residency",
+        "apartment lease duration Japan",
+        "housing tenure Tokyo neighborhood",
+        "current apartment moving date",
+        "Japan residency length",
+        "apartment move-in Tokyo",
+        "Shinjuku housing tenure"
+      ],
+      [
+        "Shinjuku apartment move-in date",
+        "Tokyo residence duration",
+        "current housing lease start",
+        "apartment living timeline Japan"
+      ]
+    ],
+    "gpt4_0a05b494": [
+      [
+        "vendor encounter",
+        "market visit",
+        "meeting timeline",
+        "farm stand seller",
+        "tourist encounter"
+      ],
+      [
+        "farmer's market vendor meeting",
+        "Australian traveler acquaintance",
+        "marketplace encounter details",
+        "person introduction timeline",
+        "market vendor interaction",
+        "international traveler meeting"
+      ],
+      [
+        "farmer market jam vendor",
+        "Australian tourist meeting order",
+        "farmers market person encounter",
+        "meeting chronology two people"
+      ]
+    ],
+    "982b5123_abs": [
+      [
+        "reservation confirmation",
+        "booking date",
+        "lodging confirmation",
+        "travel itinerary",
+        "check-in date"
+      ],
+      [
+        "Airbnb reservation Sacramento booking",
+        "vacation rental booking date",
+        "short-term accommodation reservation",
+        "travel booking confirmation",
+        "rental property check-in date",
+        "Sacramento trip accommodation"
+      ],
+      [
+        "Sacramento Airbnb reservation date",
+        "accommodation booking California",
+        "rental reservation timing"
+      ]
+    ],
+    "8cf4d046": [
+      [
+        "academic transcript",
+        "degree requirements",
+        "school performance",
+        "cumulative grades"
+      ],
+      [
+        "academic performance grade average",
+        "undergraduate graduate GPA",
+        "college degree GPA statistics",
+        "educational achievement records",
+        "university academic performance",
+        "graduate school GPA"
+      ],
+      [
+        "undergraduate graduate GPA average",
+        "degree academic performance metric",
+        "education score combined"
+      ]
+    ],
+    "edced276": [
+      [
+        "trip itinerary",
+        "vacation dates",
+        "travel dates",
+        "destination visits",
+        "trip duration"
+      ],
+      [
+        "vacation travel days total",
+        "Hawaii trip duration days",
+        "New York City travel days",
+        "multi-destination trip duration",
+        "vacation itinerary days spent",
+        "travel statistics per destination"
+      ],
+      [
+        "Hawaii New York City travel days",
+        "vacation duration combined total",
+        "trip length two destinations",
+        "island travel time spent"
+      ]
+    ],
+    "e66b632c": [
+      [
+        "personal record 5K",
+        "charity race results",
+        "running achievement",
+        "5 kilometer time trial",
+        "race performance metrics",
+        "competitive running time"
+      ],
+      [
+        "5K race finish times",
+        "previous running records",
+        "charity run participation",
+        "running performance goals",
+        "fastest 5K time",
+        "race results archive"
+      ],
+      [
+        "5K race time",
+        "race performance personal record",
+        "charity run result",
+        "running achievement",
+        "distance race time",
+        "charity 5K personal record"
+      ]
+    ],
+    "46a3abf7": [
+      [
+        "fish tank inventory",
+        "aquarium setup",
+        "pet tank count",
+        "friend's child's aquarium",
+        "tank number tracking"
+      ],
+      [
+        "aquarium inventory count",
+        "aquatic tank collection",
+        "borrowed aquarium setup",
+        "tank maintenance logs",
+        "shared aquarium resources"
+      ],
+      [
+        "aquarium tank count",
+        "fish tank inventory",
+        "pet tank setup",
+        "current tank number",
+        "aquarium collection"
+      ]
+    ],
+    "gpt4_5501fe77": [
+      [
+        "follower growth rate",
+        "social network audience",
+        "monthly platform comparison",
+        "engagement metrics",
+        "platform reach growth",
+        "audience size"
+      ],
+      [
+        "Instagram follower growth",
+        "TikTok audience expansion",
+        "social media engagement metrics",
+        "monthly follower statistics",
+        "platform comparison growth",
+        "audience growth rate"
+      ],
+      [
+        "follower growth metrics",
+        "social platform analytics",
+        "account growth monthly",
+        "Instagram TikTok Twitter gains",
+        "engagement metrics comparison",
+        "platform follower gains",
+        "social media monthly growth"
+      ]
+    ],
+    "3f1e9474": [
+      [
+        "Destiny video game",
+        "gaming discussion",
+        "game conversation partner",
+        "Destiny player"
+      ],
+      [
+        "Destiny 2 gaming discussion",
+        "video game conversations",
+        "gaming buddy interactions",
+        "game strategy discussion",
+        "friend chat topics"
+      ],
+      [
+        "Destiny game discussion",
+        "person talked about gaming",
+        "Destiny game conversation",
+        "gaming topic discussion",
+        "Destiny video game"
+      ]
+    ],
+    "5a4f22c0": [
+      [
+        "Rachel current position",
+        "former coworker employment",
+        "Rachel career move",
+        "colleague's new job",
+        "Rachel job transition"
+      ],
+      [
+        "Rachel career path",
+        "colleague employment status",
+        "professional network updates",
+        "coworker job transitions",
+        "industry networking contacts"
+      ],
+      [
+        "Rachel former colleague job",
+        "coworker Rachel current employment",
+        "previous colleague Rachel career",
+        "Rachel employment update",
+        "where Rachel works now",
+        "Rachel career change"
+      ]
+    ],
+    "3d86fd0a": [
+      [
+        "Sophia first encounter",
+        "how I met Sophia",
+        "Sophia introduction",
+        "meeting circumstances",
+        "Sophia connection story"
+      ],
+      [
+        "first meeting location",
+        "Sophia introduction story",
+        "meeting place memory",
+        "social introduction event",
+        "friendship origin story"
+      ],
+      [
+        "Sophia first meeting location",
+        "where Sophia encounter occurred",
+        "Sophia meeting place",
+        "first met Sophia",
+        "Sophia connection location",
+        "how we met Sophia"
+      ]
+    ],
+    "caf03d32": [
+      [
+        "slow cooker techniques",
+        "meal preparation tips",
+        "recipe troubleshooting",
+        "cooking improvement",
+        "culinary advice",
+        "slow cooker issues"
+      ],
+      [
+        "slow cooker cooking techniques",
+        "recipe improvement tips",
+        "crockpot meal preparation",
+        "cooking troubleshooting guide",
+        "kitchen appliance usage",
+        "culinary advice notes"
+      ],
+      [
+        "slow cooker technique tips",
+        "slow cooking improvement advice",
+        "cooking method slow cooker",
+        "meal preparation slow cooker",
+        "slow cooker food tips",
+        "slow cooker recipes improvement"
+      ]
+    ],
+    "f685340e_abs": [
+      [
+        "ping pong frequency",
+        "recreational sports schedule",
+        "park activities",
+        "friend group game nights",
+        "table tennis frequency tracking"
+      ],
+      [
+        "ping pong playing frequency",
+        "recreational sports schedule",
+        "park activities log",
+        "friend sports gatherings",
+        "weekly sports routine",
+        "table tennis practice record"
+      ],
+      [
+        "table tennis game frequency",
+        "sports activity schedule",
+        "park recreation frequency",
+        "table tennis hobby",
+        "sports friend activity",
+        "table tennis schedule"
+      ]
+    ],
+    "gpt4_d12ceb0e": [
+      [
+        "family age demographics",
+        "generational age calculation",
+        "family age data"
+      ],
+      [
+        "family generation ages",
+        "age calculation statistics",
+        "family demographic data",
+        "genealogical age information",
+        "extended family ages",
+        "intergenerational age difference"
+      ],
+      [
+        "family age calculation",
+        "generational age demographics",
+        "parent grandparent age data",
+        "family member age information",
+        "age statistics family"
+      ]
+    ],
+    "gpt4_93159ced_abs": [
+      [
+        "work experience before Google",
+        "Google employment history",
+        "prior job timeline",
+        "years of work experience",
+        "career history",
+        "pre-Google roles"
+      ],
+      [
+        "career history timeline",
+        "years of work experience",
+        "previous employment duration",
+        "job transition history",
+        "career progression record",
+        "pre-Google employment record"
+      ],
+      [
+        "career history before Google",
+        "work experience prior employment",
+        "years job experience",
+        "employment history career length",
+        "pre-Google job tenure",
+        "Google prior work experience"
+      ]
+    ],
+    "00ca467f": [
+      [
+        "medical visits",
+        "physician consultations",
+        "clinical appointments",
+        "appointment tracking",
+        "healthcare provider visits",
+        "attendance records monthly",
+        "medical history March",
+        "health check frequency"
+      ],
+      [
+        "medical visits March",
+        "healthcare appointments count",
+        "physician office visits",
+        "clinic appointments March",
+        "appointment scheduling doctor",
+        "doctor's office visits"
+      ],
+      [
+        "appointment logs",
+        "medical history",
+        "March attendance",
+        "healthcare visits",
+        "visit tracking",
+        "appointment records",
+        "monthly appointments"
+      ]
+    ],
+    "gpt4_59c863d7": [
+      [
+        "model building hobby",
+        "hobby kit collection",
+        "miniature scale models",
+        "kit assembly projects",
+        "model kit inventory",
+        "hobby craft projects",
+        "acquired models inventory",
+        "scale model building"
+      ],
+      [
+        "model building hobby",
+        "scale model collection",
+        "plastic models purchased",
+        "hobby kit assembly",
+        "DIY kit projects",
+        "built or bought models"
+      ],
+      [
+        "hobby projects",
+        "kit inventory",
+        "building supplies",
+        "scale models",
+        "DIY projects",
+        "hobby tracking",
+        "completed kits"
+      ]
+    ],
+    "488d3006": [
+      [
+        "Moncayo trail recommendations",
+        "Aragon hiking routes",
+        "mountain vista trails",
+        "scenic landscape hikes",
+        "trail name suggestions",
+        "mountain scenery Spain",
+        "park trail guide",
+        "hiking route recommendations"
+      ],
+      [
+        "Moncayo mountain trail",
+        "hiking route Arag\u00f3n",
+        "panoramic landscape trail",
+        "recommended hike Moncayo",
+        "scenic park trails",
+        "mountain hiking suggestion"
+      ],
+      [
+        "Moncayo mountain trail",
+        "hiking route recommendation",
+        "Arag\u00f3n trail",
+        "panoramic hiking",
+        "previous trail suggestions",
+        "mountain hiking",
+        "scenic route"
+      ]
+    ],
+    "27016adc": [
+      [
+        "home renovation budget",
+        "property improvement costs",
+        "renovation expense ratio",
+        "improvement budget planning",
+        "cost estimation home",
+        "renovation project budget",
+        "real estate improvement",
+        "budget allocation renovation"
+      ],
+      [
+        "property renovation costs",
+        "home improvement budget",
+        "renovation expense percentage",
+        "countryside property investment",
+        "renovation cost calculation",
+        "house renovation expenses"
+      ],
+      [
+        "renovation budget",
+        "home improvement costs",
+        "property renovation",
+        "expense breakdown",
+        "renovation spending",
+        "cost percentage",
+        "renovation expense ratio"
+      ]
+    ],
+    "f0853d11": [
+      [
+        "event date calculation",
+        "charity event timeline",
+        "volunteer event dates",
+        "community events attended",
+        "event scheduling records",
+        "time between events",
+        "organized events attendance",
+        "event participation dates"
+      ],
+      [
+        "Walk for Hunger event",
+        "Coastal Cleanup event",
+        "event date difference",
+        "days between community events",
+        "charity event dates",
+        "event spacing timeline"
+      ],
+      [
+        "event timeline",
+        "volunteer events",
+        "charity event dates",
+        "event spacing",
+        "calendar entries",
+        "event history",
+        "time intervals between events"
+      ]
+    ],
+    "eeda8a6d_abs": [
+      [
+        "aquarium stocking",
+        "fish tank inventory",
+        "aquatic pets count",
+        "tank population level",
+        "aquarium maintenance log",
+        "fish species aquarium",
+        "tank capacity usage",
+        "aquarium equipment setup"
+      ],
+      [
+        "aquarium fish population",
+        "tank inhabitants count",
+        "fish tank stocking",
+        "aquatic pet count",
+        "aquarium species inventory"
+      ],
+      [
+        "aquarium inhabitants",
+        "tank inventory",
+        "aquatic pets",
+        "fish species count",
+        "tank stocking",
+        "pet fish tracking"
+      ]
+    ],
+    "8fb83627": [
+      [
+        "magazine subscription tracking",
+        "reading progress tracking",
+        "magazine issues completed",
+        "periodical reading habits",
+        "publication collection inventory",
+        "reading list completion",
+        "magazine archive personal",
+        "serial reading progress"
+      ],
+      [
+        "National Geographic magazine",
+        "completed magazine issues",
+        "magazine subscription reading",
+        "periodical reading progress",
+        "magazine collection count",
+        "finished reading issues"
+      ],
+      [
+        "magazine collection",
+        "reading progress",
+        "subscription tracking",
+        "issue inventory",
+        "periodical reading",
+        "publication tracking"
+      ]
+    ],
+    "4f54b7c9": [
+      [
+        "family inheritance acquisition",
+        "heirloom collection inventory",
+        "inherited possessions received",
+        "family keepsakes collection",
+        "antique acquisition sources",
+        "inheritance memorabilia",
+        "ancestral items collection",
+        "family collection records"
+      ],
+      [
+        "inherited antiques family",
+        "family heirlooms collection",
+        "antique acquisitions inherited",
+        "family inheritance items",
+        "ancestral collectibles",
+        "family antique collection"
+      ],
+      [
+        "family heirlooms",
+        "inheritance log",
+        "antique ownership",
+        "acquired items",
+        "family inheritance",
+        "collectible inventory"
+      ]
+    ],
+    "0ddfec37_abs": [
+      [
+        "football memorabilia",
+        "autographed sports items",
+        "sports collectibles acquired",
+        "signed sports equipment",
+        "memorabilia acquisition tracking",
+        "sports collection building",
+        "signed items collected",
+        "sports memorabilia collecting"
+      ],
+      [
+        "autographed sports memorabilia",
+        "football autograph collection",
+        "signed sports items",
+        "memorabilia acquisitions growth",
+        "sports collectibles acquired",
+        "signed football memorabilia"
+      ],
+      [
+        "sports memorabilia",
+        "signed items",
+        "football collection growth",
+        "memorabilia acquisition",
+        "autographed collectibles",
+        "first quarter additions"
+      ]
+    ],
+    "gpt4_6dc9b45b": [
+      [
+        "film festival attendance",
+        "SIFF Seattle event",
+        "cultural events attended",
+        "festival visit history",
+        "cinema event dates",
+        "international film festival",
+        "movie festival experience",
+        "cultural event attendance"
+      ],
+      [
+        "Seattle International Film Festival",
+        "SIFF attendance date",
+        "film festival event attended",
+        "cinema festival visit timeline",
+        "past festival attendance",
+        "film festival date"
+      ],
+      [
+        "film festival attendance",
+        "SIFF dates",
+        "festival history",
+        "event attendance log",
+        "past film festivals",
+        "months calculation"
+      ]
+    ],
+    "195a1a1b": [
+      [
+        "evening entertainment ideas",
+        "leisure time hobbies",
+        "after-work relaxation",
+        "downtime pastimes",
+        "freetime pursuits",
+        "indoor activity suggestions",
+        "night entertainment",
+        "relaxation activities"
+      ],
+      [
+        "hobbies and entertainment options",
+        "nighttime leisure activities",
+        "evening downtime suggestions",
+        "after dark recreational pastimes",
+        "fun ways to spend evenings"
+      ],
+      [
+        "hobbies",
+        "pastimes",
+        "nighttime routines",
+        "leisure activities",
+        "relaxation",
+        "entertainment",
+        "after-work things",
+        "free time activities"
+      ]
+    ],
+    "6ade9755": [
+      [
+        "yoga studio locations",
+        "fitness class providers",
+        "wellness center locations",
+        "yoga instructor availability",
+        "exercise studio information",
+        "yoga membership options",
+        "local fitness studios",
+        "yoga class schedules"
+      ],
+      [
+        "yoga studio locations",
+        "fitness class schedules",
+        "yoga instructors",
+        "wellness centers nearby",
+        "exercise classes I attend"
+      ],
+      [
+        "studios",
+        "instructors",
+        "fitness training",
+        "wellness centers",
+        "gyms",
+        "lessons",
+        "class schedules",
+        "exercise routines"
+      ]
+    ],
+    "gpt4_fe651585": [
+      [
+        "Rachel parenthood timeline",
+        "Alex fatherhood events",
+        "birth dates comparison",
+        "children milestones",
+        "parenthood status updates",
+        "family expansion events",
+        "first child timeline",
+        "parental status changes"
+      ],
+      [
+        "Rachel's parenthood",
+        "Alex became a parent",
+        "first child birth",
+        "who has children",
+        "parenthood timeline"
+      ],
+      [
+        "parenthood milestones",
+        "who had children first",
+        "family births",
+        "pregnancy",
+        "newborn",
+        "first child",
+        "parenthood timeline",
+        "who became parent"
+      ]
+    ],
+    "f4f1d8a4": [
+      [
+        "kitchen appliance gifts",
+        "birthday present donors",
+        "stand mixer purchase history",
+        "gift-giver relationships",
+        "birthday present origins",
+        "appliance gifting",
+        "gift received details",
+        "mixer acquisition source"
+      ],
+      [
+        "kitchen appliance gift",
+        "mixer birthday present",
+        "who gave gifts",
+        "birthday gifts received",
+        "kitchen equipment gifted"
+      ],
+      [
+        "gift giver",
+        "kitchen appliances",
+        "birthday presents",
+        "who gave gift",
+        "memorable gifts",
+        "present recipient",
+        "thoughtful gifts",
+        "generosity"
+      ]
+    ],
+    "3fdac837": [
+      [
+        "Japan travel duration",
+        "Chicago visit length",
+        "destination time tracking",
+        "international trip days",
+        "travel history log",
+        "visit duration records",
+        "travel itinerary days",
+        "time spent abroad"
+      ],
+      [
+        "Japan trip duration",
+        "Chicago visit length",
+        "travel days counted",
+        "time spent traveling",
+        "days in two cities"
+      ],
+      [
+        "travel duration",
+        "trip lengths",
+        "visiting multiple cities",
+        "travel statistics",
+        "itinerary",
+        "days visited",
+        "journey documentation",
+        "time abroad"
+      ]
+    ],
+    "eace081b": [
+      [
+        "Hawaii accommodation plans",
+        "birthday trip lodging",
+        "hotel reservations Hawaii",
+        "vacation lodging details",
+        "resort booking plans",
+        "trip destination housing",
+        "birthday trip accommodations",
+        "travel lodging preferences"
+      ],
+      [
+        "Hawaii hotel accommodation",
+        "Hawaiian resort",
+        "birthday vacation lodging",
+        "where to stay Hawaii",
+        "accommodation plans"
+      ],
+      [
+        "accommodation options",
+        "lodging",
+        "hotel reservations",
+        "resort stays",
+        "vacation planning",
+        "where to sleep",
+        "island accommodations",
+        "travel arrangements"
+      ]
+    ],
+    "1da05512": [
+      [
+        "tech purchase timing",
+        "NAS storage decision",
+        "hardware buying advice",
+        "tech spending planning",
+        "storage device investment",
+        "equipment purchase timing",
+        "technology acquisition decision",
+        "tech budget considerations"
+      ],
+      [
+        "network attached storage device",
+        "tech purchase decision",
+        "hardware timing question",
+        "storage technology advice",
+        "buy now or wait"
+      ],
+      [
+        "network attached storage",
+        "purchase timing",
+        "tech investment decision",
+        "buy versus wait",
+        "equipment planning",
+        "storage solution",
+        "timing strategy",
+        "recommendation"
+      ]
+    ],
+    "eac54add": [
+      [
+        "business achievement news",
+        "work milestone events",
+        "recent accomplishments",
+        "professional growth updates",
+        "career progress updates",
+        "business growth events",
+        "company milestones",
+        "work achievement records"
+      ],
+      [
+        "business achievement",
+        "work milestone update",
+        "professional accomplishment",
+        "company milestone mentioned",
+        "recent work progress"
+      ],
+      [
+        "professional milestones",
+        "career achievements",
+        "work accomplishments",
+        "business growth",
+        "recent success",
+        "timeline context",
+        "achievement documentation",
+        "significant events"
+      ]
+    ],
+    "61f8c8f8": [
+      [
+        "5K race time",
+        "running performance improvement",
+        "personal athletic record",
+        "race time comparison",
+        "fitness progress tracking",
+        "athletic speed improvement",
+        "running time progression",
+        "marathon pace records"
+      ],
+      [
+        "5K race results",
+        "running improvement",
+        "personal best 5K",
+        "time comparison year over year",
+        "athletic performance"
+      ],
+      [
+        "running improvement",
+        "personal record",
+        "athletic performance",
+        "race time comparison",
+        "fitness progress",
+        "year-over-year comparison",
+        "training results",
+        "running speed"
+      ]
+    ],
+    "afdc33df": [
+      [
+        "kitchen organization tips",
+        "home cleanliness habits",
+        "decluttering advice",
+        "household tidiness strategies",
+        "domestic organization",
+        "kitchen maintenance routine",
+        "home care tips",
+        "organization best practices"
+      ],
+      [
+        "kitchen organization tips",
+        "cleaning and organization",
+        "home tidiness advice",
+        "organization systems",
+        "maintaining clean spaces"
+      ],
+      [
+        "organization habits",
+        "home cleanliness",
+        "tidiness maintenance",
+        "decluttering",
+        "kitchen management",
+        "housekeeping tips",
+        "cleaning routines",
+        "organization systems"
+      ]
+    ],
+    "28dc39ac": [
+      [
+        "leisure activity tracking",
+        "recreational habit log",
+        "entertainment time",
+        "activity hour aggregate",
+        "hobby statistics",
+        "gaming habit patterns",
+        "free time spending"
+      ],
+      [
+        "gaming session logs",
+        "video game playtime",
+        "entertainment tracking",
+        "leisure time records",
+        "gaming statistics",
+        "playtime accumulation"
+      ],
+      [
+        "gaming statistics",
+        "playtime tracking",
+        "video game activity",
+        "game session log",
+        "entertainment hours",
+        "gaming habits",
+        "game time record"
+      ]
+    ],
+    "8c18457d": [
+      [
+        "gift purchase history",
+        "shopping date comparison",
+        "purchase timeline",
+        "transaction dates",
+        "event sequence spacing",
+        "purchase record chronology",
+        "temporal shopping records"
+      ],
+      [
+        "brother graduation gift purchase",
+        "best friend birthday gift",
+        "shopping records",
+        "gift purchase timeline",
+        "event-based milestones",
+        "relationship gift history"
+      ],
+      [
+        "graduation present purchase",
+        "birthday present purchase",
+        "shopping dates",
+        "gift purchase timeline",
+        "time interval calculation",
+        "date comparison",
+        "present giving occasions"
+      ]
+    ],
+    "gpt4_31ff4165": [
+      [
+        "health tech inventory",
+        "wearable device usage",
+        "biometric device tracking",
+        "daily wellness gadgets",
+        "medical tech log",
+        "health gadget equipment",
+        "daily device monitoring"
+      ],
+      [
+        "wearable health devices",
+        "fitness tracker usage",
+        "medical monitoring equipment",
+        "daily wellness routine",
+        "biometric tracking",
+        "health tech inventory"
+      ],
+      [
+        "health technology",
+        "fitness trackers",
+        "medical gadgets",
+        "biometric devices",
+        "daily wellness monitoring",
+        "wearables",
+        "health gadget inventory"
+      ]
+    ],
+    "982b5123": [
+      [
+        "travel booking date",
+        "accommodation reservation history",
+        "trip lodging records",
+        "vacation booking timeline",
+        "rental reservation date",
+        "travel history",
+        "SF trip planning"
+      ],
+      [
+        "San Francisco accommodation",
+        "Airbnb reservation history",
+        "travel booking timeline",
+        "lodging reservations",
+        "trip planning records",
+        "vacation bookings"
+      ],
+      [
+        "rental booking",
+        "accommodation reservation",
+        "SF travel",
+        "lodging date",
+        "travel history",
+        "vacation planning",
+        "booking timeline"
+      ]
+    ],
+    "1903aded": [
+      [
+        "remote job recommendations",
+        "employment suggestions list",
+        "career options elderly",
+        "previous employment discussion",
+        "job reference list",
+        "career guidance seniors",
+        "work opportunity suggestions"
+      ],
+      [
+        "remote work seniors",
+        "work from home employment",
+        "job opportunities older adults",
+        "employment recommendations discussion",
+        "remote job listings",
+        "senior career options"
+      ],
+      [
+        "remote employment",
+        "telecommuting positions",
+        "senior careers",
+        "job recommendations",
+        "job list item",
+        "remote work options",
+        "employment suggestions"
+      ]
+    ],
+    "06db6396": [
+      [
+        "art student progress",
+        "creative project output",
+        "painting portfolio",
+        "art course milestones",
+        "artistic development",
+        "creative achievement",
+        "art project completion"
+      ],
+      [
+        "painting class enrollment",
+        "art project milestones",
+        "creative work completed",
+        "hobby progress tracking",
+        "artistic skill development",
+        "painting course timeline"
+      ],
+      [
+        "art projects",
+        "painting progress",
+        "art class enrollment",
+        "course start date",
+        "artistic creations",
+        "project milestones",
+        "creative work completed"
+      ]
+    ],
+    "7527f7e2": [
+      [
+        "handbag purchase price",
+        "designer fashion cost",
+        "luxury accessory expense",
+        "designer brand spending",
+        "shopping purchase amount",
+        "fashion accessory cost",
+        "high-end purchase"
+      ],
+      [
+        "designer fashion purchase",
+        "handbag shopping",
+        "luxury item expenditure",
+        "fashion spending records",
+        "clothing purchase receipts",
+        "designer brand purchase"
+      ],
+      [
+        "luxury bag purchase",
+        "handbag expense",
+        "designer fashion",
+        "clothing shopping",
+        "purchase amount",
+        "fashion spending",
+        "bag price"
+      ]
+    ],
+    "c5e8278d": [
+      [
+        "surname history",
+        "legal name change",
+        "maiden name",
+        "previous surname",
+        "identity change record",
+        "name transition document",
+        "former identity"
+      ],
+      [
+        "legal name change",
+        "surname change records",
+        "former name documentation",
+        "identity change history",
+        "previous surname",
+        "name change paperwork"
+      ],
+      [
+        "previous surname",
+        "maiden name",
+        "legal name change",
+        "former family name",
+        "name history",
+        "original surname",
+        "name before marriage"
+      ]
+    ],
+    "5e1b23de": [
+      [
+        "class attendance date",
+        "workshop history",
+        "educational event attendance",
+        "photography course",
+        "skill development event",
+        "course enrollment date",
+        "event attendance timeline"
+      ],
+      [
+        "photography workshop attendance",
+        "photography training events",
+        "photography skill development",
+        "workshop course history",
+        "educational event attendance",
+        "photography class records"
+      ],
+      [
+        "photo class",
+        "photography training",
+        "workshop date",
+        "course attendance",
+        "photography education",
+        "learning date",
+        "class participation"
+      ]
+    ],
+    "72e3ee87": [
+      [
+        "Crash Course viewing",
+        "educational video progress",
+        "science curriculum course",
+        "online learning completion",
+        "video series tracking",
+        "educational content progress",
+        "course episode history"
+      ],
+      [
+        "Crash Course video series",
+        "Science curriculum progress",
+        "online course completion",
+        "educational video content",
+        "course episode tracking",
+        "learning progress records"
+      ],
+      [
+        "educational content",
+        "video series",
+        "course progress",
+        "learning series",
+        "episode tracking",
+        "science education",
+        "online course"
+      ]
+    ],
+    "60bf93ed": [
+      [
+        "delivery duration",
+        "shipping speed",
+        "fulfillment timeline",
+        "order processing days",
+        "transit time measurement",
+        "delivery velocity metrics"
+      ],
+      [
+        "shipping duration",
+        "delivery time",
+        "order fulfillment",
+        "package transit time",
+        "purchase-to-arrival timeline",
+        "e-commerce shipping"
+      ],
+      [
+        "shipping duration",
+        "delivery time",
+        "fulfillment timeline",
+        "transit period",
+        "package delivery",
+        "order processing time",
+        "purchase to delivery",
+        "delivery tracking"
+      ]
+    ],
+    "1de5cff2": [
+      [
+        "luxury brand",
+        "sustainable material sourcing",
+        "eco-friendly practices",
+        "brand sustainability focus",
+        "natural rubber harvesting",
+        "environmental sourcing practices"
+      ],
+      [
+        "sustainable luxury materials",
+        "eco-friendly rubber sourcing",
+        "fashion brand sustainability practices",
+        "previous conversation history",
+        "luxury brand material sourcing",
+        "Amazonian resources"
+      ],
+      [
+        "luxury sustainable sourcing",
+        "ethical fashion brands",
+        "eco-friendly luxury fashion",
+        "sustainable rubber sourcing",
+        "brand environmental practices",
+        "forest resources",
+        "luxury sustainability",
+        "ethical sourcing"
+      ]
+    ],
+    "gpt4_70e84552": [
+      [
+        "task sequence",
+        "completion order",
+        "work timeline order",
+        "which task earlier",
+        "project sequence timing"
+      ],
+      [
+        "household tasks chronology",
+        "farm chores sequence",
+        "task completion timeline",
+        "fence repair date",
+        "livestock maintenance order",
+        "chores priority order"
+      ],
+      [
+        "task completion sequence",
+        "household chore order",
+        "completion timeline",
+        "daily task schedule",
+        "home maintenance",
+        "animal care routine",
+        "property maintenance",
+        "chore chronology"
+      ]
+    ],
+    "gpt4_7f6b06db": [
+      [
+        "travel chronology",
+        "trip schedule dates",
+        "journey timeline",
+        "monthly travel events",
+        "journey chronology order"
+      ],
+      [
+        "travel chronology",
+        "recent vacation sequence",
+        "journey timeline dates",
+        "trip planning history",
+        "travel itinerary order",
+        "seasonal trips"
+      ],
+      [
+        "travel itinerary",
+        "trip dates",
+        "vacation timeline",
+        "journey chronology",
+        "recent travels",
+        "travel schedule",
+        "trip planning",
+        "vacation dates"
+      ]
+    ],
+    "a96c20ee": [
+      [
+        "academic venue",
+        "research presentation location",
+        "poster session venue",
+        "academic conference",
+        "thesis presentation site"
+      ],
+      [
+        "academic poster session",
+        "thesis research venue",
+        "graduate conference",
+        "research presentation location",
+        "academic institution name",
+        "university department"
+      ],
+      [
+        "academic poster session",
+        "thesis presentation venue",
+        "research conference",
+        "poster session event",
+        "university presentation",
+        "academic research event",
+        "conference venue",
+        "academic poster"
+      ]
+    ],
+    "2311e44b_abs": [
+      [
+        "reading progress status",
+        "book progress tracking",
+        "completion percentage",
+        "reading metrics",
+        "book status"
+      ],
+      [
+        "book reading progress",
+        "Sapiens completion status",
+        "non-fiction reading tracker",
+        "reading pace",
+        "book length",
+        "Yuval Harari"
+      ],
+      [
+        "Sapiens reading progress",
+        "book completion status",
+        "reading progress tracking",
+        "pages completed",
+        "book progress",
+        "current reading status",
+        "reading checkpoint",
+        "book pages remaining"
+      ]
+    ],
+    "5c40ec5b": [
+      [
+        "meeting frequency",
+        "friend meeting count",
+        "encounter history",
+        "friendship meetings log",
+        "visit frequency pattern"
+      ],
+      [
+        "friendship meeting frequency",
+        "Alex contact history",
+        "international friend",
+        "social meetups with Alex",
+        "relationship interaction count",
+        "friendship timeline"
+      ],
+      [
+        "friendship meeting frequency",
+        "contact with Alex",
+        "meeting history",
+        "social contact",
+        "friend meetups",
+        "personal meeting log",
+        "international friendship",
+        "meeting count"
+      ]
+    ],
+    "ba358f49_abs": [
+      [
+        "wedding date",
+        "marriage timeline",
+        "age calculation",
+        "future events planning"
+      ],
+      [
+        "wedding date timeline",
+        "Rachel age at wedding",
+        "marriage planning date",
+        "future age calculation",
+        "wedding timing",
+        "engagement plans"
+      ],
+      [
+        "wedding date planning",
+        "Rachel age calculation",
+        "marriage timeline",
+        "future age",
+        "engagement timeline",
+        "life event timeline",
+        "wedding planning",
+        "age milestone"
+      ]
+    ],
+    "1d4e3b97": [
+      [
+        "cycling performance factors",
+        "group ride dynamics",
+        "bike maintenance effects",
+        "performance improvement causes",
+        "weekly performance pattern"
+      ],
+      [
+        "cycling performance factor",
+        "group ride advantage",
+        "bicycle maintenance status",
+        "social riding effect",
+        "pedal performance",
+        "mechanical factors",
+        "group dynamics impact"
+      ],
+      [
+        "cycling performance factors",
+        "bike efficiency",
+        "group ride dynamics",
+        "cycling environment",
+        "bike maintenance",
+        "performance improvement",
+        "Sunday cycling group",
+        "bicycle condition"
+      ]
+    ],
+    "0db4c65d": [
+      [
+        "completion date timing",
+        "event attendance date",
+        "days between events",
+        "book discussion event",
+        "author appearance date"
+      ],
+      [
+        "reading completion date",
+        "book event attendance date",
+        "event timeline from reading",
+        "author event schedule",
+        "reading to event interval",
+        "Evelyn Hugo book completion",
+        "thriller novel event"
+      ],
+      [
+        "book event attendance",
+        "reading timeline",
+        "literary event date",
+        "author event",
+        "fiction reading history",
+        "library event attendance",
+        "book timeline",
+        "reading event experience"
+      ]
+    ],
+    "c8c3f81d": [
+      [
+        "shoe model",
+        "athletic footwear",
+        "footwear preference",
+        "running equipment",
+        "shoe purchase",
+        "personal gear"
+      ],
+      [
+        "shoe manufacturer",
+        "athletic footwear",
+        "preferred sneaker",
+        "running footwear brand",
+        "workout shoe"
+      ],
+      [
+        "sneaker model name",
+        "athletic footwear preference",
+        "shoe purchase history",
+        "jogging shoe type",
+        "preferred athletic shoes",
+        "footwear brand choice",
+        "running shoe model",
+        "favorite shoe"
+      ]
+    ],
+    "f523d9fe": [
+      [
+        "streaming service catalog",
+        "content availability issue",
+        "show seasons unavailable",
+        "streaming platform gap",
+        "series incomplete catalog"
+      ],
+      [
+        "streaming service limitation",
+        "incomplete series",
+        "show availability",
+        "catalog gap",
+        "TV series",
+        "show example"
+      ],
+      [
+        "streaming show availability",
+        "Netflix series completeness",
+        "missing seasons issue",
+        "incomplete show archive",
+        "season availability gap",
+        "TV show catalog",
+        "streaming platform limitations",
+        "show content availability"
+      ]
+    ],
+    "a9f6b44c": [
+      [
+        "bike maintenance",
+        "repair activity count",
+        "bicycle upkeep log",
+        "maintenance schedule",
+        "service records"
+      ],
+      [
+        "bike repair",
+        "maintenance schedule",
+        "bicycle work",
+        "repair count",
+        "service log"
+      ],
+      [
+        "bicycle maintenance count",
+        "bike repair work",
+        "cycling service history",
+        "spring bike repairs",
+        "mechanical maintenance work",
+        "bike shop service",
+        "bike maintenance projects",
+        "service count March"
+      ]
+    ],
+    "01493427": [
+      [
+        "postcard hobby",
+        "collection growth rate",
+        "acquiring postcards",
+        "hobby restart date",
+        "collectible mail"
+      ],
+      [
+        "postcard collector",
+        "collection growth",
+        "resumed hobby",
+        "hobby progress",
+        "collector activity"
+      ],
+      [
+        "postcard hobby collection",
+        "collecting activity",
+        "postcard acquisition count",
+        "hobby inventory growth",
+        "collection expansion rate",
+        "postcard inventory",
+        "collecting hobby projects",
+        "postcard additions"
+      ]
+    ],
+    "88432d0a": [
+      [
+        "baking frequency",
+        "cooking activity",
+        "recent baking activity",
+        "hobby frequency count",
+        "baked goods"
+      ],
+      [
+        "baking frequency",
+        "home baking",
+        "cooking activity",
+        "baking hobby",
+        "recent baking"
+      ],
+      [
+        "baking project count",
+        "homemade baked goods",
+        "cooking activity frequency",
+        "baking frequency",
+        "recipes baked",
+        "baking hobby",
+        "weekly baking projects",
+        "baked goods count"
+      ]
+    ],
+    "gpt4_9a159967": [
+      [
+        "frequent flyer status",
+        "airline preference",
+        "travel frequency",
+        "flight history",
+        "spring travel"
+      ],
+      [
+        "flight frequency",
+        "travel history",
+        "frequent airline",
+        "airline statistics",
+        "flight log"
+      ],
+      [
+        "flight frequency ranking",
+        "preferred airline choice",
+        "spring travel history",
+        "frequent flyer status",
+        "airline preference",
+        "air travel record",
+        "most flights taken",
+        "travel history"
+      ]
+    ],
+    "75499fd8": [
+      [
+        "pet information",
+        "canine breed type",
+        "pet characteristics",
+        "dog type details",
+        "animal species"
+      ],
+      [
+        "canine breed",
+        "pet information",
+        "dog type",
+        "breed identification",
+        "pet dog",
+        "dog species"
+      ],
+      [
+        "dog type breed",
+        "pet breed information",
+        "canine breed identity",
+        "puppy dog species",
+        "pet type",
+        "dog characteristics",
+        "animal companion breed",
+        "my pet type"
+      ]
+    ],
+    "d3ab962e": [
+      [
+        "hiking activity log",
+        "trail distance",
+        "cumulative distance",
+        "weekend activities",
+        "outdoor recreation"
+      ],
+      [
+        "hiking distance",
+        "weekend hiking",
+        "trail distance",
+        "hiking mileage",
+        "outdoor activity",
+        "distance log"
+      ],
+      [
+        "hiking distance total",
+        "weekend hike mileage",
+        "trail distance covered",
+        "hiking activity distance",
+        "consecutive weekend trips",
+        "trail miles hiked",
+        "hike mileage",
+        "outdoor activity distance"
+      ]
+    ],
+    "b46e15ed": [
+      [
+        "volunteer work",
+        "charity involvement",
+        "event participation",
+        "volunteering history",
+        "consecutive event participation"
+      ],
+      [
+        "charity volunteer",
+        "volunteering history",
+        "event participation",
+        "volunteer timeline",
+        "charity work"
+      ],
+      [
+        "charity event participation",
+        "volunteer activity history",
+        "fundraiser attendance record",
+        "community service events",
+        "volunteering participation",
+        "event attendance history",
+        "volunteer work",
+        "community involvement"
+      ]
+    ],
+    "0e4e4c46": [
+      [
+        "board game high scores",
+        "personal gaming records",
+        "competitive gaming stats",
+        "game score tracking",
+        "player performance metrics",
+        "tabletop game achievements",
+        "recreational gaming"
+      ],
+      [
+        "board game high scores",
+        "Ticket to Ride gameplay",
+        "game achievement records",
+        "personal gaming performance"
+      ],
+      [
+        "board game high scores",
+        "tabletop gaming records",
+        "game session achievements",
+        "personal game rankings",
+        "board game statistics",
+        "competitive play results"
+      ]
+    ],
+    "8e9d538c": [
+      [
+        "yarn collection inventory",
+        "knitting supplies stash",
+        "fiber arts materials",
+        "textile hobbies tracking",
+        "crafting equipment accounting",
+        "yarn acquisition history",
+        "craft supply assessment"
+      ],
+      [
+        "yarn stash inventory",
+        "knitting supplies collection",
+        "worsted weight yarn",
+        "fiber craft materials",
+        "yarn storage"
+      ],
+      [
+        "fiber arts inventory",
+        "knitting supplies collection",
+        "crochet materials count",
+        "handcraft supplies",
+        "yarn quantity tracking",
+        "textile materials",
+        "craft stash audit"
+      ]
+    ],
+    "c8090214_abs": [
+      [
+        "iPad purchase date",
+        "Holiday Market attendance",
+        "event timeline comparison",
+        "seasonal market visits",
+        "technology acquisition date",
+        "temporal event relationships",
+        "personal purchase history"
+      ],
+      [
+        "iPad purchase date",
+        "Holiday Market event",
+        "shopping dates",
+        "product purchase timing"
+      ],
+      [
+        "tablet purchase date",
+        "seasonal market attendance",
+        "consumer electronics timeline",
+        "event date comparison",
+        "holiday shopping events",
+        "purchase transaction timing"
+      ]
+    ],
+    "c4a1ceb8": [
+      [
+        "cocktail ingredient tracking",
+        "beverage recipes experimentation",
+        "drink making ingredients",
+        "recipe ingredient diversity",
+        "homemade cocktail attempts",
+        "mixology experimentation log",
+        "fruit-based drink making"
+      ],
+      [
+        "cocktail recipes",
+        "citrus ingredients used",
+        "mixed drink recipes",
+        "home bartending",
+        "drink preparation"
+      ],
+      [
+        "mixed drink ingredients",
+        "home bartending experiments",
+        "alcohol drink recipes",
+        "acidic drink components",
+        "spirit-based beverages",
+        "mixology experimentation"
+      ]
+    ],
+    "gpt4_b5700ca0": [
+      [
+        "faith community gatherings",
+        "spiritual practice locations",
+        "place of worship visits",
+        "community service location",
+        "spiritual activity venues",
+        "worship center attendance",
+        "religious institution visits"
+      ],
+      [
+        "religious services",
+        "worship location",
+        "faith community events",
+        "spiritual practices",
+        "church activities"
+      ],
+      [
+        "church service attendance",
+        "spiritual gathering location",
+        "worship meeting venue",
+        "religious observance",
+        "congregation activity",
+        "faith community"
+      ]
+    ],
+    "d6062bb9": [
+      [
+        "social media video metrics",
+        "content creator statistics",
+        "video platform analytics",
+        "audience engagement counts",
+        "content performance measurement",
+        "streaming platform viewership",
+        "online content reach"
+      ],
+      [
+        "YouTube video stats",
+        "TikTok engagement metrics",
+        "social media views",
+        "video content performance",
+        "creator analytics"
+      ],
+      [
+        "social media video metrics",
+        "streaming platform statistics",
+        "channel view counts",
+        "viral content performance",
+        "online video reach",
+        "content visibility analytics"
+      ]
+    ],
+    "c960da58": [
+      [
+        "music streaming library",
+        "curated music collections",
+        "personal music curation",
+        "streaming service library",
+        "music organization systems",
+        "audio content curation",
+        "music library inventory"
+      ],
+      [
+        "Spotify music library",
+        "music playlist collection",
+        "streaming service playlists",
+        "personal music organization"
+      ],
+      [
+        "music library organization",
+        "curated song lists",
+        "streaming audio collection",
+        "music playlist tracking",
+        "audio curation",
+        "music collection size"
+      ]
+    ],
+    "gpt4_2f8be40d": [
+      [
+        "celebration event attendance",
+        "social event tracking",
+        "milestone occasion participation",
+        "annual event summary",
+        "marriage ceremonies attended",
+        "special event participation",
+        "ceremonial event history"
+      ],
+      [
+        "wedding attendance count",
+        "social celebrations attended",
+        "2026 event calendar",
+        "special occasions"
+      ],
+      [
+        "nuptial ceremony attendance",
+        "annual celebration count",
+        "guest appearance log",
+        "social event participation",
+        "wedding season",
+        "marriage celebration"
+      ]
+    ],
+    "gpt4_2487a7cb": [
+      [
+        "professional development events",
+        "workshop and webinar attendance",
+        "educational event sequence",
+        "skill-building course history",
+        "online learning participation",
+        "technical training chronology",
+        "learning opportunity attendance"
+      ],
+      [
+        "professional development events",
+        "workshop attendance",
+        "webinar participation",
+        "training courses attended",
+        "skill development sessions"
+      ],
+      [
+        "skill-building event dates",
+        "online learning participation",
+        "training session chronology",
+        "professional course attendance",
+        "educational event timeline",
+        "learning program participation"
+      ]
+    ],
+    "603deb26": [
+      [
+        "cocktail experimentation history",
+        "drink mixing practice",
+        "home bartending attempts",
+        "recipe practice frequency",
+        "cocktail mastery progression",
+        "friend influenced learning",
+        "spirit-based drink making"
+      ],
+      [
+        "Negroni cocktail",
+        "home bartending attempts",
+        "Emma friend recommendation",
+        "cocktail preparation practice",
+        "drink learning"
+      ],
+      [
+        "cocktail preparation attempts",
+        "alcohol drink recipes",
+        "home bar experiments",
+        "mixing techniques learned",
+        "classic spirits preparation",
+        "drink creation practice"
+      ]
+    ],
+    "gpt4_fe651585_abs": [
+      [
+        "first child born",
+        "parenthood order",
+        "birth dates",
+        "parental timeline",
+        "earliest parent",
+        "becoming parent order"
+      ],
+      [
+        "first child birth",
+        "parenthood timeline",
+        "having children",
+        "childbirth sequence",
+        "Tom Alex comparison",
+        "parenthood age",
+        "first to have baby",
+        "children born"
+      ],
+      [
+        "parenthood timing",
+        "birth sequence",
+        "Tom and Alex",
+        "who had children first",
+        "newborn arrival",
+        "family milestone"
+      ]
+    ],
+    "2698e78f_abs": [
+      [
+        "appointment frequency",
+        "doctor visit schedule",
+        "healthcare visits",
+        "visit regularity",
+        "consultation pattern",
+        "medical appointment history"
+      ],
+      [
+        "appointment frequency",
+        "physician visits",
+        "Dr. Johnson schedule",
+        "medical visit pattern",
+        "consultation regularity",
+        "visit cadence",
+        "appointment regularity"
+      ],
+      [
+        "doctor's office visits",
+        "appointment frequency",
+        "medical visit pattern",
+        "healthcare schedule",
+        "clinical visits",
+        "regular checkups"
+      ]
+    ],
+    "5d3d2817": [
+      [
+        "job history",
+        "career transition",
+        "employment record",
+        "prior role",
+        "work history",
+        "former employment"
+      ],
+      [
+        "former employment",
+        "career history",
+        "past job",
+        "job before current",
+        "employment background",
+        "prior work",
+        "last occupation"
+      ],
+      [
+        "prior employment",
+        "job transition",
+        "career history",
+        "former job title",
+        "work background",
+        "previous role"
+      ]
+    ],
+    "b01defab": [
+      [
+        "book completion",
+        "reading progress",
+        "reading status",
+        "completed books",
+        "novel progress",
+        "reading log"
+      ],
+      [
+        "book completion status",
+        "novel finished",
+        "reading progress",
+        "Kristin Hannah work",
+        "literary work",
+        "book finished",
+        "reading completion"
+      ],
+      [
+        "book completion status",
+        "reading progress tracking",
+        "finished novels",
+        "Kristin Hannah",
+        "reading list"
+      ]
+    ],
+    "08f4fc43": [
+      [
+        "church events",
+        "religious services",
+        "service attendance dates",
+        "liturgical calendar",
+        "worship schedule",
+        "religious event timing"
+      ],
+      [
+        "religious services",
+        "church attendance dates",
+        "Ash Wednesday service",
+        "time between events",
+        "liturgical calendar",
+        "service interval",
+        "event spacing"
+      ],
+      [
+        "time interval calculation",
+        "days between dates",
+        "religious calendar events",
+        "church service timing",
+        "liturgical timeline"
+      ]
+    ],
+    "7e00a6cb": [
+      [
+        "lodging recommendation",
+        "travel accommodation",
+        "Amsterdam stays",
+        "budget lodging",
+        "previous travel tips",
+        "hostel suggestion"
+      ],
+      [
+        "hostel recommendation",
+        "accommodation suggestion",
+        "lodging booking",
+        "travel advice",
+        "previous recommendation",
+        "hostel name",
+        "budget accommodation"
+      ],
+      [
+        "Amsterdam accommodation",
+        "hostel booking history",
+        "travel recommendations",
+        "lodging suggestion",
+        "previous trip notes"
+      ]
+    ],
+    "a1eacc2a": [
+      [
+        "story count",
+        "writing output",
+        "story completion",
+        "writing productivity",
+        "authored stories",
+        "writing progress"
+      ],
+      [
+        "short story count",
+        "fiction output",
+        "creative writing",
+        "writing productivity",
+        "stories authored",
+        "published stories",
+        "writing volume"
+      ],
+      [
+        "writing output count",
+        "literary production",
+        "manuscript inventory",
+        "creative writing progress",
+        "short story collection"
+      ]
+    ],
+    "gpt4_70e84552_abs": [
+      [
+        "task order",
+        "project timeline",
+        "farm work",
+        "livestock purchase",
+        "completion sequence",
+        "work priorities"
+      ],
+      [
+        "task completion order",
+        "fence repair",
+        "livestock purchase",
+        "Peter cows",
+        "farm project sequence",
+        "task timeline",
+        "project completion order"
+      ],
+      [
+        "task completion order",
+        "fence repair vs livestock",
+        "farm project timeline",
+        "Peter transaction",
+        "accomplishment sequence"
+      ]
+    ],
+    "b46e15ee": [
+      [
+        "volunteer work",
+        "charitable activities",
+        "community service",
+        "philanthropic participation",
+        "event attendance",
+        "volunteering record"
+      ],
+      [
+        "charity volunteering",
+        "philanthropic event",
+        "volunteer participation",
+        "community service",
+        "one month ago",
+        "volunteer event",
+        "charitable work"
+      ],
+      [
+        "charity participation",
+        "volunteer activities",
+        "nonprofit involvement",
+        "community service event",
+        "fundraiser attendance"
+      ]
+    ],
+    "8077ef71": [
+      [
+        "event attendance date",
+        "professional conference",
+        "networking activity",
+        "event history",
+        "attendance record",
+        "professional events"
+      ],
+      [
+        "networking event attendance",
+        "professional meeting",
+        "business networking",
+        "conference participation",
+        "time elapsed",
+        "networking date",
+        "event date"
+      ],
+      [
+        "professional networking event",
+        "business conference attendance",
+        "career development event",
+        "networking date",
+        "professional gathering"
+      ]
+    ],
+    "a4996e51": [
+      [
+        "work schedule",
+        "campaign season",
+        "weekly hours",
+        "busy season",
+        "seasonal workload",
+        "peak period"
+      ],
+      [
+        "busy season workload",
+        "campaign sprint intensity",
+        "seasonal work demands",
+        "overtime hours peak",
+        "intense work periods"
+      ],
+      [
+        "work intensity patterns",
+        "peak period scheduling",
+        "workload metrics",
+        "labor time tracking",
+        "campaign duration tracking",
+        "seasonal employment hours",
+        "weekly time allocation",
+        "busy season timing"
+      ]
+    ],
+    "4adc0475": [
+      [
+        "soccer statistics",
+        "league performance",
+        "indoor soccer stats",
+        "goals assists totals",
+        "recreational sports"
+      ],
+      [
+        "soccer league statistics",
+        "scoring record",
+        "personal performance metrics",
+        "league standings",
+        "season record"
+      ],
+      [
+        "soccer performance statistics",
+        "player scoring achievements",
+        "league statistics tracking",
+        "sports performance records",
+        "team sport metrics",
+        "competitive play scoring",
+        "athletic achievement data",
+        "personal sports record"
+      ]
+    ],
+    "gpt4_2ba83207": [
+      [
+        "grocery spending",
+        "monthly expenses",
+        "store spending",
+        "shopping budget",
+        "retail expenses"
+      ],
+      [
+        "grocery spending patterns",
+        "retail budget tracking",
+        "monthly shopping expenses",
+        "store comparison",
+        "food purchase habits"
+      ],
+      [
+        "retail spending comparison",
+        "grocery shopping habits",
+        "store frequency tracking",
+        "monthly budget analysis",
+        "consumer expense patterns",
+        "shopping destination preference",
+        "expenditure by retailer",
+        "store loyalty tracking"
+      ]
+    ],
+    "gpt4_1d80365e": [
+      [
+        "Yosemite camping",
+        "trip duration",
+        "solo travel",
+        "camping experience",
+        "national park visit"
+      ],
+      [
+        "trip duration",
+        "vacation itinerary",
+        "backpacking adventure",
+        "camping travel log",
+        "wilderness expedition"
+      ],
+      [
+        "camping trip duration",
+        "travel itinerary planning",
+        "vacation timeframe",
+        "national park visit",
+        "wilderness adventure timeline",
+        "trip logistics",
+        "solo travel experience",
+        "outdoor excursion length"
+      ]
+    ],
+    "b6019101": [
+      [
+        "Marvel movies",
+        "movie watching habits",
+        "film viewing",
+        "entertainment consumption",
+        "MCU watch list"
+      ],
+      [
+        "Marvel movie watching",
+        "superhero films",
+        "entertainment viewing habits",
+        "movie watch history",
+        "recent film log"
+      ],
+      [
+        "superhero movie viewing",
+        "cinema watching habits",
+        "film consumption tracking",
+        "entertainment viewing log",
+        "movie viewing patterns",
+        "media consumption habits",
+        "cinematic universe tracking",
+        "film viewing history"
+      ]
+    ],
+    "505af2f5": [
+      [
+        "coffee recipe",
+        "creamer flavors",
+        "beverage recommendations",
+        "DIY coffee",
+        "coffee preferences"
+      ],
+      [
+        "creamer alternatives",
+        "homemade creamer",
+        "dairy-free options",
+        "coffee flavor ideas",
+        "beverage recipes"
+      ],
+      [
+        "coffee customization ideas",
+        "homemade beverage recipes",
+        "creamer flavor options",
+        "DIY coffee preparation",
+        "beverage enhancement tips",
+        "coffee flavor pairing",
+        "morning drink customization",
+        "ingredient recommendations"
+      ]
+    ],
+    "gpt4_e061b84g": [
+      [
+        "sports participation",
+        "athletic event",
+        "recreation activity",
+        "recent activities",
+        "sports hobby"
+      ],
+      [
+        "sports competition",
+        "athletic event",
+        "recent activity log",
+        "event participation history",
+        "competitive sports"
+      ],
+      [
+        "recent athletic competition",
+        "sports activity record",
+        "competitive event participation",
+        "event calendar history",
+        "athletic event log",
+        "sports involvement tracking",
+        "competition records",
+        "athletic activity memory"
+      ]
+    ],
+    "9ee3ecd6": [
+      [
+        "Sephora loyalty",
+        "beauty rewards program",
+        "loyalty points",
+        "reward redemption",
+        "makeup points"
+      ],
+      [
+        "Sephora loyalty program",
+        "rewards points balance",
+        "beauty membership benefits",
+        "product redemption",
+        "skincare rewards"
+      ],
+      [
+        "loyalty rewards program",
+        "point redemption value",
+        "beauty store rewards",
+        "cosmetic product points",
+        "retailer point system",
+        "rewards program benefits",
+        "skincare shopping rewards",
+        "point conversion metric"
+      ]
+    ],
+    "54026fce": [
+      [
+        "workplace relationships",
+        "colleague connections",
+        "team bonding",
+        "professional networking",
+        "work social"
+      ],
+      [
+        "workplace relationships",
+        "colleague communication",
+        "team bonding",
+        "professional networking",
+        "work friendships"
+      ],
+      [
+        "workplace relationship building",
+        "team communication strategies",
+        "colleague engagement ideas",
+        "professional networking tips",
+        "coworker connection methods",
+        "team bonding activities",
+        "office social activities",
+        "work relationship maintenance"
+      ]
+    ],
+    "efc3f7c2": [
+      [
+        "wake up time",
+        "morning schedule",
+        "sleep schedule",
+        "Friday routine",
+        "daily wake time"
+      ],
+      [
+        "sleep schedule",
+        "wake time patterns",
+        "morning routine",
+        "Friday schedule",
+        "daily rhythm variations"
+      ],
+      [
+        "Friday wake time patterns",
+        "sleep schedule variation",
+        "morning routine timing",
+        "daily wake time comparison",
+        "circadian rhythm changes",
+        "weekday sleep patterns",
+        "sleep timing preferences",
+        "wake time fluctuation"
+      ]
+    ],
+    "f4f1d8a4_abs": [
+      [
+        "father's present",
+        "paternal birthday gift",
+        "gift from parent",
+        "childhood presents",
+        "memorable gifts",
+        "parental generosity",
+        "gift recipient"
+      ],
+      [
+        "father",
+        "birthday present",
+        "parental gift",
+        "special occasion",
+        "gift-giving",
+        "family present"
+      ],
+      [
+        "father",
+        "present",
+        "parental present",
+        "memorable gift from parent",
+        "paternal gift received"
+      ]
+    ],
+    "gpt4_c27434e8_abs": [
+      [
+        "car modeling hobby",
+        "scale model vehicles",
+        "automotive projects",
+        "hobby project timeline",
+        "model building sequence",
+        "vehicle collectors",
+        "competing building projects"
+      ],
+      [
+        "car model projects",
+        "automotive hobby",
+        "project start date",
+        "model building",
+        "chronological order",
+        "first project timeline"
+      ],
+      [
+        "car model projects",
+        "automotive hobby",
+        "model building chronology",
+        "project start timeline",
+        "hobby chronology"
+      ]
+    ],
+    "0bc8ad93": [
+      [
+        "museum trip companions",
+        "solo museum outings",
+        "museum visit social context",
+        "accompanied museum experience",
+        "museum exploration solo",
+        "group museum visit",
+        "museum visit companion"
+      ],
+      [
+        "museum companion",
+        "social outing",
+        "friend attendance",
+        "visit company",
+        "solo vs group",
+        "friend museum visit"
+      ],
+      [
+        "solo visit",
+        "accompanied visit",
+        "museum companions",
+        "social museum outing",
+        "friend visit"
+      ]
+    ],
+    "dc439ea3": [
+      [
+        "powwow traditions",
+        "dance performances",
+        "Indigenous celebrations",
+        "Native American dances",
+        "cultural ceremonies",
+        "performance art traditions",
+        "traditional performing arts"
+      ],
+      [
+        "powwow traditions",
+        "Native American dance",
+        "cultural performance",
+        "dance ceremony",
+        "traditional activities",
+        "powwow dance"
+      ],
+      [
+        "tribal celebration",
+        "indigenous traditions",
+        "ceremonial games",
+        "dance performance",
+        "cultural powwow activities",
+        "traditional skill performance",
+        "powwow traditional games",
+        "tribal ceremonial performance"
+      ]
+    ],
+    "e9327a54": [
+      [
+        "Orlando eateries",
+        "specialty dessert venue",
+        "milkshake restaurant",
+        "oversized beverage drinks",
+        "Orlando food recommendation",
+        "unique sweets destination",
+        "dessert destination Orlando"
+      ],
+      [
+        "Orlando attractions",
+        "dessert venue",
+        "milkshake restaurant",
+        "specialty food shop",
+        "famous dessert place",
+        "milkshake bar"
+      ],
+      [
+        "milkshake specialty",
+        "oversized beverages",
+        "dessert destination",
+        "Orlando eatery",
+        "unique food venue",
+        "specialty drink location",
+        "memorable dessert experience",
+        "oversized milkshake shop"
+      ]
+    ],
+    "76d63226": [
+      [
+        "Samsung television specifications",
+        "TV screen dimensions",
+        "display size details",
+        "television model specs",
+        "screen diagonal measurement",
+        "new appliance details"
+      ],
+      [
+        "screen size",
+        "Samsung specs",
+        "display dimensions",
+        "TV measurements",
+        "television specifications",
+        "monitor size"
+      ],
+      [
+        "television dimensions",
+        "screen size",
+        "TV specifications",
+        "electronics measurements",
+        "display dimensions",
+        "new TV purchase",
+        "screen measurement",
+        "Samsung model details"
+      ]
+    ],
+    "e982271f": [
+      [
+        "Portland music venues",
+        "indie live music",
+        "concert recommendations",
+        "music performance spaces",
+        "Portland live bands",
+        "venue recommendations",
+        "concert hall Portland"
+      ],
+      [
+        "Portland music venues",
+        "venue recommendations",
+        "indie entertainment",
+        "Portland attractions",
+        "live music venue",
+        "concert location"
+      ],
+      [
+        "music venue recommendations",
+        "concert location",
+        "live music venue",
+        "Portland music scene",
+        "performance venue",
+        "venue name Portland",
+        "music recommendation history",
+        "indie show list"
+      ]
+    ],
+    "0bc8ad92": [
+      [
+        "museum visit timeline",
+        "social museum outing",
+        "time elapsed museum",
+        "outing duration calculation",
+        "museum trip frequency",
+        "museum companion outing"
+      ],
+      [
+        "museum friend outing",
+        "friend accompaniment",
+        "social visit",
+        "time elapsed museum",
+        "months passed",
+        "museum frequency"
+      ],
+      [
+        "museum visit timeline",
+        "friend accompaniment",
+        "visit frequency",
+        "time elapsed since",
+        "social museum outing",
+        "month count calculation",
+        "visit history",
+        "outing companion status"
+      ]
+    ],
+    "ef9cf60a": [
+      [
+        "sibling gift spending",
+        "sister present cost",
+        "gift purchase amount",
+        "family member spending",
+        "sister gift budget",
+        "gift expenses family"
+      ],
+      [
+        "sister gift expense",
+        "gift purchase cost",
+        "sibling spending",
+        "gift expenditure",
+        "money on gifts",
+        "purchase total"
+      ],
+      [
+        "sibling gift",
+        "gift expenditure",
+        "present cost",
+        "shopping expense",
+        "gift budget",
+        "purchase amount",
+        "expense tracking sister",
+        "gift spending total"
+      ]
+    ],
+    "67e0d0f2": [
+      [
+        "educational course completion",
+        "online learning programs",
+        "finished online classes",
+        "learning achievements",
+        "training course history",
+        "personal education goals"
+      ],
+      [
+        "online learning",
+        "course completion count",
+        "educational progress",
+        "e-learning achievement",
+        "learning milestone",
+        "training completion"
+      ],
+      [
+        "course completion count",
+        "educational achievement",
+        "learning progress",
+        "training completion",
+        "skill development",
+        "certification records",
+        "online education completion",
+        "course progress tracker"
+      ]
+    ],
+    "eeda8a6d": [
+      [
+        "aquatic pet inventory",
+        "tank population",
+        "freshwater fish count",
+        "saltwater aquarium",
+        "fish species variety",
+        "stocking density",
+        "pet fish collection"
+      ],
+      [
+        "aquarium fish inventory",
+        "total tank population",
+        "multiple tank stocking",
+        "aquatic pet census",
+        "fish species count"
+      ],
+      [
+        "pet fish inventory",
+        "aquarium stocking levels",
+        "tank population counts",
+        "aquatic pets owned",
+        "fish species lists",
+        "tank capacity management",
+        "pet inventory records",
+        "aquarium maintenance logs"
+      ]
+    ],
+    "b29f3365": [
+      [
+        "music education timeline",
+        "instrument upgrade decision",
+        "learning progression milestones",
+        "equipment purchase timing",
+        "guitar skill level",
+        "lesson history",
+        "amp acquisition date"
+      ],
+      [
+        "guitar lesson duration",
+        "musical training timeline",
+        "amp purchase date",
+        "learning progression milestone"
+      ],
+      [
+        "music lesson duration",
+        "guitar equipment purchases",
+        "amp acquisition timeline",
+        "music learning progression",
+        "lesson start date",
+        "instrument purchase history",
+        "musical milestone tracking",
+        "skill development timeline"
+      ]
+    ],
+    "8550ddae": [
+      [
+        "mixed drinks",
+        "alcohol recipe experimentation",
+        "bartending technique",
+        "drink ingredients",
+        "mixology exploration",
+        "weekend entertainment"
+      ],
+      [
+        "mixed drink recipe",
+        "bar cocktail experimented",
+        "beverage preparation method",
+        "weekend social drink"
+      ],
+      [
+        "mixed drink recipes",
+        "weekend beverage experimentation",
+        "bartending attempts",
+        "cocktail types tried",
+        "drink preparation experiences",
+        "alcoholic beverage exploration",
+        "recipe testing activities",
+        "weekend entertainment activities"
+      ]
+    ],
+    "09ba9854": [
+      [
+        "airport transportation costs",
+        "public transit pricing",
+        "ground transportation comparison",
+        "travel expense analysis",
+        "commute options",
+        "transit fare"
+      ],
+      [
+        "train fare comparison",
+        "airport ground transportation",
+        "commute cost savings",
+        "taxi vs transit"
+      ],
+      [
+        "ground transportation comparison",
+        "airport transfer costs",
+        "public transit savings calculation",
+        "commute alternative options",
+        "travel expense analysis",
+        "airport logistics planning",
+        "cost comparison records",
+        "transportation budget planning"
+      ]
+    ],
+    "26bdc477": [
+      [
+        "photography journey count",
+        "camera usage statistics",
+        "travel photography record",
+        "DSLR equipment usage",
+        "camera equipment history"
+      ],
+      [
+        "Canon EOS 80D expeditions",
+        "DSLR photography trip count",
+        "camera travel history",
+        "photographic journey documentation"
+      ],
+      [
+        "camera usage log",
+        "travel photography expeditions",
+        "DSLR ownership history",
+        "photography trip documentation",
+        "equipment tracking records",
+        "camera outings list",
+        "adventure photography",
+        "travel camera usage"
+      ]
+    ],
+    "gpt4_98f46fc6": [
+      [
+        "fundraising event timeline",
+        "charitable activities chronology",
+        "social event history",
+        "event participation order",
+        "charity fundraiser sequence"
+      ],
+      [
+        "charity event chronology",
+        "gala vs bake sale timing",
+        "philanthropic participation order",
+        "event attendance sequence"
+      ],
+      [
+        "event attendance chronology",
+        "charitable fundraising participation",
+        "personal event timeline",
+        "social event history records",
+        "community involvement activities",
+        "event participation dates",
+        "fundraising event attendance",
+        "personal milestone events"
+      ]
+    ],
+    "4388e9dd": [
+      [
+        "character costume details",
+        "screenplay wardrobe description",
+        "film production notes",
+        "character appearance",
+        "actor clothing",
+        "costume design"
+      ],
+      [
+        "script character costume",
+        "Andy wardrobe description",
+        "comedy film dialogue",
+        "character appearance details"
+      ],
+      [
+        "character costume descriptions",
+        "screenplay character details",
+        "comedy script wardrobe",
+        "fictional character appearance",
+        "movie scene character details",
+        "script character descriptions",
+        "creative writing character notes",
+        "comedy writing character details"
+      ]
+    ],
+    "ed4ddc30": [
+      [
+        "food stock inventory",
+        "kitchen supplies",
+        "grocery items storage",
+        "pantry management",
+        "refrigerator contents"
+      ],
+      [
+        "egg supply inventory",
+        "refrigerator stock level",
+        "household food provisions",
+        "dozen egg quantity"
+      ],
+      [
+        "household food inventory",
+        "refrigerator stock tracking",
+        "grocery supply levels",
+        "kitchen inventory records",
+        "food storage management",
+        "perishable goods inventory",
+        "household pantry supplies",
+        "kitchen supply management"
+      ]
+    ],
+    "57f827a0": [
+      [
+        "interior design advice",
+        "room layout optimization",
+        "home organization",
+        "space planning",
+        "decor arrangement",
+        "bedroom renovation ideas"
+      ],
+      [
+        "bedroom layout design",
+        "furniture arrangement tips",
+        "interior rearrangement advice",
+        "space optimization"
+      ],
+      [
+        "bedroom design ideas",
+        "furniture arrangement strategies",
+        "interior design tips",
+        "home decoration advice",
+        "space layout optimization",
+        "living space reorganization",
+        "furniture placement guidance",
+        "bedroom redesign planning"
+      ]
+    ],
+    "08e075c7": [
+      [
+        "fitness tracker ownership",
+        "wearable device usage",
+        "health monitoring history",
+        "activity tracker timeline",
+        "fitness wearable",
+        "device acquisition date"
+      ],
+      [
+        "Fitbit Charge 3 ownership",
+        "fitness tracker duration",
+        "wearable device timeline",
+        "smartwatch usage history"
+      ],
+      [
+        "fitness tracker ownership",
+        "wearable device usage duration",
+        "gadget ownership history",
+        "health tracking device timeline",
+        "personal technology inventory",
+        "fitness device lifespan",
+        "wearable device usage records",
+        "health gadget ownership"
+      ]
+    ],
+    "gpt4_b4a80587": [
+      [
+        "chronological order",
+        "event timeline",
+        "camera purchase date",
+        "equipment arrival date",
+        "trip date comparison"
+      ],
+      [
+        "event timeline comparison",
+        "prime lens purchase date",
+        "coast trip timing",
+        "photography equipment arrival",
+        "chronological ordering"
+      ],
+      [
+        "coast vacation timeline",
+        "photography equipment purchase",
+        "camera lens acquisition date",
+        "travel dates coast",
+        "gear upgrade history",
+        "vacation and equipment timeline",
+        "prime lens purchase date",
+        "event chronology"
+      ]
+    ],
+    "50635ada": [
+      [
+        "airline status tier",
+        "United rewards membership",
+        "loyalty program level",
+        "membership upgrade history",
+        "tier progression"
+      ],
+      [
+        "airline loyalty tier history",
+        "frequent flyer tier progression",
+        "United status upgrade",
+        "previous membership level"
+      ],
+      [
+        "airline elite tier history",
+        "loyalty status progression",
+        "United flight tier changes",
+        "frequent flyer level transitions",
+        "airline mileage club history",
+        "elite tier advancement",
+        "airline rewards tier changes",
+        "status tier history"
+      ]
+    ],
+    "3a704032": [
+      [
+        "plant purchases",
+        "gardening acquisitions",
+        "botanical collection",
+        "recent indoor plants",
+        "greenery quantity"
+      ],
+      [
+        "plant purchase record",
+        "houseplant acquisitions",
+        "gardening purchases",
+        "monthly plant additions"
+      ],
+      [
+        "plant purchases timeline",
+        "indoor gardening additions",
+        "plant collection expansion",
+        "gardening acquisitions history",
+        "plant collection growth",
+        "recent plant additions",
+        "gardening purchases",
+        "plant inventory tracking"
+      ]
+    ],
+    "a2f3aa27": [
+      [
+        "social media followers",
+        "Instagram metrics",
+        "follower milestone",
+        "account statistics"
+      ],
+      [
+        "Instagram statistics",
+        "social media metrics",
+        "follower tracking",
+        "account audience size"
+      ],
+      [
+        "social media follower tracking",
+        "Instagram account metrics",
+        "social media presence growth",
+        "Instagram engagement statistics",
+        "online audience size",
+        "social network following count",
+        "Instagram follower history",
+        "social media audience tracking"
+      ]
+    ],
+    "gpt4_2d58bcd6": [
+      [
+        "book completion dates",
+        "reading progress timeline",
+        "finished books",
+        "Kristin Hannah",
+        "reading history"
+      ],
+      [
+        "book completion timeline",
+        "reading progress tracking",
+        "finished books order"
+      ],
+      [
+        "book completion timeline",
+        "reading history tracking",
+        "novel finish dates",
+        "literary completion order",
+        "reading list progress",
+        "finished books chronology",
+        "book reading schedule",
+        "fiction books completed"
+      ]
+    ],
+    "gpt4_7ca326fa": [
+      [
+        "graduation dates",
+        "class ranking order",
+        "education milestone timeline",
+        "ceremony date sequence"
+      ],
+      [
+        "graduation timeline",
+        "educational milestone dates",
+        "class completion order"
+      ],
+      [
+        "graduation year timeline",
+        "educational achievement dates",
+        "academic milestone progression",
+        "graduation dates chronology",
+        "class year milestones",
+        "degree completion dates",
+        "family educational timeline",
+        "graduation order family members"
+      ]
+    ],
+    "1faac195": [
+      [
+        "family residence",
+        "sibling address",
+        "family geography",
+        "location information"
+      ],
+      [
+        "family residence information",
+        "sister geographic location",
+        "family member address"
+      ],
+      [
+        "family member locations",
+        "sister residential address",
+        "Emily address information",
+        "family member residence",
+        "living location family",
+        "household address records",
+        "family address tracking",
+        "personal contacts location"
+      ]
+    ],
+    "e5ba910e_abs": [
+      [
+        "equipment purchase price",
+        "gadget spending",
+        "recent tech purchases",
+        "electronics cost"
+      ],
+      [
+        "purchase price total",
+        "electronics spending",
+        "recent purchase costs"
+      ],
+      [
+        "electronics purchase prices",
+        "device acquisition costs",
+        "shopping receipt tracking",
+        "gadget spending history",
+        "electronics expense records",
+        "purchase price tracking",
+        "technology purchases cost",
+        "consumer electronics spending"
+      ]
+    ],
+    "8752c811": [
+      [
+        "previous conversation context",
+        "model configuration options",
+        "parameter indexing",
+        "prior instructions provided"
+      ],
+      [
+        "prompt parameter configuration",
+        "system output settings",
+        "model tuning options"
+      ],
+      [
+        "prompt parameter list",
+        "LLM configuration options",
+        "output influence settings",
+        "parameter documentation",
+        "system prompt configuration",
+        "model configuration parameters",
+        "parameter guide documentation",
+        "prompt engineering reference"
+      ]
+    ],
+    "gpt4_93f6379c": [
+      [
+        "group membership dates",
+        "club enrollment timeline",
+        "community joining order",
+        "membership chronology"
+      ],
+      [
+        "membership join dates",
+        "group affiliation timeline",
+        "club joining order"
+      ],
+      [
+        "group membership timeline",
+        "organizational joining dates",
+        "club affiliation history",
+        "membership start dates",
+        "group participation history",
+        "organization memberships",
+        "community group joining dates",
+        "membership chronology"
+      ]
+    ],
+    "c18a7dc8": [
+      [
+        "current age compared to graduation",
+        "college graduation date",
+        "birth year",
+        "years since degree completion",
+        "age at graduation",
+        "how old now",
+        "age difference calculation"
+      ],
+      [
+        "birth date",
+        "graduation year",
+        "years elapsed",
+        "age at graduation",
+        "educational milestone",
+        "life timeline"
+      ],
+      [
+        "age at college graduation",
+        "graduation year and current age",
+        "years since bachelor's degree",
+        "birth year and diploma date",
+        "current age minus graduation age",
+        "degree completion age",
+        "school graduation date"
+      ]
+    ],
+    "91b15a6e": [
+      [
+        "jewelry appraised value",
+        "antique appraisal estimate",
+        "vintage diamond worth",
+        "furniture resale price",
+        "selling items value",
+        "estate sale estimate",
+        "minimum resale amount"
+      ],
+      [
+        "jewelry valuation",
+        "furniture pricing",
+        "resale estimate",
+        "antique appraisal",
+        "asset worth",
+        "selling records"
+      ],
+      [
+        "resale value estimate",
+        "jewelry and furniture appraisal",
+        "necklace and vanity valuation",
+        "selling vintage items price",
+        "minimum resale estimate",
+        "asset valuation",
+        "vintage jewelry value",
+        "furniture pricing estimate"
+      ]
+    ],
+    "dcfa8644": [
+      [
+        "shoe purchase date",
+        "equipment broke",
+        "Converse shoe damage",
+        "running shoe timeline",
+        "days between two events",
+        "shoelace breakage",
+        "when shoes damaged"
+      ],
+      [
+        "shoe purchase date",
+        "sneaker condition",
+        "equipment damage",
+        "footwear history",
+        "timeline event"
+      ],
+      [
+        "Adidas shoe purchase date",
+        "Converse shoelace broke",
+        "running shoe purchase timeline",
+        "sneaker damage date",
+        "shoe purchase history",
+        "footwear timeline",
+        "shoe breakage incident"
+      ]
+    ],
+    "gpt4_fa19884d": [
+      [
+        "new musician",
+        "music discovery",
+        "artist started listening",
+        "Friday music",
+        "recently discovered music",
+        "new artist name",
+        "music taste addition"
+      ],
+      [
+        "music discovery",
+        "new artist",
+        "listening history",
+        "recent preference",
+        "artist debut",
+        "discovery timeline"
+      ],
+      [
+        "new artist discovered",
+        "music listening started",
+        "artist name introduction",
+        "artist first heard",
+        "music discovery recent",
+        "Friday music listening",
+        "music taste",
+        "listening history"
+      ]
+    ],
+    "gpt4_65aabe59": [
+      [
+        "device setup timeline",
+        "smart home installation",
+        "thermostat installed",
+        "mesh network setup",
+        "which installed first",
+        "home automation order",
+        "WiFi mesh system"
+      ],
+      [
+        "smart home installation",
+        "device chronology",
+        "WiFi router",
+        "HVAC device",
+        "setup sequence",
+        "home automation timeline"
+      ],
+      [
+        "smart thermostat installation",
+        "mesh network setup order",
+        "device installation sequence",
+        "smart home device timeline",
+        "router network first",
+        "thermostat setup date",
+        "WiFi router setup",
+        "smart home setup"
+      ]
+    ],
+    "94f70d80": [
+      [
+        "furniture assembly time",
+        "IKEA project duration",
+        "assembly duration",
+        "bookshelf installation time",
+        "DIY furniture project",
+        "how long to assemble",
+        "build time"
+      ],
+      [
+        "furniture assembly time",
+        "DIY project",
+        "construction hours",
+        "build duration",
+        "project timing"
+      ],
+      [
+        "IKEA bookshelf assembly",
+        "furniture building time",
+        "assembly project duration",
+        "bookshelf construction hours",
+        "assembly time estimate",
+        "DIY furniture project"
+      ]
+    ],
+    "gpt4_372c3eed": [
+      [
+        "high school graduation",
+        "Bachelor's degree completion",
+        "education duration",
+        "schooling timeline",
+        "years in formal education",
+        "secondary and higher education",
+        "degree completion date"
+      ],
+      [
+        "high school graduation",
+        "college graduation date",
+        "academic progression",
+        "degree completion date",
+        "school timeline",
+        "education duration"
+      ],
+      [
+        "high school to bachelor",
+        "total formal education years",
+        "degree completion timeline",
+        "education path duration",
+        "schooling years count",
+        "academic years total",
+        "bachelor's graduation date",
+        "degree completion year"
+      ]
+    ],
+    "22d2cb42": [
+      [
+        "guitar repair shop",
+        "service location",
+        "instrument maintenance",
+        "guitar technician",
+        "where repaired",
+        "music repair service",
+        "maintenance provider location"
+      ],
+      [
+        "guitar repair",
+        "instrument service",
+        "music shop",
+        "repair location",
+        "maintenance history",
+        "service provider"
+      ],
+      [
+        "guitar repair shop",
+        "instrument service location",
+        "guitar maintenance provider",
+        "music repair store",
+        "service shop address",
+        "guitar strings",
+        "instrument repair"
+      ]
+    ],
+    "gpt4_2f584639": [
+      [
+        "purchase order timeline",
+        "sister gift bought",
+        "mother gift",
+        "necklace purchased",
+        "photo album bought",
+        "which gift first",
+        "gift buying sequence"
+      ],
+      [
+        "sister gift",
+        "mother gift",
+        "purchase date",
+        "buying sequence",
+        "acquisition order",
+        "gift timeline"
+      ],
+      [
+        "sister necklace purchase",
+        "mom photo album gift",
+        "gift purchase sequence",
+        "first gift bought",
+        "family gift timeline",
+        "present purchase order",
+        "gift purchase date"
+      ]
+    ],
+    "edced276_abs": [
+      [
+        "Hawaii vacation days",
+        "Seattle trip duration",
+        "travel days total",
+        "vacation duration",
+        "combined travel time",
+        "destination trips",
+        "total days traveling"
+      ],
+      [
+        "Hawaii trip",
+        "Seattle trip",
+        "vacation length",
+        "travel duration",
+        "destination visit",
+        "trip dates"
+      ],
+      [
+        "Hawaii travel days",
+        "Seattle trip duration",
+        "vacation days total",
+        "island city travel",
+        "travel itinerary length",
+        "trip days sum",
+        "vacation time total",
+        "travel duration"
+      ]
+    ],
+    "031748ae_abs": [
+      [
+        "team size on role start",
+        "initial direct reports count",
+        "engineering team composition",
+        "new role onboarding details",
+        "manager start date information",
+        "headcount at transition",
+        "team size at hiring",
+        "direct report count baseline"
+      ],
+      [
+        "direct reports",
+        "team headcount",
+        "management transition",
+        "leadership role",
+        "newly promoted",
+        "reporting structure"
+      ],
+      [
+        "team size direct reports",
+        "new manager role transition",
+        "engineering team headcount",
+        "first management position",
+        "reporting structure size",
+        "manager start direct reports"
+      ]
+    ],
+    "06878be2": [
+      [
+        "current camera equipment owned",
+        "photography setup details",
+        "camera model specifications",
+        "photography style preferences",
+        "equipment budget constraints",
+        "photography gear inventory",
+        "lens collection details",
+        "lighting equipment preferences"
+      ],
+      [
+        "photography equipment",
+        "camera gear recommendations",
+        "photo accessories",
+        "equipment upgrade",
+        "hobby interests"
+      ],
+      [
+        "camera gear recommendations",
+        "photography equipment accessories",
+        "lens attachments tripod",
+        "photo studio setup",
+        "gear collection additions",
+        "photography accessory suggestions"
+      ]
+    ],
+    "8ebdbe50": [
+      [
+        "certification completed recently",
+        "professional credential achieved",
+        "training completion date",
+        "skill qualification earned",
+        "certification type name",
+        "professional development achievement",
+        "credential issuing organization",
+        "certification relevance field"
+      ],
+      [
+        "professional certification",
+        "training completion",
+        "credentials earned",
+        "skill certification"
+      ],
+      [
+        "recent credential achieved",
+        "professional certification completion",
+        "last month training",
+        "course completion earned",
+        "skill certification milestone"
+      ]
+    ],
+    "15745da0": [
+      [
+        "vintage camera collection duration",
+        "collecting hobby start year",
+        "total cameras owned",
+        "collection investment amount",
+        "specific vintage models",
+        "collecting intensity frequency",
+        "earliest purchase date",
+        "collection growth timeline"
+      ],
+      [
+        "hobby duration",
+        "collection size",
+        "collector interests",
+        "photography hobby"
+      ],
+      [
+        "vintage camera collection timeline",
+        "antique camera collecting history",
+        "hobby collection duration",
+        "camera acquisition years",
+        "photography collector started when"
+      ]
+    ],
+    "gpt4_e05b82a6": [
+      [
+        "summer event attendance log",
+        "July to October activities",
+        "amusement park event visits",
+        "rollercoaster ride frequency",
+        "theme park names visited",
+        "summer recreation event log",
+        "event attendance record dates",
+        "park visit frequency count"
+      ],
+      [
+        "amusement park visits",
+        "theme park events",
+        "summer activities",
+        "event attendance"
+      ],
+      [
+        "roller coaster ride count",
+        "theme park event attendance",
+        "amusement park summer visits",
+        "recreational coaster activity total",
+        "event attraction rides tally"
+      ]
+    ],
+    "cc539528": [
+      [
+        "recommended backend languages",
+        "back-end technology learning suggestions",
+        "backend skill recommendations",
+        "programming language study plan",
+        "backend development learning path",
+        "language learning recommendations",
+        "technology stack suggestions",
+        "programming language priority order"
+      ],
+      [
+        "backend programming languages",
+        "server-side technologies",
+        "tech stack recommendations",
+        "learning path"
+      ],
+      [
+        "backend programming language recommendations",
+        "server-side technology stack suggestions",
+        "web development language learning",
+        "backend skill prior discussion",
+        "programming technology recommendations"
+      ]
+    ],
+    "09ba9854_abs": [
+      [
+        "airport transportation cost estimates",
+        "taxi bus price comparison",
+        "airport to hotel transport",
+        "ground transportation cost savings",
+        "airport transfer pricing options",
+        "shuttle vs taxi cost",
+        "airport commute cost breakdown",
+        "transportation budget calculation"
+      ],
+      [
+        "airport transportation",
+        "ground transportation costs",
+        "travel budget comparison",
+        "airport transfer"
+      ],
+      [
+        "airport transportation cost savings",
+        "taxi versus bus fare",
+        "ground transfer expense comparison",
+        "transit option price difference",
+        "airport pickup savings calculation"
+      ]
+    ],
+    "6d550036": [
+      [
+        "project leadership history count",
+        "currently managed projects",
+        "project count led",
+        "active project management",
+        "project portfolio managed",
+        "completed projects led",
+        "team project leadership",
+        "project experience inventory"
+      ],
+      [
+        "project portfolio",
+        "project management",
+        "active initiatives",
+        "leadership experience"
+      ],
+      [
+        "project leadership count total",
+        "managed projects portfolio size",
+        "ongoing project responsibility count",
+        "project lead history",
+        "leadership role project count"
+      ]
+    ],
+    "2318644b": [
+      [
+        "accommodation costs Hawaii Tokyo",
+        "nightly hotel rate comparison",
+        "Hawaii Tokyo travel expense",
+        "lodging cost per night",
+        "hotel pricing destination comparison",
+        "trip accommodation expenses",
+        "destination accommodation pricing",
+        "travel cost comparison analysis"
+      ],
+      [
+        "hotel pricing",
+        "travel expenses",
+        "destination comparison",
+        "nightly accommodation rates"
+      ],
+      [
+        "hotel nightly rates comparison",
+        "accommodation costs Hawaii Tokyo",
+        "travel spending per night",
+        "island versus city lodging",
+        "trip expense rate analysis"
+      ]
+    ],
+    "69fee5aa": [
+      [
+        "numismatic hobby",
+        "antique American currency",
+        "coin collection inventory",
+        "rare currency collecting",
+        "pre-1900s American coins"
+      ],
+      [
+        "antique coin collection inventory",
+        "pre-1920 currency holdings",
+        "American numismatic collection",
+        "historical coin count",
+        "vintage American currency"
+      ],
+      [
+        "numismatic collection",
+        "antique coins",
+        "historical currency",
+        "collectibles",
+        "numismatics",
+        "vintage American currency",
+        "coin collection inventory",
+        "coin rarity"
+      ]
+    ],
+    "4100d0a0": [
+      [
+        "ancestry heritage",
+        "ethnic background",
+        "genealogical research",
+        "cultural identity",
+        "racial demographic"
+      ],
+      [
+        "cultural background",
+        "ancestry",
+        "family heritage",
+        "national origin",
+        "genealogy",
+        "racial identity"
+      ],
+      [
+        "race",
+        "cultural background",
+        "ancestry",
+        "heritage",
+        "ethnic background",
+        "personal identity",
+        "biographical profile"
+      ]
+    ],
+    "42ec0761": [
+      [
+        "tools inventory",
+        "laptop repair kit",
+        "computer maintenance tools",
+        "electronics repair equipment",
+        "screwdriver collection"
+      ],
+      [
+        "tools collection",
+        "computer repair",
+        "hardware tools",
+        "laptop maintenance",
+        "toolkit",
+        "repair supplies"
+      ],
+      [
+        "tools inventory",
+        "spare hardware",
+        "laptop repair kit",
+        "equipment collection",
+        "screwdriver set",
+        "tech toolkit"
+      ]
+    ],
+    "b0479f84": [
+      [
+        "documentary viewing preferences",
+        "film recommendation history",
+        "entertainment suggestion interests",
+        "documentary interests",
+        "viewing preference profile"
+      ],
+      [
+        "film preferences",
+        "entertainment suggestions",
+        "viewing preferences",
+        "content interests",
+        "favorite genres",
+        "movie tastes"
+      ],
+      [
+        "documentary preferences",
+        "viewing recommendations",
+        "film suggestions",
+        "entertainment history",
+        "favorite documentaries",
+        "viewing interests"
+      ]
+    ],
+    "8e91e7d9": [
+      [
+        "family composition",
+        "sibling count",
+        "family size",
+        "family members",
+        "relatives count"
+      ],
+      [
+        "family size",
+        "brothers and sisters",
+        "family composition",
+        "relatives count",
+        "immediate family",
+        "family tree"
+      ],
+      [
+        "family members count",
+        "brother sister count",
+        "family structure",
+        "relatives list",
+        "family composition"
+      ]
+    ],
+    "18dcd5a5": [
+      [
+        "D&D campaign session",
+        "tabletop RPG adventure",
+        "one-shot campaign",
+        "game encounter details",
+        "dungeon adventure notes"
+      ],
+      [
+        "D&D campaign",
+        "tabletop RPG",
+        "encounter design",
+        "combat encounters",
+        "game session notes",
+        "character encounters"
+      ],
+      [
+        "D&D campaign details",
+        "encounter statistics",
+        "monster count",
+        "campaign notes",
+        "one-shot preparation"
+      ]
+    ],
+    "gpt4_45189cb4": [
+      [
+        "sports viewing timeline",
+        "January event attendance",
+        "sports interest tracking",
+        "athletic event history",
+        "sports watching habits"
+      ],
+      [
+        "viewing chronology",
+        "event sequence",
+        "sports schedule",
+        "game results",
+        "viewing history",
+        "event timeline"
+      ],
+      [
+        "sports viewing log",
+        "January event schedule",
+        "event chronology",
+        "viewing history",
+        "sports event sequence"
+      ]
+    ],
+    "gpt4_a2d1d1f6": [
+      [
+        "herb gardening project",
+        "home herb growing",
+        "gardening harvest dates",
+        "plant cultivation timeline",
+        "indoor herb garden"
+      ],
+      [
+        "gardening project",
+        "herb cultivation",
+        "garden kit use",
+        "plant growth",
+        "growing activity",
+        "garden timeline"
+      ],
+      [
+        "garden harvest log",
+        "planting dates",
+        "crop timing",
+        "gardening timeline",
+        "herb kit progress"
+      ]
+    ],
+    "21d02d0d": [
+      [
+        "fun run participation",
+        "athletic event attendance",
+        "running race events",
+        "work schedule conflicts",
+        "fitness event tracking"
+      ],
+      [
+        "running events",
+        "race schedule",
+        "event participation",
+        "schedule conflicts",
+        "cancelled events",
+        "race attendance"
+      ],
+      [
+        "March calendar conflicts",
+        "work absences",
+        "missed events log",
+        "commitment schedule",
+        "event attendance"
+      ]
+    ],
+    "15745da0_abs": [
+      [
+        "vintage movie collection",
+        "film collecting hobby",
+        "classic cinema collection",
+        "collection hobby duration",
+        "movie collecting interests"
+      ],
+      [
+        "film collection",
+        "classic cinema",
+        "collecting hobby",
+        "movie collection",
+        "film preferences",
+        "hobby duration"
+      ],
+      [
+        "film collector timeline",
+        "hobby start date",
+        "collection history",
+        "movie collection growth",
+        "enthusiast journey"
+      ]
+    ],
+    "gpt4_c27434e8": [
+      [
+        "model building hobby timeline",
+        "project initiation chronology",
+        "Ferrari versus aircraft projects",
+        "scale model collection start",
+        "hobby project start dates",
+        "automotive model history",
+        "aviation model projects"
+      ],
+      [
+        "scale model projects",
+        "model building hobby",
+        "hobby timeline",
+        "project chronology"
+      ],
+      [
+        "scale model project chronology",
+        "Ferrari Zero model start date",
+        "hobby project timeline comparison",
+        "model building project history",
+        "aircraft car hobby projects"
+      ]
+    ],
+    "3ba21379": [
+      [
+        "current model project status",
+        "active hobby builds",
+        "vehicle category preference",
+        "in-progress model specifications",
+        "hobby focus area",
+        "vehicle type expertise",
+        "model engineering work"
+      ],
+      [
+        "active project vehicle type",
+        "current automotive assignment",
+        "vehicle specifications details",
+        "model development status",
+        "car project designation"
+      ],
+      [
+        "automotive project",
+        "car specifications",
+        "vehicle development",
+        "transportation type",
+        "engineering work",
+        "current projects",
+        "automobile type",
+        "vehicle modification"
+      ]
+    ],
+    "a11281a2": [
+      [
+        "Instagram follower growth metrics",
+        "social media engagement statistics",
+        "two week audience expansion",
+        "platform account growth rate",
+        "social media growth period",
+        "engagement spike data",
+        "follower count analytics"
+      ],
+      [
+        "social media follower growth",
+        "Instagram account metrics",
+        "two-week engagement increase",
+        "follower count spike",
+        "account growth statistics"
+      ],
+      [
+        "social media growth",
+        "follower metrics",
+        "social engagement",
+        "growth tracking",
+        "Instagram statistics",
+        "audience metrics",
+        "follower increase rate",
+        "biweekly growth"
+      ]
+    ],
+    "cf22b7bf": [
+      [
+        "fitness progress tracking",
+        "weight loss journey data",
+        "gym habit consistency",
+        "exercise health goals",
+        "body weight metrics",
+        "fitness transformation results",
+        "regular gym attendance changes"
+      ],
+      [
+        "gym fitness progress tracking",
+        "weight loss achievement",
+        "exercise routine results",
+        "fitness journey milestones",
+        "consistent workout outcomes"
+      ],
+      [
+        "fitness progress",
+        "workout routine",
+        "exercise tracking",
+        "health metrics",
+        "body transformation",
+        "fitness achievement",
+        "gym routine",
+        "exercise consistency"
+      ]
+    ],
+    "7401057b": [
+      [
+        "Hilton loyalty program benefits",
+        "hotel points redemption value",
+        "free night certificate count",
+        "frequent guest status perks",
+        "credit card hotel benefits",
+        "hospitality rewards program",
+        "elite member night allocations"
+      ],
+      [
+        "Hilton loyalty point balance",
+        "hotel rewards redemption options",
+        "free night certificates available",
+        "loyalty program point value",
+        "travel rewards inventory"
+      ],
+      [
+        "hotel loyalty program",
+        "rewards redemption",
+        "loyalty points balance",
+        "Hilton rewards",
+        "hotel stays",
+        "points accumulation",
+        "loyalty benefits",
+        "accommodation rewards"
+      ]
+    ],
+    "af082822": [
+      [
+        "Nordstrom sale event attendance",
+        "retail shopping event dates",
+        "friends and family discount events",
+        "shopping history timeline",
+        "store promotion attendance",
+        "luxury department store events"
+      ],
+      [
+        "Nordstrom shopping event attendance",
+        "friends family sale timing",
+        "retail event date",
+        "shopping trip history",
+        "clothing sale participation"
+      ],
+      [
+        "retail event",
+        "shopping history",
+        "sale event attendance",
+        "event date",
+        "promotional timing",
+        "Nordstrom event",
+        "purchase event",
+        "sale participation"
+      ]
+    ],
+    "311778f1": [
+      [
+        "Netflix streaming watch hours",
+        "documentary viewing statistics",
+        "media consumption time tracking",
+        "monthly entertainment viewing",
+        "streaming platform watch history",
+        "documentary series duration",
+        "content viewing habits"
+      ],
+      [
+        "Netflix documentary viewing hours",
+        "monthly streaming consumption time",
+        "entertainment watch time tracking",
+        "documentary preference statistics",
+        "monthly viewing habits"
+      ],
+      [
+        "streaming usage",
+        "entertainment consumption",
+        "viewing statistics",
+        "content tracking",
+        "viewing hours",
+        "Netflix activity",
+        "monthly streaming",
+        "documentary content"
+      ]
+    ],
+    "5025383b": [
+      [
+        "hobby-based community membership",
+        "online group joining motivation",
+        "shared interest communities",
+        "hobby-driven social networks",
+        "community engagement origins",
+        "social group membership factors"
+      ],
+      [
+        "online community membership origins",
+        "hobby-based group participation",
+        "interest-driven social connections",
+        "hobbyist community affiliation reasons",
+        "hobby-led community joining"
+      ],
+      [
+        "personal interests",
+        "hobby groups",
+        "community membership",
+        "activity-based interests",
+        "hobby participation",
+        "online social groups",
+        "interest-based communities",
+        "hobby motivation"
+      ]
+    ],
+    "bbf86515": [
+      [
+        "event scheduling timeline",
+        "Rack Fest preceding events",
+        "Turbocharged Tuesdays event date",
+        "time between events calculation",
+        "recurring event participation",
+        "festival event timing",
+        "days elapsed between events"
+      ],
+      [
+        "event scheduling relationship timing",
+        "Rack Fest preparation event",
+        "Turbocharged Tuesdays participation date",
+        "event sequence calendar",
+        "festival preparation activities"
+      ],
+      [
+        "event timeline",
+        "festival calendar",
+        "event participation",
+        "event scheduling",
+        "calendar events",
+        "event sequence",
+        "festivals and events",
+        "event dates"
+      ]
+    ],
+    "89527b6b": [
+      [
+        "dinosaur children's book illustrations",
+        "Plesiosaur visual descriptions",
+        "prehistoric creature image details",
+        "children's literature illustration colors",
+        "book character appearance details",
+        "illustrated book scene details",
+        "previous conversation content recall"
+      ],
+      [
+        "dinosaur book illustration details",
+        "Plesiosaur color description",
+        "children's educational book content",
+        "marine reptile visual imagery",
+        "book character appearance"
+      ],
+      [
+        "prior discussion",
+        "book illustration",
+        "creature appearance",
+        "visual description",
+        "previous chat",
+        "image details",
+        "character description",
+        "children's literature"
+      ]
+    ],
+    "6c49646a": [
+      [
+        "road trip mileage totals",
+        "vehicle distance traveled",
+        "cross-country driving distance",
+        "trip odometer readings",
+        "travel mileage log",
+        "combined journey distance"
+      ],
+      [
+        "travel mileage",
+        "travel statistics",
+        "travel log",
+        "journey length",
+        "travel history",
+        "vehicle mileage"
+      ],
+      [
+        "road trip mileage",
+        "travel distance log",
+        "journey distances",
+        "trip route details",
+        "distance tracking"
+      ]
+    ],
+    "4b24c848": [
+      [
+        "H&M clothing purchases",
+        "shirt acquisition history",
+        "apparel shopping receipts",
+        "fashion retail spending",
+        "garment purchase tracker"
+      ],
+      [
+        "clothing acquisition timeline",
+        "retail purchase records",
+        "wardrobe budget tracking",
+        "apparel spending patterns",
+        "H&M shopping frequency",
+        "fashion budget history",
+        "clothing retail timeline"
+      ],
+      [
+        "clothing purchases",
+        "shopping history",
+        "apparel spending",
+        "wardrobe acquisitions",
+        "garment count",
+        "retail history",
+        "fashion purchases"
+      ]
+    ],
+    "3249768e": [
+      [
+        "cocktail bar setup discussion",
+        "gin bottle recommendations",
+        "home bar spirit selection",
+        "five bottle collection",
+        "cocktail variety spirits",
+        "bar building conversation"
+      ],
+      [
+        "gin cocktail recipes",
+        "bar stocking essentials",
+        "spirits recommendations",
+        "mixology ingredients",
+        "alcohol bottle selections",
+        "cocktail variety planning",
+        "home bar setup"
+      ],
+      [
+        "spirits",
+        "home bar setup",
+        "bar ingredients",
+        "alcohol selections",
+        "spirit variety",
+        "cocktail mixing",
+        "spirit recommendations"
+      ]
+    ],
+    "ef66a6e5": [
+      [
+        "competitive sports history",
+        "athletic competition background",
+        "sports I competed in",
+        "competitive participation record",
+        "athletics performance history"
+      ],
+      [
+        "athletic participation history",
+        "competitive sports background",
+        "sports involvement record",
+        "athletic achievements",
+        "sports engagement",
+        "athletic background details"
+      ],
+      [
+        "athletic background",
+        "competition history",
+        "sports participation",
+        "athlete experience",
+        "physical competition",
+        "competitive participation"
+      ]
+    ],
+    "10e09553": [
+      [
+        "Lake Michigan fishing trip",
+        "largemouth bass catch count",
+        "fishing with Alex",
+        "pre-July 22 fishing",
+        "bass fishing success"
+      ],
+      [
+        "fishing catch records",
+        "Lake Michigan fishing",
+        "bass catch statistics",
+        "fishing companion activity",
+        "catch log dates",
+        "fishing trip results",
+        "angling records"
+      ],
+      [
+        "angling catch",
+        "lake fishing",
+        "catch records",
+        "species count",
+        "fishing buddy",
+        "lake angling",
+        "catch documentation"
+      ]
+    ],
+    "51b23612": [
+      [
+        "Soviet propaganda cartoons",
+        "Cold War era animation",
+        "political humor discussion",
+        "anti-Western satirical cartoons",
+        "propaganda and satire"
+      ],
+      [
+        "Soviet animation history",
+        "Cold War propaganda",
+        "political satire cartoons",
+        "animation and humor",
+        "Western culture critique",
+        "Soviet media satire",
+        "vintage cartoon analysis"
+      ],
+      [
+        "Soviet animation",
+        "propaganda satire",
+        "Cold War media",
+        "communist media",
+        "cultural commentary",
+        "animation mockery"
+      ]
+    ],
+    "36580ce8": [
+      [
+        "illness misdiagnosed as cold",
+        "health condition initially misjudged",
+        "actual diagnosis different",
+        "medical symptom confusion",
+        "health issue true cause"
+      ],
+      [
+        "health symptoms misidentification",
+        "illness initial diagnosis",
+        "medical condition discovery",
+        "symptom progression timeline",
+        "health concern history",
+        "diagnosis history"
+      ],
+      [
+        "medical condition",
+        "symptom confusion",
+        "illness misidentification",
+        "diagnosis error",
+        "health symptoms",
+        "condition presentation"
+      ]
+    ],
+    "gpt4_1916e0ea": [
+      [
+        "FarmFresh subscription cancellation",
+        "Instacart grocery shopping date",
+        "subscription service switch timeline",
+        "days between services",
+        "FarmFresh to Instacart transition"
+      ],
+      [
+        "subscription cancellation dates",
+        "grocery service timeline",
+        "online shopping dates",
+        "subscription service history",
+        "grocery delivery changes",
+        "date-based shopping records"
+      ],
+      [
+        "subscription dates",
+        "grocery services",
+        "shopping timeline",
+        "date tracking",
+        "service cancellation",
+        "online delivery"
+      ]
+    ],
+    "58470ed2": [
+      [
+        "Library of Babel analysis",
+        "Borges philosophical concepts",
+        "infinite library geometry",
+        "center circumference infinity",
+        "Borges literary discussion"
+      ],
+      [
+        "Borges literary analysis",
+        "Library symbolism discussion",
+        "infinite library concept",
+        "Borges philosophical ideas",
+        "literary geometry metaphor",
+        "center circumference Library"
+      ],
+      [
+        "Borges fiction",
+        "philosophical concepts",
+        "literary analysis",
+        "fictional library",
+        "literature discussion",
+        "metaphysical fiction"
+      ]
+    ],
+    "a3332713": [
+      [
+        "gift spending total",
+        "coworker gift purchase amount",
+        "brother gift cost",
+        "personal gift budget tracking",
+        "gift expenditure log"
+      ],
+      [
+        "gift spending records",
+        "personal gift purchases",
+        "expense tracking gifts",
+        "family gift costs",
+        "purchasing totals",
+        "coworker brother gifts"
+      ],
+      [
+        "gift budget",
+        "expense total",
+        "personal expenses",
+        "gift amounts",
+        "coworker relations",
+        "family spending"
+      ]
+    ],
+    "681a1674": [
+      [
+        "rewatch count",
+        "Marvel filmography",
+        "film viewing history",
+        "repeat viewings",
+        "cinema frequency"
+      ],
+      [
+        "movie watching history",
+        "film viewing habits",
+        "entertainment preferences",
+        "movie rewatching"
+      ],
+      [
+        "movie watching habits",
+        "film rewatch count",
+        "superhero film preference",
+        "entertainment viewing patterns",
+        "MCU movie catalogue"
+      ]
+    ],
+    "affe2881": [
+      [
+        "birdwatching records",
+        "species identification",
+        "avian sightings",
+        "biodiversity tracking",
+        "local wildlife observations"
+      ],
+      [
+        "bird watching hobby",
+        "avian identification records",
+        "nature observation tracking",
+        "park wildlife inventory",
+        "ornithological documentation",
+        "local species sightings"
+      ],
+      [
+        "bird watching",
+        "avian sightings",
+        "ornithology hobby",
+        "life list birds",
+        "local wildlife",
+        "species identification",
+        "birdwatching log",
+        "nature observations"
+      ]
+    ],
+    "bf659f65": [
+      [
+        "music acquisition",
+        "discography compilation",
+        "audio collection size",
+        "purchase history",
+        "album downloads"
+      ],
+      [
+        "music library inventory",
+        "digital media acquisition",
+        "streaming vs purchase habits",
+        "audio collection history",
+        "album discography tracking",
+        "music consumption records"
+      ],
+      [
+        "discography",
+        "vinyl records",
+        "digital acquisitions",
+        "music library",
+        "streaming music",
+        "audio formats",
+        "music catalog",
+        "music sources"
+      ]
+    ],
+    "gpt4_af6db32f": [
+      [
+        "Super Bowl viewing date",
+        "sports event timing",
+        "broadcast recording",
+        "game day event"
+      ],
+      [
+        "sports viewing history",
+        "television event records",
+        "game day viewing dates",
+        "Super Bowl viewings",
+        "sports entertainment timeline",
+        "TV event attendance"
+      ],
+      [
+        "football",
+        "sports events",
+        "television viewing",
+        "game date",
+        "Super Bowl Sunday",
+        "TV broadcasts",
+        "sports viewership",
+        "when watched"
+      ]
+    ],
+    "129d1232": [
+      [
+        "fundraising total",
+        "charity participation",
+        "donation collection",
+        "philanthropic activities",
+        "event fundraising"
+      ],
+      [
+        "charitable fundraising totals",
+        "philanthropic contribution amounts",
+        "volunteer event fundraising",
+        "community service donations",
+        "charity campaign results",
+        "donation aggregation"
+      ],
+      [
+        "fundraising",
+        "charitable giving",
+        "donations collected",
+        "nonprofit volunteering",
+        "fundraiser participation",
+        "volunteer fundraising",
+        "community service",
+        "charity work"
+      ]
+    ],
+    "gpt4_f49edff3": [
+      [
+        "event chronology",
+        "life milestones",
+        "nursery preparation",
+        "baby shower",
+        "birthday gift purchasing",
+        "event sequencing"
+      ],
+      [
+        "baby preparation timeline",
+        "baby shower assistance",
+        "friendship milestone events",
+        "birthday gift giving",
+        "family celebration ordering",
+        "helping friends chronology"
+      ],
+      [
+        "timeline",
+        "event sequence",
+        "helping friends and family",
+        "baby-related events",
+        "birthday gift giving",
+        "nursery setup",
+        "chronological order",
+        "date ordering"
+      ]
+    ],
+    "ccb36322": [
+      [
+        "streaming service name",
+        "music platform preference",
+        "audio streaming provider",
+        "current service usage"
+      ],
+      [
+        "music streaming subscription",
+        "audio platform preference",
+        "music app selection",
+        "digital music service",
+        "streaming platform choice",
+        "music listening platform"
+      ],
+      [
+        "streaming platform",
+        "music app",
+        "audio streaming",
+        "subscription service",
+        "music player",
+        "digital music service",
+        "music application",
+        "current music"
+      ]
+    ],
+    "6613b389": [
+      [
+        "relationship timeline",
+        "engagement date",
+        "Rachel engagement timing",
+        "anniversary planning",
+        "time intervals"
+      ],
+      [
+        "relationship milestone dates",
+        "engagement announcement timing",
+        "pre-wedding timeline",
+        "Rachel personal events",
+        "engagement to anniversary interval",
+        "wedding planning dates"
+      ],
+      [
+        "friend engagement",
+        "engagement date",
+        "relationship timeline",
+        "engagement event",
+        "friend engaged",
+        "engagement milestone",
+        "months before event",
+        "Rachel milestone"
+      ]
+    ],
+    "80ec1f4f": [
+      [
+        "museum visits",
+        "gallery attendance",
+        "cultural venues",
+        "February activities",
+        "exhibition visits"
+      ],
+      [
+        "cultural venue attendance",
+        "art museum visits",
+        "gallery exhibition exploration",
+        "February travel activities",
+        "cultural tourism visits",
+        "art venue exploration"
+      ],
+      [
+        "art galleries",
+        "cultural venues",
+        "exhibition visits",
+        "art museums",
+        "February travel",
+        "cultural activities",
+        "museum hopping",
+        "gallery exhibitions"
+      ]
+    ],
+    "gpt4_d31cdae3": [
+      [
+        "trip chronology",
+        "European travel",
+        "road trip adventure",
+        "travel history",
+        "journey sequencing"
+      ],
+      [
+        "international vacation ordering",
+        "road trip chronology",
+        "multi-trip comparison",
+        "European travel sequence",
+        "vacation timeline",
+        "travel history ordering"
+      ],
+      [
+        "travel chronology",
+        "trip sequence",
+        "international travel",
+        "vacation timeline",
+        "travel history",
+        "European travel",
+        "Southwest travel",
+        "vacation order"
+      ]
+    ],
+    "1c0ddc50": [
+      [
+        "travel time productivity",
+        "daily transit routine",
+        "public transportation entertainment",
+        "morning commute ideas",
+        "commute time management",
+        "boredom relief strategies"
+      ],
+      [
+        "commute routine activities",
+        "transit time use",
+        "daily journey ideas",
+        "productivity tips",
+        "travel time entertainment"
+      ],
+      [
+        "commute activity ideas",
+        "work commute options",
+        "travel time activities",
+        "commute entertainment",
+        "transportation activity suggestions",
+        "productive commute time"
+      ]
+    ],
+    "d01c6aa8": [
+      [
+        "immigration timeline",
+        "relocation age",
+        "life milestone date",
+        "personal migration history",
+        "when moved countries"
+      ],
+      [
+        "immigration date",
+        "age at emigration",
+        "US relocation",
+        "biographical milestone",
+        "international move"
+      ],
+      [
+        "birth date",
+        "immigration history",
+        "life milestones",
+        "personal timeline",
+        "relocation event",
+        "age reference"
+      ]
+    ],
+    "d6233ab6": [
+      [
+        "alumni reconnection event",
+        "class reunion attendance decision",
+        "reconnecting old classmates",
+        "reunion social evaluation",
+        "past connections nostalgic"
+      ],
+      [
+        "high school friendships",
+        "reconnecting classmates",
+        "past relationships",
+        "alumni event",
+        "social gathering advice"
+      ],
+      [
+        "high school alumni",
+        "class reunion event",
+        "reconnecting with classmates",
+        "social event decision",
+        "alumni gathering"
+      ]
+    ],
+    "5809eb10": [
+      [
+        "case details discussion",
+        "property dispute timeline",
+        "legal case construction date",
+        "court case details"
+      ],
+      [
+        "legal case details",
+        "property construction timeline",
+        "real estate dispute",
+        "construction commencement date"
+      ],
+      [
+        "construction start date",
+        "real estate case",
+        "property building timeline",
+        "legal proceedings",
+        "Reward Homes Pty Ltd"
+      ]
+    ],
+    "d24813b1": [
+      [
+        "entertaining tips",
+        "hostess baking suggestions",
+        "workplace social event",
+        "party food ideas",
+        "colleague social entertaining"
+      ],
+      [
+        "entertaining colleagues",
+        "hosting tips",
+        "baking recipes",
+        "work socializing",
+        "dessert ideas"
+      ],
+      [
+        "baking recipes",
+        "entertaining guests",
+        "workplace social event",
+        "homemade desserts",
+        "party food suggestions"
+      ]
+    ],
+    "gpt4_e414231e": [
+      [
+        "bike maintenance timeline",
+        "cycling project events",
+        "days between repairs",
+        "bike maintenance history",
+        "cycling hobby projects"
+      ],
+      [
+        "bike maintenance history",
+        "cycling timeline",
+        "equipment upgrade dates",
+        "repair schedule"
+      ],
+      [
+        "bicycle repair dates",
+        "equipment upgrade timeline",
+        "cycling hobby events",
+        "time between milestones",
+        "bike maintenance history"
+      ]
+    ],
+    "c9f37c46": [
+      [
+        "comedy viewing duration",
+        "fan interest timeline",
+        "comedy habit before event",
+        "comedian interest development",
+        "regular comedy watching"
+      ],
+      [
+        "comedy club visits",
+        "entertainment habits timeline",
+        "viewing history",
+        "hobby development"
+      ],
+      [
+        "comedy interest timeline",
+        "entertainment venue visits",
+        "stand-up comedy hobby",
+        "regular viewing habits",
+        "live performance attendance"
+      ]
+    ],
+    "6456829e": [
+      [
+        "vegetable gardening project",
+        "garden planting count",
+        "gardening initial setup",
+        "vegetable garden planning",
+        "tomato cucumber cultivation"
+      ],
+      [
+        "garden planting record",
+        "vegetable gardening",
+        "garden inventory",
+        "gardening projects"
+      ],
+      [
+        "garden planting records",
+        "vegetable cultivation",
+        "initial garden setup",
+        "crop planning",
+        "planting timeline"
+      ]
+    ],
+    "853b0a1d": [
+      [
+        "family heirloom gift",
+        "grandmother gift moment",
+        "jewelry keepsake memory",
+        "gift age when received",
+        "sentimental family jewelry"
+      ],
+      [
+        "family gifts received",
+        "jewelry from grandmother",
+        "sentimental items",
+        "age milestones"
+      ],
+      [
+        "family gifts",
+        "grandmother's present",
+        "jewelry received",
+        "age milestone moment",
+        "memorable family occasion"
+      ]
+    ],
+    "gpt4_7abb270c": [
+      [
+        "museum travel itinerary",
+        "chronological travel history",
+        "museum tour sequence",
+        "visited locations timeline",
+        "travel destination order"
+      ],
+      [
+        "travel itinerary",
+        "museum visits chronology",
+        "trip history",
+        "tourist activities"
+      ],
+      [
+        "museum visit history",
+        "travel itinerary",
+        "chronological trip planning",
+        "cultural site visits",
+        "tourism experiences"
+      ]
+    ],
+    "2698e78f": [
+      [
+        "therapy frequency",
+        "mental health sessions",
+        "counselor visits",
+        "therapeutic appointments",
+        "recurring clinical visits"
+      ],
+      [
+        "therapy session frequency",
+        "mental health appointments",
+        "psychotherapy schedule",
+        "healthcare routine visits",
+        "professional counseling",
+        "therapist visit schedule"
+      ],
+      [
+        "mental health",
+        "therapy frequency",
+        "healthcare routine",
+        "professional healthcare",
+        "counseling sessions",
+        "appointment frequency"
+      ]
+    ],
+    "caf9ead2": [
+      [
+        "relocation duration",
+        "moving timeline",
+        "house move duration",
+        "residential transition time",
+        "apartment change period"
+      ],
+      [
+        "relocation logistics",
+        "moving date",
+        "house transition timeline",
+        "packing timeline",
+        "new residence transition"
+      ],
+      [
+        "relocation timeline",
+        "moving day duration",
+        "apartment moving process",
+        "packing timeframe",
+        "new residence setup",
+        "moving logistics",
+        "relocation start date"
+      ]
+    ],
+    "gpt4_a1b77f9c": [
+      [
+        "The Nightingale reading time",
+        "Sapiens audiobook hours",
+        "The Power listening time",
+        "book consumption duration",
+        "total media hours"
+      ],
+      [
+        "audiobook listening hours",
+        "book completion timeline",
+        "reading log entries",
+        "media consumption tracking",
+        "study time tracking"
+      ],
+      [
+        "reading completion time",
+        "audiobook listening tracking",
+        "book progress weeks",
+        "Nightingale reading duration",
+        "Sapiens listening hours",
+        "The Power audiobook time",
+        "total media consumption time"
+      ]
+    ],
+    "18bc8abd": [
+      [
+        "barbecue condiment brand",
+        "current sauce obsession",
+        "grilling condiment preference",
+        "food brand favorite"
+      ],
+      [
+        "condiment obsession log",
+        "sauce preference",
+        "food favorites",
+        "grilling supplies",
+        "current obsessions"
+      ],
+      [
+        "favorite sauce brand",
+        "condiment preference",
+        "grilling sauce obsession",
+        "barbecue product brand",
+        "food brand obsession",
+        "sauce recommendations"
+      ]
+    ],
+    "10d9b85a": [
+      [
+        "April event attendance days",
+        "professional development hours",
+        "educational seminar participation",
+        "conference lecture time",
+        "workshop hours April"
+      ],
+      [
+        "professional development log",
+        "educational event attendance",
+        "April events",
+        "seminar participation",
+        "learning opportunity tracking"
+      ],
+      [
+        "professional development April",
+        "learning event attendance",
+        "conference days April",
+        "training participation",
+        "skill development events",
+        "event attendance tracking"
+      ]
+    ],
+    "618f13b2": [
+      [
+        "Chuck Taylor wear frequency",
+        "Converse sneaker usage count",
+        "black shoe wearing times",
+        "footwear wear frequency"
+      ],
+      [
+        "outfit tracking log",
+        "shoe wear frequency",
+        "wardrobe usage",
+        "clothing wear count",
+        "footwear rotation"
+      ],
+      [
+        "black Converse wearing frequency",
+        "shoe usage tracking",
+        "new sneaker wearcount",
+        "black shoe wearing frequency",
+        "footwear usage tracking"
+      ]
+    ],
+    "gpt4_f420262d": [
+      [
+        "Valentine's day flight carrier",
+        "February 14 airline travel",
+        "Valentine's air travel airline"
+      ],
+      [
+        "February 14 travel",
+        "flight booking history",
+        "holiday trip details",
+        "airline carrier preference",
+        "travel itinerary"
+      ],
+      [
+        "Valentine's day travel",
+        "February 14 flight",
+        "holiday airline",
+        "Valentine's travel airline",
+        "romantic holiday flight"
+      ]
+    ],
+    "gpt4_68e94287": [
+      [
+        "PlankChallenge timing",
+        "vegan chili post date",
+        "fitness challenge chronology",
+        "social media post sequence"
+      ],
+      [
+        "social media timeline",
+        "fitness challenge date",
+        "recipe post chronology",
+        "personal achievement log",
+        "activity sequence"
+      ],
+      [
+        "PlankChallenge date",
+        "vegan chili recipe post",
+        "fitness challenge timing",
+        "event chronology",
+        "challenge vs recipe timeline",
+        "social media post date"
+      ]
+    ],
+    "c4ea545c": [
+      [
+        "gym attendance frequency trend",
+        "fitness routine frequency change",
+        "workout frequency comparison",
+        "exercise habit increase"
+      ],
+      [
+        "fitness frequency log",
+        "exercise routine evolution",
+        "workout consistency tracking",
+        "activity level comparison",
+        "fitness habit changes"
+      ],
+      [
+        "gym frequency trend",
+        "fitness habit change",
+        "workout frequency increase",
+        "exercise consistency improvement",
+        "gym routine evolution",
+        "fitness frequency comparison"
+      ]
+    ],
+    "19b5f2b3_abs": [
+      [
+        "Korea trip duration",
+        "Korea visit length",
+        "time spent Korea",
+        "Korea travel period"
+      ],
+      [
+        "travel duration log",
+        "international trip length",
+        "Asia visit dates",
+        "vacation timeline",
+        "country trip records"
+      ],
+      [
+        "Korea trip length",
+        "travel duration Korea",
+        "Korea visit days",
+        "Korea stay timeframe",
+        "Korea travel dates"
+      ]
+    ],
+    "32260d93": [
+      [
+        "entertainment preferences",
+        "viewing history",
+        "TV and film genres",
+        "streaming services available",
+        "shows recently watched",
+        "media consumption patterns"
+      ],
+      [
+        "entertainment preferences",
+        "viewing habits",
+        "media consumption",
+        "content recommendations",
+        "entertainment interests",
+        "media choices",
+        "streaming entertainment"
+      ],
+      [
+        "entertainment preferences",
+        "media suggestions",
+        "viewing recommendations",
+        "show or film selection"
+      ]
+    ],
+    "89941a93": [
+      [
+        "bicycle inventory",
+        "bike models owned",
+        "cycling equipment collection",
+        "transportation vehicle types",
+        "bike brands and styles"
+      ],
+      [
+        "bicycle collection inventory",
+        "cycling equipment owned",
+        "two-wheeler vehicle count",
+        "garage bike storage",
+        "pedal-powered vehicles personal",
+        "motor bike ownership",
+        "vehicle inventory list"
+      ],
+      [
+        "bicycle inventory",
+        "personal bike collection",
+        "cycling equipment owned",
+        "bike purchase history",
+        "two-wheeled vehicles",
+        "bike models",
+        "bike storage location"
+      ]
+    ],
+    "d682f1a2": [
+      [
+        "food delivery platforms",
+        "meal delivery apps used",
+        "restaurant ordering habits",
+        "takeout service preferences",
+        "dining frequency patterns"
+      ],
+      [
+        "delivery app platform usage",
+        "meal service ordering habits",
+        "restaurant takeout service history",
+        "food delivery app preferences",
+        "DoorDash Uber Eats Grubhub",
+        "eating out service platforms",
+        "delivery application comparison"
+      ],
+      [
+        "food delivery platforms",
+        "meal delivery apps",
+        "restaurant delivery services",
+        "takeout app usage",
+        "DoorDash Uber Eats",
+        "delivery service comparison",
+        "recent order history"
+      ]
+    ],
+    "09d032c9": [
+      [
+        "phone battery drain",
+        "mobile device power",
+        "battery optimization techniques",
+        "device performance issues",
+        "power consumption tips"
+      ],
+      [
+        "smartphone battery degradation",
+        "device power consumption optimization",
+        "mobile battery drain issue",
+        "charging frequency problem",
+        "power management settings tips",
+        "battery health improvement",
+        "device settings battery drain",
+        "extend phone battery life"
+      ],
+      [
+        "phone battery drain",
+        "device battery optimization",
+        "mobile power consumption",
+        "smartphone battery troubleshooting",
+        "power saving features",
+        "battery health status",
+        "device performance issues"
+      ]
+    ],
+    "1b9b7252": [
+      [
+        "meditation website resources",
+        "guided imagery exercises",
+        "wellness tool recommendations",
+        "mental health resources",
+        "relaxation practice materials"
+      ],
+      [
+        "guided meditation online resource",
+        "free mindfulness exercise website",
+        "imagery meditation practice guide",
+        "relaxation technique resource link",
+        "body scan meditation exercise",
+        "mountain meditation guided practice",
+        "mindfulness platform recommendation"
+      ],
+      [
+        "meditation website resources",
+        "guided meditation platform",
+        "Mountain Meditation resource",
+        "Body Scan technique website",
+        "free meditation exercises",
+        "mindfulness practice tools",
+        "meditation website recommendations"
+      ]
+    ],
+    "1a8a66a6": [
+      [
+        "magazine titles subscribed",
+        "periodical list",
+        "reading material subscriptions",
+        "publication preferences",
+        "print media inventory"
+      ],
+      [
+        "magazine subscription count personal",
+        "periodical publication subscriptions active",
+        "print subscription inventory list",
+        "reading material subscription owned",
+        "magazine membership current status",
+        "publication subscription collection",
+        "magazine reading subscription"
+      ],
+      [
+        "magazine subscription list",
+        "active subscriptions",
+        "publication subscriptions",
+        "subscription inventory",
+        "reading material services",
+        "magazine services",
+        "periodical subscriptions"
+      ]
+    ],
+    "6222b6eb": [
+      [
+        "satellite image processing",
+        "remote sensing algorithms",
+        "geospatial analysis tools",
+        "Earth observation data",
+        "radiometric correction methods"
+      ],
+      [
+        "remote sensing atmospheric correction",
+        "satellite image processing method",
+        "atmospheric correction algorithm tool",
+        "SIAC GEE tool implementation",
+        "radiometric correction satellite image",
+        "image preprocessing remote sensing",
+        "Sen2Cor MAJA algorithm comparison",
+        "Earth Engine tool implementation"
+      ],
+      [
+        "SIAC_GEE tool implementation",
+        "satellite image atmospheric correction",
+        "remote sensing preprocessing",
+        "image correction algorithm comparison",
+        "6S MAJA Sen2Cor",
+        "geospatial data processing",
+        "Sentinel-2 image processing"
+      ]
+    ],
+    "c8090214": [
+      [
+        "iPhone purchase date",
+        "holiday event dates",
+        "personal event timeline",
+        "technology purchase history",
+        "calendar event dates"
+      ],
+      [
+        "iPhone 13 Pro purchase date",
+        "Holiday Market event attendance",
+        "purchase timing relative events",
+        "phone upgrade timeline personal",
+        "event attendance shopping history",
+        "technology purchase date record",
+        "seasonal market visit date",
+        "purchase-to-event time interval"
+      ],
+      [
+        "iPhone 13 Pro purchase date",
+        "Holiday Market event date",
+        "product purchase timeline",
+        "event attendance record",
+        "purchase history dates",
+        "Apple product acquisition",
+        "seasonal event attendance"
+      ]
+    ],
+    "0edc2aef": [
+      [
+        "Miami lodging options",
+        "hotel preferences and criteria",
+        "beach resort choices",
+        "accommodation needs",
+        "vacation planning details"
+      ],
+      [
+        "Miami lodging accommodation suggestion",
+        "hotel recommendation Florida area",
+        "travel planning Miami destination",
+        "vacation resort suggestion Miami",
+        "Miami beach accommodation options",
+        "hotel booking trip planning",
+        "lodging options search Miami"
+      ],
+      [
+        "Miami hotel recommendations",
+        "Florida accommodation options",
+        "travel lodging suggestions",
+        "Miami hospitality",
+        "destination accommodation",
+        "trip planning resources",
+        "urban hotel options"
+      ]
+    ],
+    "38146c39": [
+      [
+        "cookie recipe variations",
+        "baking ingredient modifications",
+        "dessert flavor enhancements",
+        "recipe improvement tips",
+        "baking technique suggestions"
+      ],
+      [
+        "cookie recipe improvement suggestion",
+        "baking ingredient enhancement idea",
+        "dessert flavor modification tip",
+        "chocolate chip cookie variation",
+        "baking tips cookie recipes",
+        "sweetness enhancement baking technique",
+        "cookie texture improvement method",
+        "baking ingredient addition suggestion"
+      ],
+      [
+        "cookie recipe variations",
+        "baking ingredient additions",
+        "chocolate chip cookie enhancement",
+        "dessert flavor improvements",
+        "cookie baking tips",
+        "recipe modification suggestions",
+        "baking ingredient combinations"
+      ]
+    ],
+    "118b2229": [
+      [
+        "travel time to office",
+        "morning drive duration",
+        "transportation routine",
+        "commute distance",
+        "office arrival time",
+        "work schedule routine",
+        "getting to work",
+        "journey duration"
+      ],
+      [
+        "commute time duration estimate",
+        "work travel distance measurement",
+        "journey to workplace time",
+        "transportation time daily routine",
+        "work location distance record",
+        "travel time to work",
+        "commuting routine timing personal",
+        "work commute length duration"
+      ],
+      [
+        "work commute duration",
+        "daily travel time",
+        "commute route details",
+        "work location distance",
+        "commute transportation method",
+        "travel time to office",
+        "job location commute"
+      ]
+    ],
+    "gpt4_e414231f": [
+      [
+        "bicycle maintenance",
+        "weekend repair project",
+        "mechanical work on bike",
+        "bike repairs",
+        "maintenance activities",
+        "last weekend work",
+        "cycling equipment service",
+        "repair history"
+      ],
+      [
+        "bicycle maintenance",
+        "last Saturday Sunday",
+        "repair work",
+        "vehicle upkeep",
+        "bike shop visit",
+        "weekend projects",
+        "mechanical work"
+      ],
+      [
+        "motorcycle maintenance",
+        "bicycle repair",
+        "vehicle servicing",
+        "mechanical work",
+        "repair project",
+        "maintenance timeline"
+      ]
+    ],
+    "b320f3f8": [
+      [
+        "figurine collection",
+        "secondhand shopping",
+        "collectible purchase",
+        "thrift store haul",
+        "action figure hobby",
+        "toy collection",
+        "vintage store purchase",
+        "hobby collectibles"
+      ],
+      [
+        "collectible purchase",
+        "secondhand shopping",
+        "vintage toy",
+        "thrift store haul",
+        "bargain shopping",
+        "toy collection"
+      ],
+      [
+        "toy purchase",
+        "secondhand figurine",
+        "thrift store haul",
+        "vintage collectible",
+        "toy collection",
+        "figure acquisition"
+      ]
+    ],
+    "af8d2e46": [
+      [
+        "travel packing",
+        "vacation luggage",
+        "trip preparation",
+        "clothing for vacation",
+        "luggage contents",
+        "vacation wardrobe",
+        "Central America travel",
+        "travel preparations"
+      ],
+      [
+        "travel packing list",
+        "tropical destination",
+        "luggage contents",
+        "trip planning",
+        "vacation preparation",
+        "clothing inventory",
+        "baggage planning"
+      ],
+      [
+        "Costa Rica vacation",
+        "travel packing",
+        "luggage preparation",
+        "vacation clothing",
+        "trip wardrobe",
+        "apparel packing"
+      ]
+    ],
+    "eac54adc": [
+      [
+        "business startup timeline",
+        "freelance work beginning",
+        "first client contract",
+        "website deployment date",
+        "entrepreneurship milestone",
+        "business start date",
+        "client acquisition timeline",
+        "project launch date"
+      ],
+      [
+        "website launch date",
+        "client contract date",
+        "business milestone",
+        "freelance startup",
+        "startup timeline",
+        "timeline between dates"
+      ],
+      [
+        "website deployment",
+        "first client milestone",
+        "business startup",
+        "client acquisition",
+        "service launch",
+        "business timeline"
+      ]
+    ],
+    "720133ac": [
+      [
+        "pet healthcare expenses",
+        "veterinary bills",
+        "pet medical expenses",
+        "medication costs",
+        "animal health spending",
+        "pet treatment costs",
+        "veterinary services",
+        "pet care expenses"
+      ],
+      [
+        "pet healthcare costs",
+        "veterinary expenses",
+        "Lola pet",
+        "medication expense",
+        "animal medical care",
+        "vet bill"
+      ],
+      [
+        "pet veterinary care",
+        "animal medical expense",
+        "treatment cost",
+        "veterinary medication",
+        "pet health",
+        "healthcare expense"
+      ]
+    ],
+    "gpt4_fa19884c": [
+      [
+        "music hobby timeline",
+        "keyboard instrument practice",
+        "musical interest development",
+        "bluegrass discovery",
+        "learning instruments",
+        "music genres explored",
+        "hobby progression",
+        "musical journey milestones"
+      ],
+      [
+        "keyboard music practice",
+        "bluegrass discovery",
+        "musical learning journey",
+        "live music event",
+        "instrument practice timeline",
+        "music discovery date",
+        "genre exploration"
+      ],
+      [
+        "keyboard skill development",
+        "music hobby",
+        "musician interest",
+        "genre discovery",
+        "band discovery",
+        "musical practice"
+      ]
+    ],
+    "ce6d2d27": [
+      [
+        "mixology lessons",
+        "class schedule",
+        "weekly activities",
+        "bartending class",
+        "hobby classes",
+        "recurring events",
+        "skill-building activities",
+        "class attendance"
+      ],
+      [
+        "mixology class",
+        "bartending lessons",
+        "drink preparation class",
+        "class schedule",
+        "weekly hobby",
+        "lesson day"
+      ],
+      [
+        "mixology class",
+        "bartending lesson",
+        "weekly class",
+        "cocktail lesson",
+        "class schedule",
+        "bartending course"
+      ]
+    ],
+    "gpt4_8e165409": [
+      [
+        "plant care timeline",
+        "gardening activities",
+        "propagation schedule",
+        "neighbor gift",
+        "plant maintenance milestones",
+        "houseplant propagation",
+        "sharing plants with neighbors",
+        "gardening timeline"
+      ],
+      [
+        "spider plant repotting",
+        "plant propagation",
+        "plant cuttings sharing",
+        "neighbor gift",
+        "gardening hobby",
+        "houseplant care",
+        "plant care timeline"
+      ],
+      [
+        "houseplant propagation",
+        "plant sharing",
+        "neighbor gift",
+        "indoor gardening",
+        "plant care",
+        "propagation timeline"
+      ]
+    ],
+    "gpt4_2f56ae70": [
+      [
+        "subscriptions",
+        "entertainment platforms",
+        "new subscriptions",
+        "media services",
+        "recent subscriptions",
+        "digital services",
+        "entertainment apps",
+        "latest subscriptions"
+      ],
+      [
+        "new streaming subscription",
+        "recent subscription signup",
+        "video service platform",
+        "entertainment platform",
+        "subscription timeline",
+        "media service"
+      ],
+      [
+        "streaming subscription",
+        "video platform",
+        "entertainment service",
+        "service signup",
+        "subscription service",
+        "media platform"
+      ]
+    ],
+    "2133c1b5": [
+      [
+        "move-in date Harajuku",
+        "residence tenure timeline",
+        "Tokyo housing lease",
+        "occupancy start date",
+        "apartment residency period"
+      ],
+      [
+        "residence tenure duration",
+        "apartment relocation history",
+        "housing timeline",
+        "current address move date",
+        "Harajuku residency length",
+        "apartment occupancy period"
+      ],
+      [
+        "residence tenure",
+        "apartment tenure",
+        "Tokyo housing",
+        "move date",
+        "relocation timeline",
+        "housing history",
+        "current residence",
+        "Harajuku district"
+      ]
+    ],
+    "60d45044": [
+      [
+        "preferred rice variety",
+        "staple grain preference",
+        "white jasmine rice",
+        "cooking rice staple"
+      ],
+      [
+        "preferred grains",
+        "food preferences",
+        "culinary favorites",
+        "staple carbohydrates",
+        "dietary choices",
+        "cooking ingredients",
+        "taste preferences"
+      ],
+      [
+        "preferred grain variety",
+        "staple food choice",
+        "culinary preference",
+        "food taste profile"
+      ]
+    ],
+    "29f2956b": [
+      [
+        "daily practice hours",
+        "music training routine",
+        "guitar skill development",
+        "hobby time commitment",
+        "practice schedule pattern"
+      ],
+      [
+        "daily hobby commitment",
+        "music practice routine",
+        "skill development time",
+        "personal activities schedule",
+        "practice dedication",
+        "time allocation habits"
+      ],
+      [
+        "music practice schedule",
+        "daily skill development",
+        "hobby time commitment",
+        "instrument routine"
+      ]
+    ],
+    "bc8a6e93": [
+      [
+        "homemade birthday dessert",
+        "family celebration cake",
+        "party baked goods",
+        "niece birthday gift"
+      ],
+      [
+        "family birthday celebrations",
+        "baking projects completed",
+        "party preparation activities",
+        "gift ideas",
+        "cooking for relatives",
+        "special occasion baking"
+      ],
+      [
+        "baking project",
+        "birthday celebration food",
+        "homemade desserts",
+        "family event cooking"
+      ]
+    ],
+    "37f165cf": [
+      [
+        "novel reading completion",
+        "book page length",
+        "fiction reading progress",
+        "monthly reading goals",
+        "book completion dates"
+      ],
+      [
+        "books completed",
+        "reading progress tracking",
+        "novel lengths",
+        "reading accomplishments",
+        "fiction reading log",
+        "seasonal reading goals"
+      ],
+      [
+        "completed reading list",
+        "book length metrics",
+        "literary works finished",
+        "reading progress tracker"
+      ]
+    ],
+    "92a0aa75": [
+      [
+        "employment tenure duration",
+        "job commencement date",
+        "position tenure timeline",
+        "career role years",
+        "role duration tenure"
+      ],
+      [
+        "employment history",
+        "career tenure",
+        "job start date",
+        "professional experience duration",
+        "position tenure",
+        "career progression"
+      ],
+      [
+        "job start date",
+        "employment duration",
+        "career tenure",
+        "role history"
+      ]
+    ],
+    "7161e7e2": [
+      [
+        "team schedule assignment",
+        "social media staffing",
+        "Sunday shift assignment",
+        "Admon schedule planning",
+        "rotation roster schedule"
+      ],
+      [
+        "team scheduling",
+        "work shift coverage",
+        "staff rotation schedule",
+        "team member assignments",
+        "coverage planning",
+        "workforce scheduling"
+      ],
+      [
+        "work scheduling",
+        "team shift allocation",
+        "staff rotation plan",
+        "weekend coverage assignment"
+      ]
+    ],
+    "0bb5a684": [
+      [
+        "workshop attendance date",
+        "professional development training",
+        "meeting preparation timeline",
+        "communication skills workshop",
+        "training event schedule"
+      ],
+      [
+        "professional development",
+        "training attendance",
+        "workplace skill building",
+        "meeting preparation",
+        "professional workshops",
+        "communication skills"
+      ],
+      [
+        "professional development attendance",
+        "workshop training event",
+        "event timing calculation",
+        "meeting preparation timeline"
+      ]
+    ],
+    "gpt4_ab202e7f": [
+      [
+        "home maintenance repairs",
+        "appliance replacement history",
+        "household repair count",
+        "kitchen equipment fixes",
+        "home repair documentation"
+      ],
+      [
+        "home maintenance",
+        "appliance repairs",
+        "household improvements",
+        "repair projects",
+        "household items maintenance",
+        "domestic upkeep"
+      ],
+      [
+        "household repairs",
+        "appliance replacement",
+        "home maintenance projects",
+        "kitchen equipment fixes"
+      ]
+    ],
+    "37d43f65": [
+      [
+        "laptop memory upgrade",
+        "computer hardware specs",
+        "system memory increase",
+        "technical laptop upgrades",
+        "device RAM configuration"
+      ],
+      [
+        "computer hardware upgrades",
+        "laptop specifications",
+        "device improvements",
+        "tech modifications",
+        "system enhancements",
+        "hardware changes"
+      ],
+      [
+        "hardware memory upgrade",
+        "laptop specification change",
+        "computer performance enhancement",
+        "system configuration upgrade"
+      ]
+    ],
+    "f0e564bc": [
+      [
+        "luxury fashion purchases",
+        "skincare product expenses",
+        "shopping receipt tracking",
+        "designer merchandise cost",
+        "beauty retail spending",
+        "purchase price tracking",
+        "total expenditure amount",
+        "fashion beauty budget"
+      ],
+      [
+        "luxury purchases",
+        "designer goods",
+        "skincare product cost",
+        "fashion spending",
+        "beauty investment",
+        "luxury brand",
+        "shopping expenses"
+      ],
+      [
+        "luxury shopping",
+        "designer purchase",
+        "beauty expense",
+        "fashion purchase",
+        "high-end goods",
+        "luxury expense"
+      ]
+    ],
+    "6071bd76": [
+      [
+        "French press brewing ratio",
+        "coffee water proportion",
+        "brewing method adjustment",
+        "taste preference change",
+        "coffee preparation technique",
+        "brew strength adjustment",
+        "caffeine concentration change",
+        "water dilution ratio"
+      ],
+      [
+        "brewing ratio adjustment direction",
+        "coffee strength modification",
+        "hot water coffee extraction",
+        "brewing parameter change log",
+        "coffee flavor preference tracking",
+        "brewing technique experiment",
+        "water coffee measurement change",
+        "brewing recipe modification"
+      ],
+      [
+        "brewing strength preference change",
+        "French press extraction technique",
+        "coffee measurement ratio adjustment",
+        "flavor intensity experimentation",
+        "brewing parameter modification"
+      ]
+    ],
+    "e3fc4d6e": [
+      [
+        "Lawrence Livermore fusion breakthrough",
+        "President Chief Science Advisor",
+        "government science policy official",
+        "nuclear fusion research announcement",
+        "LLNL fusion achievement",
+        "White House science advisor",
+        "technology policy leadership",
+        "research breakthrough article"
+      ],
+      [
+        "nuclear fusion achievement news",
+        "LLNL research breakthrough",
+        "government science advisor role",
+        "presidential cabinet science position",
+        "clean energy milestone",
+        "fusion energy research success",
+        "scientific breakthrough coverage",
+        "fusion inertial confinement"
+      ],
+      [
+        "fusion energy policy leadership",
+        "White House science advisor identity",
+        "government technology official name",
+        "national laboratory breakthrough discussion",
+        "science policy decision maker"
+      ]
+    ],
+    "6a27ffc2": [
+      [
+        "Corey Schafer Python course",
+        "programming tutorial series progress",
+        "video course completion count",
+        "Python learning tracking",
+        "tutorial completion status",
+        "coding education progress",
+        "online course completion",
+        "learning series advancement"
+      ],
+      [
+        "Python tutorial progress tracking",
+        "YouTube coding education",
+        "programming course completion",
+        "developer learning journey",
+        "online tutorial completion log",
+        "coding skill development",
+        "educational video series",
+        "programming study progress"
+      ],
+      [
+        "Python tutorial completion progress",
+        "programming course video milestone",
+        "online coding education advancement",
+        "educational content series tracking",
+        "skill development learning milestone"
+      ]
+    ],
+    "0a995998": [
+      [
+        "clothing store returns list",
+        "wardrobe item pickup orders",
+        "retail return management",
+        "apparel exchange pending",
+        "garment return pending",
+        "store errand list",
+        "closet maintenance tasks",
+        "fashion item exchanges"
+      ],
+      [
+        "clothing store errand",
+        "wardrobe return management",
+        "retail transaction pending",
+        "garment pickup appointment",
+        "shopping task list",
+        "clothing exchange pending",
+        "store visit plan",
+        "retail return checklist"
+      ],
+      [
+        "retail shopping errand tracking",
+        "garment return logistics status",
+        "wardrobe store transaction pending",
+        "clothing pickup location items"
+      ]
+    ],
+    "gpt4_8c8961ae": [
+      [
+        "Europe family vacation",
+        "Thailand solo adventure",
+        "travel chronology",
+        "trip comparison",
+        "vacation sequence",
+        "international travel order",
+        "family group trip",
+        "solo destination travel"
+      ],
+      [
+        "travel history timeline",
+        "family vacation versus solo",
+        "international trip chronology",
+        "European family journey",
+        "Southeast Asia backpacking",
+        "personal vacation sequence",
+        "trip order memory",
+        "travel experience log"
+      ],
+      [
+        "international travel history sequence",
+        "vacation type chronological order",
+        "group versus solo adventure",
+        "destination trip date ordering",
+        "travel experience timeline comparison"
+      ]
+    ],
+    "gpt4_4929293b": [
+      [
+        "family life event",
+        "relative gathering participation",
+        "recent family celebration",
+        "milestone event attendance",
+        "family occasion attended",
+        "relative life milestone",
+        "family member celebration",
+        "recent family gathering"
+      ],
+      [
+        "family event celebration",
+        "relative milestone attendance",
+        "family gathering participation",
+        "family occasion memory",
+        "relative special event",
+        "family ceremony attended",
+        "family moment participation",
+        "relative life milestone"
+      ],
+      [
+        "family celebration event attendance",
+        "relative milestone occasion timing",
+        "personal gathering participation date",
+        "family event recent involvement"
+      ]
+    ],
+    "88432d0a_abs": [
+      [
+        "egg tarts baking frequency",
+        "recipe preparation count",
+        "baking activity tracking",
+        "dessert cooking log",
+        "pastry baking history",
+        "cooking repetition tracking",
+        "egg tart recipe log",
+        "baked goods production"
+      ],
+      [
+        "egg tart baking frequency",
+        "pastry baking attempt log",
+        "kitchen baking project",
+        "recipe practice frequency",
+        "homemade tart count",
+        "baking session record",
+        "cooking frequency tracking",
+        "dessert baking experiment"
+      ],
+      [
+        "pastry recipe cooking frequency",
+        "baking project practice count",
+        "tart making session tracking",
+        "kitchen experiment repetition frequency"
+      ]
+    ],
+    "778164c6": [
+      [
+        "Jamaican snapper fruit dish",
+        "Caribbean seafood recipe",
+        "food recommendation notes",
+        "tropical fruit fish recipe",
+        "cuisine suggestion history",
+        "snapper preparation method",
+        "Jamaican cuisine recommendations",
+        "fruited seafood dish"
+      ],
+      [
+        "Jamaican cuisine suggestion",
+        "seafood recipe recommendation",
+        "snapper fish preparation",
+        "Caribbean dish name",
+        "fruit fish combination",
+        "tropical recipe recommendation",
+        "island cuisine suggestion",
+        "fish fruit pairing"
+      ],
+      [
+        "Jamaican cuisine food recommendation",
+        "fish recipe tropical fruit",
+        "Caribbean cooking suggestion memory",
+        "snapper preparation technique island",
+        "seafood cuisine dining suggestion"
+      ]
+    ],
+    "gpt4_f2262a51": [
+      [
+        "doctor visit count",
+        "healthcare provider tracking",
+        "medical appointment history",
+        "physician visit log",
+        "healthcare utilization",
+        "specialist visit tracking",
+        "medical provider visits",
+        "healthcare professional count"
+      ],
+      [
+        "physician visit count",
+        "medical appointment frequency",
+        "healthcare provider tracking",
+        "doctor appointment record",
+        "health care visit log",
+        "medical professional visits",
+        "physician appointment history",
+        "health care provider list"
+      ],
+      [
+        "medical provider visit total",
+        "healthcare appointment frequency count",
+        "physician encounter history number",
+        "medical professional consultation tracking"
+      ]
+    ],
+    "28bcfaac": [
+      [
+        "music harmony ear training resources",
+        "free online music lesson platform",
+        "interactive music learning website",
+        "music notation composition theory",
+        "music pedagogy educational tools",
+        "music skills practice drill exercises",
+        "web-based music instruction courses",
+        "music theory tutorial recommendation"
+      ],
+      [
+        "ear training practice",
+        "harmonic analysis theory",
+        "music composition basics",
+        "interactive theory tool",
+        "scales intervals training",
+        "music notation software",
+        "online music pedagogy",
+        "community music learning"
+      ],
+      [
+        "music pedagogy resources",
+        "interactive ear training",
+        "chord theory exercises",
+        "scale and interval practice",
+        "theory tutor websites",
+        "music notation learning",
+        "composition tutorials",
+        "harmonic analysis tools"
+      ]
+    ]
+  }
+}

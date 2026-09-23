@@ -55,7 +55,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { GENERATOR_ISOLATION, spawnIsolatedClaude } from "./isolated-claude.js"
+import { GENERATOR_ISOLATION, identityFragments, spawnIsolatedClaude } from "./isolated-claude.js"
 import { createHash } from "node:crypto"
 import { sleep } from "../src/sleep.js"
 import { fetchDataset, selectSubset, SPLIT_URLS } from "../src/adapters/longmemeval-eval/dataset.js"
@@ -236,8 +236,20 @@ function tryParseJson(raw: string): unknown | null {
   }
 }
 
-/** Sanitizes one query's raw keyword array: trim, drop empties, drop
- * anything longer than 6 words, dedupe case-insensitively, cap at 8. */
+/**
+ * Contact and machine identifiers are never valid keywords. The isolated CLI
+ * still injects the account email into every call (it is added outside the
+ * system prompt; no flag short of --bare removes it), so a model can echo it
+ * back; this drops emails, @handles, IPv4 addresses, URLs and absolute paths.
+ */
+// Fragments of the injected account identity (read at runtime, never stored).
+const IDENTITY = identityFragments()
+
+const IDENTIFIER = /\S+@\S+|@\w|\b\d{1,3}(?:\.\d{1,3}){3}\b|https?:\/\/|(?:^|\s)\/(?:Users|home|root|private|tmp)\//i
+
+/** Sanitizes one query's raw keyword array: trim, drop empties and
+ * identifiers, drop anything longer than 6 words, dedupe case-insensitively,
+ * cap at 8. */
 function sanitizeKeywords(raw: ReadonlyArray<unknown>): string[] {
   const seen = new Set<string>()
   const out: string[] = []
@@ -245,6 +257,9 @@ function sanitizeKeywords(raw: ReadonlyArray<unknown>): string[] {
     if (typeof item !== "string") continue
     const kw = item.trim()
     if (kw.length === 0) continue
+    if (IDENTIFIER.test(kw)) continue
+    const lower = kw.toLowerCase()
+    if (IDENTITY.some((f) => lower.includes(f))) continue
     if (kw.split(/\s+/).length > 6) continue
     const key = kw.toLowerCase()
     if (seen.has(key)) continue

@@ -14,8 +14,14 @@
  * fresh empty working directory per call (no project memory or files).
  * Verified: asked what to call the user, an isolated call answers "no
  * specific name"; a plain call answers with the user's name.
+ *
+ * Isolation is PARTIAL: the CLI still injects the logged-in account's email
+ * into every call (outside the system prompt; --system-prompt does not remove
+ * it, only --bare, which refuses subscription auth). Callers must sanitize
+ * model output for identifiers (see expand-queries.ts sanitizeKeywords) and
+ * scan generated files before committing them.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -41,4 +47,38 @@ export function spawnIsolatedClaude(model: string): ChildProcessWithoutNullStrea
   })
   child.on("close", () => rmSync(cwd, { recursive: true, force: true }))
   return child
+}
+
+const GENERIC_WORDS = new Set(["mail", "email", "gmail", "com", "net", "org", "io", "me", "co", "organization", "personal", "team", "workspace", "inc", "llc", "the", "and"])
+
+/**
+ * Lower-cased fragments of the identity the CLI injects into every call
+ * (account email local part and provider, distinctive org-name words), read
+ * at runtime from `claude auth status` so nothing personal is written into
+ * the repo. A model can echo these partially ("user email <local-part>",
+ * "<provider> mail address"), which no generic pattern catches, so
+ * generated text containing any fragment must be dropped. Throws when the
+ * identity cannot be read: without it, output cannot be guaranteed clean.
+ */
+export function identityFragments(): ReadonlyArray<string> {
+  let status: { email?: unknown; orgName?: unknown }
+  try {
+    status = JSON.parse(execFileSync("claude", ["auth", "status"], { encoding: "utf8" })) as typeof status
+  } catch (e) {
+    throw new Error(`cannot read claude auth status to scrub the injected identity: ${String(e)}`)
+  }
+  const out = new Set<string>()
+  const add = (s: string) => {
+    for (const w of s.toLowerCase().split(/[^a-z0-9]+/)) if (w.length >= 4 && !GENERIC_WORDS.has(w)) out.add(w)
+  }
+  if (typeof status.email === "string") {
+    const [local = "", domain = ""] = status.email.split("@")
+    out.add(local.toLowerCase())
+    add(local)
+    add(domain)
+  }
+  if (typeof status.orgName === "string") add(status.orgName)
+  out.delete("")
+  if (out.size === 0) throw new Error("claude auth status returned no identity to scrub")
+  return [...out]
 }
