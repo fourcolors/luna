@@ -216,3 +216,18 @@ The corner bracket GLYPH sits ~15px inside the card, but the 8px-straddling hit
 strip is AT the window edge — grabbing on the glyph (inside the card) selects
 text instead of resizing. Get the corner from the System Events rect
 (x+w, y+h → tool coords ×0.64) and grab within ~2-3 tool px of it.
+
+## Foreign windows falsify pixel measurements — clear the field first
+
+A "wrong margin" reading may be an OCCLUDER, not a bug. On this box the
+chronic offenders: the **iPhone Mirroring "iCloud Signed Out" card** (a
+separate `iPhone Mirroring` process window ~317x696 that reappears over the
+top-left of whatever you're measuring) and any app an accidental dock click
+launches (Chrome's first-run dialogs). Symptom in the PNG: lights-zone pixels
+are light gray/white (~233+) instead of card bg ~(42,50,65), or extra
+"disks" from dialog text. Enumerate owners before measuring:
+`osascript -e 'tell application "System Events" to get name of every process whose visible is true'`,
+then `set position of window X to {20, 120}` on the foreign process or
+`tell application "X" to quit`. Also note: card-panel miniaturize is a NO-OP
+(yellow button and Cmd+M do nothing) — re-show isn't a reachable reset path
+for these windows, so don't burn time trying to test it.
