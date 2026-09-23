@@ -145,6 +145,8 @@ describe("longmemeval-eval baselines", () => {
     expect(signTestP(2, 8)).toBeCloseTo(signTestP(8, 2), 12)
     expect(signTestP(5, 5)).toBe(1)
     expect(signTestP(0, 0)).toBe(1)
+    expect(signTestP(540, 540)).toBe(1)
+    expect(signTestP(600, 480)).toBeGreaterThan(0)
   })
 
   it("probAnyDrawn matches the closed form and its edge cases", () => {

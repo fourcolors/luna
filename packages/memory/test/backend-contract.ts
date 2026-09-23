@@ -17,7 +17,7 @@
  * packages/memory-tools/test/layer.test.ts and router-swap.test.ts to prove
  * the router/tools seam accepts a DIFFERENT vector-capable backend with zero
  * production source changes. `search` honors `mode` per the MUST at
- * packages/memory/src/backend.ts:45-49: `"vec"` and `"bm25"` each rank by
+ * packages/memory/src/backend.ts (MemoryVectorBackend.search): `"vec"` and `"bm25"` each rank by
  * one signal (a Jaccard-like overlap ratio and a raw token-overlap count,
  * respectively), `"hybrid"` fuses those two signals via RRF, and
  * `"hybrid-terms"` / `"hybrid-weighted"` are not implemented and fail with `MemoryBackendError`

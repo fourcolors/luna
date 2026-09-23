@@ -1093,10 +1093,16 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 // vocabulary-mismatch queries), and keywords cannot swamp the
                 // query's own words.
                 const cfg = { ...HYBRID_WEIGHTED_DEFAULTS, ...args.fusion }
-                const queryTerms = extractTerms(args.queryText, cfg.stopwords)
+                // With the query arm off (weight 0) its search is skipped, and
+                // keywords are not de-duplicated against query words: a keyword
+                // restating a query word is then its ONLY lexical match.
+                const queryArmOn = cfg.lexicalWeight > 0
+                const queryTerms = queryArmOn ? extractTerms(args.queryText, cfg.stopwords) : []
                 const [queryRanked, expansionRanked] = yield* Effect.try({
                   try: () => [
-                    rankByFts(minMatchTermsMatch(queryTerms, cfg.minMatch), args.namespace, candidateLimit, scope),
+                    queryArmOn
+                      ? rankByFts(minMatchTermsMatch(queryTerms, cfg.minMatch), args.namespace, candidateLimit, scope)
+                      : [],
                     rankByFts(
                       expansionMatch(args.expansionTerms ?? [], cfg.stopwords, queryTerms),
                       args.namespace,

@@ -47,6 +47,16 @@ describe("lexical-query", () => {
     expect(expansionMatch(["the", "of"], "lucene")).toBe("")
   })
 
+  it("expansionMatch: stopwords stay inside phrases (adjacency); all-stopword keywords drop", () => {
+    expect(expansionMatch(["Museum of Modern Art", "of the"], "lucene")).toBe('"museum of modern art"')
+  })
+
+  it("quoteFts: NUL and lone surrogate halves are neutralized (FTS5 rejects both)", () => {
+    expect(quoteFts("a\u0000b")).toBe('"a b"')
+    expect(quoteFts("x\uD83D")).toBe('"x\uFFFD"')
+    expect(quoteFts("\uD83D\uDE00")).toBe('"\uD83D\uDE00"')
+  })
+
   it("expansionMatch: drops keywords that restate a query term; caps phrases and words", () => {
     expect(expansionMatch(["dog", "puppy", "Dog"], "none", ["dog"])).toBe('"puppy"')
     const many = Array.from({ length: 20 }, (_, i) => `k${i}`)

@@ -30,23 +30,56 @@ export interface Judge {
 
 const cap = (s: string) => (s.length > MAX_DOC_CHARS ? s.slice(0, MAX_DOC_CHARS) : s)
 
+/**
+ * POST with up to 3 attempts on 429 / 5xx / network errors, exponential
+ * backoff honoring Retry-After (TypeSafe's docs require handling 429s; a
+ * single transient failure used to end a whole sweep). Other statuses fail
+ * immediately.
+ */
+async function postWithRetry(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  let last: unknown
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
+    try {
+      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+      if (res.status !== 429 && res.status < 500) return res
+      last = new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`)
+      const retryAfter = Number(res.headers.get("retry-after"))
+      if (Number.isFinite(retryAfter) && retryAfter > 0) await new Promise((r) => setTimeout(r, Math.min(retryAfter, 30) * 1000))
+    } catch (e) {
+      last = e
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last))
+}
+
 export function crossEncoderJudge(baseUrl: string, timeoutMs = 60_000): Judge {
   const url = `${baseUrl.replace(/\/+$/, "")}/v1/rerank`
   return {
     name: "ce",
     score: async (query, candidates) => {
       if (candidates.length === 0) return []
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: "cross-encoder", query, documents: candidates.map(cap), top_n: candidates.length }),
-        signal: AbortSignal.timeout(timeoutMs),
-      })
+      const res = await postWithRetry(
+        url,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "cross-encoder", query, documents: candidates.map(cap), top_n: candidates.length }),
+        },
+        timeoutMs,
+      )
       if (!res.ok) throw new Error(`cross-encoder HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
       const json = (await res.json()) as { results?: ReadonlyArray<{ index?: unknown; relevance_score?: unknown }> }
       const scores: Array<number | undefined> = candidates.map(() => undefined)
       for (const r of json.results ?? []) {
-        if (typeof r.index !== "number" || typeof r.relevance_score !== "number") {
+        if (
+          typeof r.index !== "number" ||
+          !Number.isInteger(r.index) ||
+          r.index < 0 ||
+          r.index >= candidates.length ||
+          typeof r.relevance_score !== "number" ||
+          !Number.isFinite(r.relevance_score)
+        ) {
           throw new Error("cross-encoder: malformed result entry")
         }
         if (scores[r.index] !== undefined) throw new Error(`cross-encoder: duplicate index ${r.index}`)
@@ -81,12 +114,15 @@ export function jevJudge(apiKey: string, model = "jev-latest", timeoutMs = 60_00
           },
         ]),
       )
-      const res = await fetch(JEV_URL, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, state: { question: query }, questions }),
-        signal: AbortSignal.timeout(timeoutMs),
-      })
+      const res = await postWithRetry(
+        JEV_URL,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, state: { question: query }, questions }),
+        },
+        timeoutMs,
+      )
       if (!res.ok) throw new Error(`jev HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
       const json = (await res.json()) as { answers?: Record<string, { type?: unknown; noul?: unknown }> }
       return candidates.map((_, i) => {

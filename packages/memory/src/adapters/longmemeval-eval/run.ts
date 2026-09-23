@@ -59,7 +59,7 @@
  *   5 memory backend failure (ingest or search). NB: locomo-eval uses 5 for
  *     its time cap; the two harnesses' codes are independent.
  */
-import { Effect, Stream } from "effect"
+import { Effect } from "effect"
 import { MemoryRouterTag } from "../../router.js"
 import {
   answerFromContextOllama,
@@ -68,6 +68,8 @@ import {
 } from "../locomo-eval/answer-model.js"
 import { randomRetrievalBaseline } from "./baselines.js"
 import { describeError, hasErrorTag, loadExpansionSidecars, makeQuestionLayer } from "./harness.js"
+import { makeJudges, type Judge, type JudgeName } from "../eval-common/judge.js"
+import { searchWithConfig } from "../eval-common/search.js"
 import { expansionFor, parseSearchConfig, type ExpansionSidecar, type SearchConfig } from "../../search-config.js"
 import {
   fetchDataset,
@@ -179,6 +181,7 @@ function runQuestion(
   instance: LmeInstance,
   tracker: CostTracker,
   sidecars: ReadonlyMap<string, ExpansionSidecar>,
+  judges: ReadonlyMap<JudgeName, Judge>,
 ) {
   return Effect.gen(function* () {
     const router = yield* MemoryRouterTag
@@ -186,16 +189,18 @@ function runQuestion(
     const ingested = yield* ingestInstance(router, turns)
     const expansionTerms = expansionFor(SEARCH_CONFIG, instance.question_id, sidecars)
 
-    const hits = yield* Stream.runCollect(
-      router.search({
+    // searchWithConfig applies the whole config, including rr=<judge>@<n>.
+    const hits = yield* searchWithConfig(
+      router,
+      SEARCH_CONFIG,
+      {
         queryText: instance.question,
         topK: TOP_K,
         namespace: namespaceFor(instance.question_id),
-        mode: SEARCH_CONFIG.mode,
-        ...(SEARCH_CONFIG.fusion !== undefined ? { fusion: SEARCH_CONFIG.fusion } : {}),
         ...(expansionTerms !== undefined ? { expansionTerms } : {}),
-      }),
-    ).pipe(Effect.map((h) => Array.from(h)))
+      },
+      judges,
+    )
 
     // Map hits back to turns harness-side: records carry no session ids or
     // labels (see ingest.ts), so evidence can only be joined by record id.
@@ -327,6 +332,12 @@ async function main(): Promise<void> {
   } catch (e) {
     configError(`expansion keywords: ${e instanceof Error ? e.message : String(e)}`)
   }
+  let judges: ReadonlyMap<JudgeName, Judge>
+  try {
+    judges = makeJudges(SEARCH_CONFIG.rerank !== undefined ? [SEARCH_CONFIG.rerank.judge] : [], process.env)
+  } catch (e) {
+    configError(e instanceof Error ? e.message : String(e))
+  }
   const tracker: CostTracker = newCostTracker()
   const scored: ScoredRun[] = []
   const retrieval: RetrievalRecord[] = []
@@ -337,10 +348,11 @@ async function main(): Promise<void> {
     let outcome: QuestionOutcome
     try {
       outcome = await Effect.runPromise(
-        Effect.scoped(runQuestion(instance, tracker, sidecars)).pipe(Effect.provide(makeQuestionLayer(EMBED_MODEL, OLLAMA_BASE_URL))),
+        Effect.scoped(runQuestion(instance, tracker, sidecars, judges)).pipe(Effect.provide(makeQuestionLayer(EMBED_MODEL, OLLAMA_BASE_URL))),
       )
     } catch (e) {
       if (e instanceof AnswerModelError) blocked(e.message + ".")
+      if (hasErrorTag(e, "JudgeError")) blocked(`rerank judge failed on ${instance.question_id}: ${describeError(e)}.`)
       if (hasErrorTag(e, "EmbedderError")) {
         blocked(`embedder failed on ${instance.question_id}: ${describeError(e)}.`)
       }

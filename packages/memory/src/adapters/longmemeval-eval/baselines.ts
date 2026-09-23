@@ -57,11 +57,12 @@ export function signTestP(wins: number, losses: number): number {
   const n = wins + losses
   if (n === 0) return 1
   const k = Math.min(wins, losses)
+  // Log space: 0.5 ** n underflows to 0 for n > ~1074.
+  let logTerm = -n * Math.LN2 // log(C(n, 0) / 2^n)
   let tail = 0
-  let term = 0.5 ** n // C(n, 0) / 2^n
   for (let i = 0; i <= k; i++) {
-    tail += term
-    term = (term * (n - i)) / (i + 1)
+    tail += Math.exp(logTerm)
+    logTerm += Math.log((n - i) / (i + 1))
   }
   return Math.min(1, 2 * tail)
 }

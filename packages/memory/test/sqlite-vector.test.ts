@@ -1986,7 +1986,14 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
         const b = yield* seedWeighted("hw4")
         const bm = (queryText: string, expansionTerms?: string[]) =>
           Stream.runCollect(
-            b.search({ queryText, namespace: "hw4", topK: 3, mode: "bm25", ...(expansionTerms ? { expansionTerms } : {}) }),
+            b.search({
+              queryText,
+              namespace: "hw4",
+              topK: 3,
+              // hybrid-weighted is the only mode that feeds expansionTerms to FTS5.
+              mode: expansionTerms ? "hybrid-weighted" : "bm25",
+              ...(expansionTerms ? { expansionTerms, fusion: { lexicalWeight: 1, expansionWeight: 1 } } : {}),
+            }),
           )
         return {
           cafe: ids(yield* bm("café")),
@@ -2023,6 +2030,21 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(out.oneWordM1).toEqual(["tax"])
     expect(out.oneWordM2).not.toEqual(["tax"])
     expect(out.twoWordsM2).toEqual(["tax"])
+  })
+
+  it("hybrid: a message cut mid-emoji or containing NUL still searches (per-turn recall slices at 2000 chars)", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw7")
+        const cutEmoji = "x".repeat(1999) + "\u{1F600}".slice(0, 1) // lone high surrogate, as slice(0, 2000) produces
+        const withNul = "golden retriever\u0000 lake"
+        const one = (queryText: string) =>
+          Stream.runCollect(b.search({ queryText, namespace: "hw7", topK: 2, mode: "hybrid" }))
+        return { cut: ids(yield* one(cutEmoji)).length, nul: ids(yield* one(withNul)).length }
+      }),
+    )
+    expect(out.cut).toBeGreaterThan(0)
+    expect(out.nul).toBeGreaterThan(0)
   })
 
   it("expansionTerms are ignored by every mode except hybrid-weighted (production hybrid unchanged)", async () => {

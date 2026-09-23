@@ -5,12 +5,14 @@
  * hand-copy the union in five places.
  *
  *   vec              pure cosine ranking
- *   hybrid           vec + exact-PHRASE BM25, equal-weight RRF (production
- *                    default; the phrase arm rarely matches a natural question)
+ *   hybrid           vec + exact-PHRASE BM25, equal-weight RRF (what the
+ *                    production callers use; search()'s own default is vec;
+ *                    the phrase arm rarely matches a natural question)
  *   bm25             pure FTS5 BM25 over the query's words, no embedding
  *   hybrid-terms     vec + bag-of-words BM25, equal-weight RRF
- *   hybrid-weighted  vec + stopword-filtered bag-of-words BM25 (+ optional
- *                    expansion terms as their own arm), weighted RRF
+ *   hybrid-weighted  EXPERIMENTAL (bench only): vec + stopword-filtered
+ *                    bag-of-words BM25 + optional expansion keywords as their
+ *                    own arm, weighted RRF
  */
 export const MEMORY_SEARCH_MODES = [
   "vec",

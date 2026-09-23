@@ -88,9 +88,19 @@ export function extractTerms(
   return out
 }
 
-/** FTS5 string literal: wrap in double quotes, doubling any embedded quote. */
+/** An unpaired UTF-16 surrogate half (an emoji cut in two by a string slice). */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/**
+ * FTS5 string literal: wrap in double quotes, doubling any embedded quote.
+ * NUL and lone surrogate halves are replaced first: FTS5 rejects both with
+ * "unterminated string", and per-turn recall slices messages at 2000
+ * characters, which can cut an emoji in half (the whole search then failed,
+ * so that turn got no recall context).
+ */
 export function quoteFts(s: string): string {
-  return `"${s.replace(/"/g, '""')}"`
+  const clean = s.replace(/\u0000/g, " ").replace(LONE_SURROGATE, "\uFFFD")
+  return `"${clean.replace(/"/g, '""')}"`
 }
 
 /**
@@ -133,21 +143,29 @@ export const MAX_EXPANSION_PHRASE_WORDS = 6
  * phrasings) as an OR of quoted PHRASES: a multi-word keyword keeps its word
  * order ("apple pie" does not match a memory that merely mentions apples and
  * pie). Keywords are tokenized the same way as queries, so FTS5 syntax inside
- * them is inert. A single-word keyword already among `queryTerms` is
- * dropped: restating the query would double-count it (FTS5 has no per-term
- * boost and sums repeats). At most MAX_EXPANSION_PHRASES phrases of at most
- * MAX_EXPANSION_PHRASE_WORDS words each.
+ * them is inert. Stopwords are NOT removed inside a phrase (that would break
+ * adjacency: "museum of modern art" must stay a 4-word phrase); a keyword made
+ * only of stopwords is dropped. A single-word keyword already among
+ * `queryTerms` is dropped: restating the query would double-count it (FTS5
+ * has no per-term boost and sums repeats); pass no `queryTerms` when the query
+ * arm is off. At most MAX_EXPANSION_PHRASES phrases; longer keywords keep
+ * their first MAX_EXPANSION_PHRASE_WORDS words.
  */
 export function expansionMatch(
   keywords: ReadonlyArray<string>,
   stopwords: StopwordSet = "none",
   queryTerms: ReadonlyArray<string> = [],
 ): string {
+  const stop = STOPWORD_SETS[stopwords]
   const phrases: string[] = []
   const seen = new Set<string>(queryTerms)
   for (const kw of keywords) {
-    const words = extractTerms(kw, stopwords, MAX_EXPANSION_PHRASE_WORDS)
-    if (words.length === 0) continue
+    // Order-preserving, no de-dupe inside a phrase ("new new york" stays as written).
+    const words = Array.from(kw.normalize("NFKC").toLowerCase().matchAll(WORD), (m) => m[0]).slice(
+      0,
+      MAX_EXPANSION_PHRASE_WORDS,
+    )
+    if (words.length === 0 || words.every((w) => stop.has(w))) continue
     const phrase = words.join(" ")
     if (seen.has(phrase)) continue
     seen.add(phrase)
@@ -169,13 +187,17 @@ export interface LexicalFusionOptions {
 }
 
 /**
- * Defaults for `hybrid-weighted`. PROVISIONAL until the sweep in the plan
- * above picks them; change only with a recorded sweep.
+ * Defaults for `hybrid-weighted`, an EXPERIMENTAL mode no production caller
+ * uses. These are the plan's locked "vector + agent keywords" config
+ * (w=0, e=0.5, s=lucene): with no keywords it ranks like vector search, and
+ * the held-out test found it safe but not proven better. The sweep that
+ * refuted every w > 0 setting on vocabulary-mismatch queries is recorded in
+ * docs/superpowers/plans/2026-09-22-memory-lexical-fusion-and-query-expansion.md.
  */
 export const HYBRID_WEIGHTED_DEFAULTS: LexicalFusionOptions = {
-  lexicalWeight: 0.5,
+  lexicalWeight: 0,
   expansionWeight: 0.5,
-  stopwords: "extended",
+  stopwords: "lucene",
   minMatch: 1,
 }
 
