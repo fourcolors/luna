@@ -1,0 +1,104 @@
+# Memory search: weighted lexical fusion and query expansion
+
+Status: plan, 2026-09-22, revised after an adversarial critic review (same day).
+Tracks #702.
+Stacked on #703 (LongMemEval S-split harness).
+
+## Problem
+
+Production `memory_search` and per-turn recall call `mode: "hybrid"`.
+Its BM25 arm sends the whole question to FTS5 as ONE quoted phrase (`sqlite-vector.ts` `rankByBm25(..., "phrase")`), which never matches a natural question.
+So production is vector-only: identical to `vec` on all 60 LongMemEval S questions and on the synthetic memory-suite.
+The existing alternative, `hybrid-terms`, ORs every query word and fuses with equal-weight RRF (k=60).
+It retrieves more evidence on LongMemEval S (75.0% vs 64.4%, 13 vs 2 questions, p = 0.007) but halves vocab-mismatch recall on memory-suite (recall@10 0.85 -> 0.42), because a noisy lexical rank-1 gets the same vote as a strong vector rank-1.
+
+## Decisions already made
+
+- Stay on SQLite (`memory.db`, FTS5 + vectorlite); push work into SQL (owner decision, 2026-09-22).
+  FTS5 ships real BM25 and the index already uses the `porter unicode61` tokenizer; Postgres `ts_rank` is not BM25.
+- Experiments never touch the live memory store; real-data checks run on a COPY, before merge, because merge auto-deploys (owner decision, 2026-07-14).
+- LLM-generated eval inputs are sampled N times and reported with spread, never a single cached draw (2026-07-15 methodology lesson).
+
+## Research basis
+
+- Weighted RRF (`score = sum w_i / (k + rank_i)`) is the standard way to de-emphasize a noisy arm without score normalization (Elastic weighted RRF, OpenSearch hybrid weights, ParadeDB).
+- Convex combination of normalized scores beats RRF once a small labeled set exists (Bruch, Gai, Ingber, TOIS 2023, arXiv:2210.11934); not used here, see B4.
+- FTS5 has no stopword support; the de facto query-side list is Lucene's 33-word English set; question words are kept (they can be content in short records).
+- LongMemEval (Wu et al., ICLR 2025): expanding the indexed KEY with extracted facts, merged with the original value, gains Recall@5 +3.7 to +10.7%; replacing the value with the condensed form hurts.
+- doc2query / docTTTTTquery: write-time expansion lifts BM25 MRR@10 0.186 -> 0.272 at zero query-time cost.
+- Query-time LLM rewriting (HyDE, Query2doc, multi-query) works but is the dominant latency cost in production RAG and drifts on small, idiosyncratic corpora.
+- Luna's own July result: write-time enrichment into FTS5 raised BM25 vocab-mismatch recall@5 0.133 -> 0.383, but was put on HOLD because equal-weight `hybrid-terms` fusion did not beat `hybrid`; weighted fusion is the untested piece.
+
+## Design
+
+### A. Lexical arm (SQL-side, deterministic)
+
+1. Term extraction: NFKC-normalized, lower-cased runs of letters, marks and digits (`\p{L}\p{M}\p{N}`), matching FTS5 `unicode61`; fixes today's silent drop of non-ASCII words in `terms` mode.
+   Note: `unicode61` treats a CJK run as one token, so CJK lexical matching stays weak without a trigram index (out of scope).
+2. Stopwords are removed on the raw lower-cased word, before quoting and before FTS5's porter stemming (porter maps "was" to "wa").
+   Sets swept: `lucene` (33 words), `extended` (Lucene + pronouns/auxiliaries), `question` (extended + what/when/where/who/why/how/which); whether question words should stay is measured, not assumed.
+3. The remaining terms are OR'd, every token quoted (FTS5 syntax in user text is inert), capped at 32 terms.
+4. If no content term survives, the lexical arm abstains (vector-only), never floods.
+
+### B. Fusion
+
+1. Weighted RRF: `score = 1 / (60 + rank_vec) + w_lex / (60 + rank_lex) + w_exp / (60 + rank_exp)`.
+2. RRF at k = 60 is flat: a lexical-only document (vector rank > 50) reaches the top 10 only if `w_lex` > ~0.87, and the top 5 only if > ~0.94.
+   So the sweep covers `w_lex` in {0.1, 0.25, 0.5, 0.75, 1.0}, and a diagnostic first measures where `hybrid-terms`' extra LongMemEval evidence sits in the vector ranking (inside the vector top 50 = reorderable by weighting; outside = only reachable at weight ~1).
+3. Stopwords at `w_lex` = 1 are measured on their own: vocab-mismatch queries share no content words with their target, so function-word matches may explain the whole regression.
+4. Convex score combination is dropped: FTS5 `bm25()` scores are unbounded and min-max scaling breaks when one document matches.
+
+### C. Query expansion
+
+1. Search accepts `expansionTerms`; ONLY `hybrid-weighted` uses them, as their own lexical arm with weight `w_exp` below the query arm.
+   FTS5 has no per-term boost and sums repeated terms (`"x" OR "x" OR "x"` scores 3x), so merging keywords into the query's OR would let them take over.
+   Keywords are de-duplicated against the query's own terms (lower-cased, after stopwords), capped at 8 phrases of at most 6 words, and never embedded.
+   `vec`, `hybrid`, `bm25` and `hybrid-terms` ignore them, so `hybrid` (production) is byte-identical.
+2. In production the calling agent would write the keywords at zero added latency (it is already an LLM composing the query); that tool wiring is the rollout PR, not this one.
+3. Write-time expansion (`memory_save` keywords into the FTS5 `enrichment` column) stays on HOLD: the column is weighted equal to `text` today, existing records have no keywords (no backfill), and the July hold's causes are unresolved.
+   It needs a lower enrichment column weight and a real-data result first.
+
+### D. Plumbing
+
+1. One exported `MemorySearchMode` (@luna/core) replaces the five hand-copied mode lists (backend, router, SQLite backend, observability type and its runtime Schema); one `MemorySearchArgs` replaces three copies of the search argument type.
+2. New mode `"hybrid-weighted"`; its knobs are one typed config with bench-chosen defaults, overridable per call for sweeps.
+3. The contract test backend rejects `hybrid-weighted` loudly (it already rejects `hybrid-terms`).
+4. NO production caller changes in this PR: `memory_search` and per-turn recall keep `mode: "hybrid"`, and the tool schema is unchanged.
+
+## Evaluation
+
+| bench | role | metric |
+|---|---|---|
+| memory-suite (230 queries, synthetic) | tuning + regression guard | recall@5 per slice, per-query win/loss vs `hybrid` |
+| LongMemEval S, questions 1-60 | tuning | evidence recall@5 (production uses top 5), recall@10 secondary |
+| LongMemEval S, questions 61-260 | held-out confirmation, run ONCE on the locked config | evidence recall@5, paired sign test vs `hybrid`, stratified by question type |
+
+- Both harnesses gain multi-config retrieval: ingest once, search every config.
+- Expansion keywords for eval queries are generated from the question text only, by Haiku and by Sonnet (production-class) through the `claude` CLI, 3 samples each, cached by a hash of the prompt; "no keywords" is always a reported baseline.
+  On memory-suite vocab-mismatch, one LLM expanding queries another LLM wrote to avoid the record's words is close to a round trip, so those gains are labelled optimistic.
+- Embedder `nomic-embed-text` for comparability with every earlier baseline.
+
+### Ship rule (fixed before any run)
+
+The config is chosen on the tuning sets, written into this file with its parameters, and only then run on the held-out set.
+It becomes the recommended default only if:
+1. held-out LongMemEval S evidence recall@5 beats `hybrid` with a paired sign test p < 0.05;
+2. on memory-suite, for every slice, per-query losses vs `hybrid` do not exceed wins by more than 2 queries;
+3. on memory-suite, the gap between positive and negative queries' top scores (the bench's existing `negativeSeparation`, relative to each mode's own scale) does not shrink vs `hybrid`, so a future injection floor stays possible;
+4. memory-suite p95 latency stays within 20 ms of `hybrid` (a sanity check only; the real latency check is on a stable-DB copy in the rollout PR).
+Expansion ships on top only if it adds a further held-out improvement under rule 1 across both keyword models.
+
+## Rollout PR (separate, after results)
+
+- `LUNA_MEMORY_SEARCH_MODE` validated at startup (unknown value = loud failure), default unchanged.
+- `memory_search` gains `keywords` (max 8 phrases, max 6 words each, enforced in the zod schema) only under the flag.
+- RetrievalCall observability gains a config id, lexical and expansion term counts, and whether keywords were supplied.
+- Per-turn recall gets its own evaluation on real user messages (up to 2,000 characters, so OR-of-terms behaves differently: likely rarest-terms capping via `fts5vocab` and a lower weight).
+- Real-data run on a COPY of the stable memory DB, dev channel before stable.
+
+## Out of scope
+
+- Flipping the production default: a separate, flag-only change after a real-data check on a COPY of the stable memory DB.
+- Query-time LLM rewriting (HyDE, multi-query): fallback-only per the research; revisit if agent keywords underdeliver.
+- The superseded filter runs after the top-K cut (`sqlite-vector.ts`), so results can come back short; pre-existing, noted for knowledge-update questions.
+- Moving memory to Postgres.

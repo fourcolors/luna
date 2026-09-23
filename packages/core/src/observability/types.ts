@@ -14,6 +14,7 @@
  * and a `kind` discriminant.
  */
 import type { Effect, Scope, Stream } from "effect"
+import type { MemorySearchMode } from "../memory-search-mode.js"
 
 export type ObsEventKind =
   | "SessionStart"
@@ -125,7 +126,7 @@ interface RetrievalCallEventBase extends ObsEventBase {
   readonly kind: "RetrievalCall"
   readonly sessionId?: string
   readonly namespace?: string
-  readonly mode: "vec" | "hybrid" | "bm25" | "hybrid-terms"
+  readonly mode: MemorySearchMode
   readonly candidateCount: number
   readonly topScore?: number
   readonly durationMs: number

@@ -20,7 +20,7 @@
  * packages/memory/src/backend.ts:45-49: `"vec"` and `"bm25"` each rank by
  * one signal (a Jaccard-like overlap ratio and a raw token-overlap count,
  * respectively), `"hybrid"` fuses those two signals via RRF, and
- * `"hybrid-terms"` is not implemented and fails with `MemoryBackendError`
+ * `"hybrid-terms"` / `"hybrid-weighted"` are not implemented and fail with `MemoryBackendError`
  * rather than silently answering with a mode it wasn't asked for. `search`
  * does not filter by `scope` - neither does SqliteVectorBackend's today (see
  * packages/memory/src/backends/sqlite-vector.ts), so this is parity, not a
@@ -265,10 +265,11 @@ export class TestVectorBackend extends Context.Service<TestVectorBackend, TestVe
       const search: TestVectorBackendApi["search"] = (args) => {
         const mode = args.mode ?? "vec"
 
-        // "hybrid-terms" is not implemented by this test double. Per the
-        // MUST at packages/memory/src/backend.ts:45-49, an unsupported mode
-        // fails loudly rather than silently answering with a different one.
-        if (mode === "hybrid-terms") {
+        // "hybrid-terms" / "hybrid-weighted" are not implemented by this test
+        // double. Per the MUST at packages/memory/src/backend.ts, an
+        // unsupported mode fails loudly rather than silently answering with
+        // a different one.
+        if (mode === "hybrid-terms" || mode === "hybrid-weighted") {
           return Stream.fail(
             new MemoryBackendError({
               backend: "test-vector",

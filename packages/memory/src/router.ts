@@ -17,7 +17,7 @@ import {
   type ClockService,
   type ObservabilityApi,
 } from "@luna/core"
-import { hasVectorSearch, type MemoryBackend } from "./backend.js"
+import { hasVectorSearch, type MemoryBackend, type MemorySearchArgs } from "./backend.js"
 import type {
   MemoryExport,
   MemoryQuery,
@@ -82,15 +82,7 @@ export interface MemoryRouter {
    * embedding entirely. Backends that don't support a mode fail with
    * `MemoryBackendError`; the router does not silently fall back to vec-only.
    */
-  readonly search: (args: {
-    readonly queryText: string
-    readonly topK?: number
-    readonly namespace?: string
-    readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
-    readonly scope?: MemoryScopeQuery
-    /** If true, records superseded by a newer record are included. */
-    readonly includeSuperseded?: boolean
-  }) => Stream.Stream<
+  readonly search: (args: MemorySearchArgs) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
   >

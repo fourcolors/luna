@@ -1,0 +1,176 @@
+/**
+ * Builds FTS5 MATCH expressions for the lexical (BM25) arm of memory search,
+ * and holds the fusion knobs for the `hybrid-weighted` mode.
+ *
+ * Pure and deterministic: no DB, no I/O. The SQL side (FTS5 `bm25()` over the
+ * `porter unicode61` index) does the ranking; this module only decides WHICH
+ * words go into the MATCH and escapes them so user text can never become
+ * FTS5 syntax.
+ *
+ * Why stopwords: FTS5 has none built in, so an OR-of-terms query built from a
+ * natural question ("what did I say about the dog") lets a shared filler
+ * word make an unrelated memory a lexical "hit". Stopwords are dropped on the
+ * raw lower-cased word, before FTS5's porter stemmer sees it (porter maps
+ * "was" to "wa"). Whether question words should also go is measured by the
+ * `question` set, not assumed.
+ * Plan: docs/superpowers/plans/2026-09-22-memory-lexical-fusion-and-query-expansion.md
+ */
+
+/** Lucene/Elasticsearch `_english_` stop set (33 words). */
+export const STOPWORDS_LUCENE: ReadonlySet<string> = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
+  "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the",
+  "their", "then", "there", "these", "they", "this", "to", "was", "will",
+  "with",
+])
+
+/**
+ * Lucene plus first/second-person pronouns and common auxiliaries: the
+ * filler of conversational questions ("did I", "do you", "have my").
+ * Still keeps what/when/where/who/why/how.
+ */
+export const STOPWORDS_EXTENDED: ReadonlySet<string> = new Set([
+  ...STOPWORDS_LUCENE,
+  "i", "me", "my", "mine", "we", "us", "our", "you", "your", "he", "she",
+  "him", "her", "his", "its", "them", "do", "does", "did", "have", "has",
+  "had", "am", "were", "been", "being", "can", "could", "would", "should",
+  "shall", "may", "might", "must", "about", "from", "so", "any", "some",
+])
+
+/** Extended plus the question words, to MEASURE whether keeping them helps. */
+export const STOPWORDS_QUESTION: ReadonlySet<string> = new Set([
+  ...STOPWORDS_EXTENDED,
+  "what", "when", "where", "who", "whom", "whose", "why", "how", "which",
+])
+
+export type StopwordSet = "none" | "lucene" | "extended" | "question"
+
+const STOPWORD_SETS: Record<StopwordSet, ReadonlySet<string>> = {
+  none: new Set(),
+  lucene: STOPWORDS_LUCENE,
+  extended: STOPWORDS_EXTENDED,
+  question: STOPWORDS_QUESTION,
+}
+
+/**
+ * Word tokens as FTS5's unicode61 tokenizer would split them: runs of
+ * letters, combining marks and digits (any script; without \p{M}, scripts
+ * like Devanagari would split into fragments). Underscore and apostrophe
+ * separate, matching unicode61's defaults, so "don't" -> "don", "t" on both
+ * sides. Text is NFKC-normalized first (full-width forms, ligatures).
+ * unicode61 keeps a CJK run as ONE token, so CJK matching stays weak
+ * without a trigram index.
+ */
+const WORD = /[\p{L}\p{M}\p{N}]+/gu
+
+/** Upper bound on OR terms per arm: per-turn recall queries are whole chat messages. */
+export const MAX_LEXICAL_TERMS = 32
+
+/**
+ * Lower-cased content words of `text`, stopwords removed, de-duplicated in
+ * first-seen order, capped at `maxTerms`.
+ */
+export function extractTerms(
+  text: string,
+  stopwords: StopwordSet = "none",
+  maxTerms: number = MAX_LEXICAL_TERMS,
+): string[] {
+  const stop = STOPWORD_SETS[stopwords]
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const m of text.normalize("NFKC").toLowerCase().matchAll(WORD)) {
+    const w = m[0]
+    if (stop.has(w) || seen.has(w)) continue
+    seen.add(w)
+    out.push(w)
+    if (out.length >= maxTerms) break
+  }
+  return out
+}
+
+/** FTS5 string literal: wrap in double quotes, doubling any embedded quote. */
+export function quoteFts(s: string): string {
+  return `"${s.replace(/"/g, '""')}"`
+}
+
+/**
+ * OR of single quoted terms, or "" when nothing survives (caller must then
+ * skip the lexical arm rather than MATCH an empty string).
+ */
+export function termsMatch(terms: ReadonlyArray<string>): string {
+  return terms.map(quoteFts).join(" OR ")
+}
+
+/** Caps on expansion keywords: FTS5 sums repeated/overlapping terms, so volume = weight. */
+export const MAX_EXPANSION_PHRASES = 8
+export const MAX_EXPANSION_PHRASE_WORDS = 6
+
+/**
+ * Expansion keywords (agent-supplied synonyms, entities, alternate
+ * phrasings) as an OR of quoted PHRASES: a multi-word keyword keeps its word
+ * order ("apple pie" does not match a memory that merely mentions apples and
+ * pie). Keywords are tokenized the same way as queries, so FTS5 syntax inside
+ * them is inert. A single-word keyword already among `queryTerms` is
+ * dropped: restating the query would double-count it (FTS5 has no per-term
+ * boost and sums repeats). At most MAX_EXPANSION_PHRASES phrases of at most
+ * MAX_EXPANSION_PHRASE_WORDS words each.
+ */
+export function expansionMatch(
+  keywords: ReadonlyArray<string>,
+  stopwords: StopwordSet = "none",
+  queryTerms: ReadonlyArray<string> = [],
+): string {
+  const phrases: string[] = []
+  const seen = new Set<string>(queryTerms)
+  for (const kw of keywords) {
+    const words = extractTerms(kw, stopwords, MAX_EXPANSION_PHRASE_WORDS)
+    if (words.length === 0) continue
+    const phrase = words.join(" ")
+    if (seen.has(phrase)) continue
+    seen.add(phrase)
+    phrases.push(phrase)
+    if (phrases.length >= MAX_EXPANSION_PHRASES) break
+  }
+  return phrases.map(quoteFts).join(" OR ")
+}
+
+/** Knobs for `hybrid-weighted`. Bench-tuned defaults live in HYBRID_WEIGHTED_DEFAULTS. */
+export interface LexicalFusionOptions {
+  /** RRF weight of the BM25 arm over the query's own words (vector arm = 1). */
+  readonly lexicalWeight: number
+  /** RRF weight of the BM25 arm over expansion keywords, when any are given. */
+  readonly expansionWeight: number
+  readonly stopwords: StopwordSet
+}
+
+/**
+ * Defaults for `hybrid-weighted`. PROVISIONAL until the sweep in the plan
+ * above picks them; change only with a recorded sweep.
+ */
+export const HYBRID_WEIGHTED_DEFAULTS: LexicalFusionOptions = {
+  lexicalWeight: 0.5,
+  expansionWeight: 0.5,
+  stopwords: "extended",
+}
+
+/** RRF constant (Cormack et al.; every major engine's default). */
+export const RRF_K = 60
+
+/**
+ * Weighted Reciprocal Rank Fusion: sum over lists of weight / (k + rank),
+ * rank 1-based. Ties keep first-seen order (Map insertion), which puts the
+ * first list's ordering first.
+ */
+export function weightedRrf(
+  lists: ReadonlyArray<{ readonly ids: ReadonlyArray<string>; readonly weight: number }>,
+  k: number = RRF_K,
+): Array<{ readonly id: string; readonly score: number }> {
+  const fused = new Map<string, number>()
+  for (const { ids, weight } of lists) {
+    if (weight <= 0) continue
+    ids.forEach((id, idx) => {
+      fused.set(id, (fused.get(id) ?? 0) + weight / (k + idx + 1))
+    })
+  }
+  return Array.from(fused, ([id, score]) => ({ id, score })).sort((a, b) => b.score - a.score)
+}
