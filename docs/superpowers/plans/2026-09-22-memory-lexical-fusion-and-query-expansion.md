@@ -169,6 +169,28 @@ Held-out test, run once, on FRESH LongMemEval S questions 261-460 (never used; 6
 memory-suite has no held-out split; its role stays a regression guard (above: no slice with net losses).
 Latency is NOT settled by these numbers: the production GPU (the production server GPU) measured ~7.5 s for 8 candidates, so depth 20-40 is not shippable there as-is; a faster judge (e.g. Jev, hosted) or faster hardware is a precondition for rollout.
 
+## Relevance judge: held-out result (2026-09-23, run once on fresh questions 261-460)
+
+193 answerable questions, 366 evidence turns, evidence@5:
+
+| config | evidence@5 | evidence@10 | vs `hybrid` | vs `hybrid:rr=ce@8` |
+|---|---:|---:|---:|---:|
+| `hybrid` (production recall) | 161/366 (44.0%) | 61.7% | - | - |
+| `hybrid:rr=ce@8` | 204/366 (55.7%) | 61.7% | 44 / 1 | - |
+| **`hybrid:rr=ce@20`** | **265/366 (72.4%)** | 78.7% | 86 / 1, p ~ 1e-24 | 52 / 1, p ~ 1e-14 |
+| **`hybrid:rr=ce@40`** | **279/366 (76.2%)** | 85.0% | 92 / 1, p ~ 2e-26 | 61 / 1, p ~ 3e-17 |
+| `hybrid-terms:rr=ce@40` (reference) | 284/366 (77.6%) | 86.6% | 97 / 1 | 66 / 1 |
+
+`hybrid:rr=ce@40` vs `hybrid:rr=ce@20`: 17 / 4, p = 0.007.
+
+By question type (evidence turns found in the top 5, `hybrid` -> `hybrid:rr=ce@8` -> `hybrid:rr=ce@40`): knowledge-update 24 -> 35 -> 52 of 59; multi-session 52 -> 66 -> 94 of 144; temporal-reasoning 39 -> 52 -> 76 of 100; single-session-user 19 -> 22 -> 25 of 26; single-session-assistant 21 -> 23 -> 23 of 24; preference 6 -> 6 -> 9 of 13.
+
+Outcome against the locked rules: BOTH candidates PASS (beat `hybrid` and `hybrid:rr=ce@8`, every p far below 0.025).
+
+Conclusion: the biggest single improvement available to Luna's memory is judging more candidates, not changing lexical matching.
+Production retrieval already has most of the right memories in its top 40; it ranks them too low, and today's rerank (when enabled) only looks at 8.
+The open question is purely operational: latency of judging 20-40 candidates on the production hardware (a precondition for rollout, below).
+
 ## Rollout PR (separate, after results)
 
 - `LUNA_MEMORY_SEARCH_MODE` validated at startup (unknown value = loud failure), default unchanged.
