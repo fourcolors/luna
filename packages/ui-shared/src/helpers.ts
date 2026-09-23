@@ -5,6 +5,7 @@
  * - deriveTitle: human-friendly thread title fallback chain
  * - truncate:    string truncation with ellipsis
  * - formatBytes: human-readable byte count
+ * - formatMb:    bare megabytes figure, for "X / Y MB" progress strings
  * - countLines:  line count that ignores a trailing newline
  */
 import type { ThreadView } from "./reducer.js"
@@ -46,6 +47,9 @@ export const formatBytes = (n: number): string => {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
 }
+
+/** MB figure with no unit suffix - callers render "<formatMb> / <formatMb> MB". */
+export const formatMb = (bytes: number): string => (Number(bytes) / (1024 * 1024)).toFixed(1)
 
 export const countLines = (s: string): number => {
   if (s.length === 0) return 0

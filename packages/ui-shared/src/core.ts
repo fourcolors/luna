@@ -15,6 +15,7 @@ export {
   countLines,
   deriveTitle,
   formatBytes,
+  formatMb,
   formatVal,
   newRequestId,
   relativeTime,
