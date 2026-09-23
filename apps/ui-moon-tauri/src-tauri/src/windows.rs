@@ -2746,14 +2746,19 @@ unsafe fn set_snap_parent_ns(
 /// (direction reversals MUST drop the old edge before the new one — the
 /// ancestor walk inside set_snap_parent_ns would refuse it otherwise),
 /// then attach every planned edge. Pure geometry in, AppKit out — this is
-/// the ONLY place attachment changes hands.
+/// the ONLY place attachment changes hands. Off the main thread (async
+/// command contexts) it hops — the graph only ever mutates on the main
+/// thread, but callers don't have to care which thread they're on.
 #[cfg(target_os = "macos")]
 pub(crate) fn apply_attachment_plan(app: &tauri::AppHandle) {
     use objc2_app_kit::NSWindow;
-    let Some(_mtm) = objc2::MainThreadMarker::new() else {
-        eprintln!("[snap] apply_attachment_plan off main thread — skipped");
+    if objc2::MainThreadMarker::new().is_none() {
+        let app2 = app.clone();
+        if let Err(e) = app.run_on_main_thread(move || apply_attachment_plan(&app2)) {
+            eprintln!("[snap] apply_attachment_plan main-thread hop failed: {e}");
+        }
         return;
-    };
+    }
     let rects = dock_rects(app, "");
     let plan = plan_attachments(&rects);
     let ns_of = |label: &str| -> Option<*mut std::ffi::c_void> {
@@ -2766,21 +2771,22 @@ pub(crate) fn apply_attachment_plan(app: &tauri::AppHandle) {
             continue;
         };
         let cns: &NSWindow = unsafe { &*cptr.cast() };
-        let cur_ok = match (cns.parentWindow(), parent) {
+        let cur = cns.parentWindow();
+        let cur_ok = match (&cur, parent) {
             (Some(cur), Some(pl)) => ns_of(pl)
-                .map(|pp| std::ptr::eq::<NSWindow>(&*cur, unsafe { &*pp.cast() }))
+                .map(|pp| std::ptr::eq::<NSWindow>(&**cur, unsafe { &*pp.cast() }))
                 .unwrap_or(false),
             (None, None) => true,
             _ => false,
         };
-        if !cur_ok {
+        if !cur_ok && cur.is_some() {
             eprintln!("[snap] detach {label}");
             unsafe {
                 set_snap_parent_ns(cns, None);
             }
         }
     }
-    // Phase 2: attach every planned edge.
+    // Phase 2: attach every planned edge that isn't already in place.
     for (label, parent) in &plan {
         let Some(pl) = parent else {
             continue;
@@ -2791,6 +2797,13 @@ pub(crate) fn apply_attachment_plan(app: &tauri::AppHandle) {
         };
         let cns: &NSWindow = unsafe { &*cptr.cast() };
         let pns: &NSWindow = unsafe { &*pptr.cast() };
+        if cns
+            .parentWindow()
+            .is_some_and(|c| std::ptr::eq::<NSWindow>(&*c, pns))
+        {
+            continue;
+        }
+        eprintln!("[snap] attach {label} -> {pl}");
         unsafe {
             set_snap_parent_ns(cns, Some(pns));
         }
