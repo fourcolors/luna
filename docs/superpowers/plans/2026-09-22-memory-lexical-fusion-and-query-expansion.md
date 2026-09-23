@@ -191,13 +191,16 @@ Conclusion: the biggest single improvement available to Luna's memory is judging
 Production retrieval already has most of the right memories in its top 40; it ranks them too low, and today's rerank (when enabled) only looks at 8.
 The open question is purely operational: latency of judging 20-40 candidates on the production hardware (a precondition for rollout, below).
 
-## Rollout PR (separate, after results)
+## Rollout (separate PRs; revised 2026-09-23 after the judge result)
 
-- `LUNA_MEMORY_SEARCH_MODE` validated at startup (unknown value = loud failure), default unchanged.
-- `memory_search` gains `keywords` (max 8 phrases, max 6 words each, enforced in the zod schema) only under the flag.
-- RetrievalCall observability gains a config id, lexical and expansion term counts, and whether keywords were supplied.
-- Per-turn recall gets its own evaluation on real user messages (up to 2,000 characters, so OR-of-terms behaves differently: likely rarest-terms capping via `fts5vocab` and a lower weight).
-- Real-data run on a COPY of the stable memory DB, dev channel before stable.
+The evidence points at judging more candidates, not at changing lexical matching.
+Nothing in this PR changes production search; these are the next steps, in order:
+
+1. Measure judge latency where it would run, for depth 8 / 20 / 40, on real memories (a COPY of the stable memory DB, real `memory_search` queries): the local cross-encoder on the production server GPU, and Jev (hosted; needs `TYPESAFE_API_KEY` and an owner decision on sending memory text to a second vendor).
+2. `memory_search` (rerank already shipped behind `LUNA_MEMORY_RERANK`, cap `LUNA_RERANK_MAX_CANDIDATES=8`): raise the cap to 20-40 if step 1 fits its latency budget; this is an env change, not code.
+3. Per-turn recall (2.5 s budget, no rerank today): enable a judge only with a judge fast enough for that budget; this is the change with the largest user-visible effect (every turn) and the tightest constraint.
+4. Real-data check on the DB copy before any flag flips (merge auto-deploys).
+5. Agent keywords (`memory_search` `keywords` argument) stay out: safe but not proven, and the judge already delivers the vocabulary-mismatch gain they were meant to.
 
 ## Out of scope
 
