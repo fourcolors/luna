@@ -11,9 +11,10 @@ import {
   isAbstentionId,
   seededShuffle,
   selectSubset,
+  SPLIT_URLS,
 } from "../src/adapters/longmemeval-eval/dataset.js"
 import { ingestInstance, namespaceFor } from "../src/adapters/longmemeval-eval/ingest.js"
-import { resolveOllamaBaseUrl } from "../src/adapters/longmemeval-eval/ollama.js"
+import { resolveOllamaBaseUrl } from "../src/adapters/eval-common/ollama.js"
 import {
   ALWAYS_ABSTAIN_PREDICTION,
   aggregateByType,
@@ -62,6 +63,19 @@ describe("longmemeval-eval dataset helpers", () => {
     expect(seededShuffle(ids, 42)).toEqual(seededShuffle(ids, 42))
     expect(seededShuffle(ids, 42)).not.toEqual(ids)
     expect(seededShuffle(ids, 1)).not.toEqual(seededShuffle(ids, 42))
+  })
+
+  it("selectSubset picks the same ids whatever the file order (splits list questions differently)", () => {
+    const ds = "abcdefghijklmnop".split("").map((id) => sample({ question_id: id }))
+    const reversed = ds.slice().reverse()
+    const pick = (d: ReadonlyArray<LmeInstance>) => selectSubset(d, 5, 42).map((q) => q.question_id)
+    expect(pick(reversed)).toEqual(pick(ds))
+  })
+
+  it("SPLIT_URLS point at the three official cleaned files", () => {
+    expect(SPLIT_URLS.oracle).toMatch(/\/longmemeval_oracle\.json$/)
+    expect(SPLIT_URLS.s).toMatch(/\/longmemeval_s_cleaned\.json$/)
+    expect(SPLIT_URLS.m).toMatch(/\/longmemeval_m_cleaned\.json$/)
   })
 
   it("flattenTurns keeps haystack order and stamps session + has_answer", () => {

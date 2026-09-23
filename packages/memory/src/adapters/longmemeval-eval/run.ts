@@ -25,6 +25,9 @@
  *
  * Env vars (all optional except LUNA_EMBEDDER=ollama):
  *   LUNA_EMBEDDER=ollama       required (stub embeddings are meaningless)
+ *   LUNA_LME_SPLIT             oracle | s | m (default: oracle). Same 500
+ *                              questions, bigger haystacks; the seeded
+ *                              subset picks the same ids on every split
  *   LUNA_LME_QA_LIMIT          question count (default: 15)
  *   LUNA_LME_SEED              shuffle seed (default: 42; `order` = file order)
  *   LUNA_LME_TOPK              memory_search topK (default: 10)
@@ -32,7 +35,11 @@
  *                              hybrid, what memory_search uses; note hybrid's
  *                              BM25 leg is exact-phrase, see RESULTS.md)
  *   LUNA_LME_ANSWER_MODEL      Ollama chat model (default: llama3.2:1b)
- *   LUNA_LME_DATASET_URL       override oracle JSON URL
+ *   LUNA_LME_DATASET_URL       override the split's JSON URL (cache is keyed by file name)
+ *   LUNA_LME_NUM_CTX           answer-model num_ctx (default: 8192). Pinned
+ *                              because Ollama's default varies by machine; a
+ *                              prompt that reaches it is truncated, so the run
+ *                              stops (exit 2) instead of scoring it
  *   LUNA_OLLAMA_EMBED_MODEL    embed model (default: embeddinggemma, Luna's default)
  *   LUNA_OLLAMA_BASE_URL       Ollama URL for embed AND answer; falls back to
  *                              OLLAMA_HOST, then http://127.0.0.1:11434
@@ -65,10 +72,12 @@ import {
   flattenTurns,
   isAbstentionId,
   selectSubset,
+  SPLIT_URLS,
+  type LmeSplit,
   type LoadedDataset,
 } from "./dataset.js"
 import { ingestInstance, namespaceFor, recordId } from "./ingest.js"
-import { probeModel, resolveOllamaBaseUrl } from "./ollama.js"
+import { probeModel, resolveOllamaBaseUrl } from "../eval-common/ollama.js"
 import {
   ALWAYS_ABSTAIN_PREDICTION,
   aggregateByType,
@@ -122,6 +131,13 @@ if (!(SEARCH_MODES as ReadonlyArray<string>).includes(SEARCH_MODE_RAW)) {
   configError(`LUNA_LME_SEARCH_MODE="${SEARCH_MODE_RAW}" must be one of ${SEARCH_MODES.join(", ")}`)
 }
 const SEARCH_MODE = SEARCH_MODE_RAW as SearchMode
+const SPLIT_RAW = process.env["LUNA_LME_SPLIT"]?.trim() || "oracle"
+if (!(SPLIT_RAW in SPLIT_URLS)) {
+  configError(`LUNA_LME_SPLIT="${SPLIT_RAW}" must be one of ${Object.keys(SPLIT_URLS).join(", ")}`)
+}
+const SPLIT = SPLIT_RAW as LmeSplit
+const DATASET_URL = process.env["LUNA_LME_DATASET_URL"]?.trim() || SPLIT_URLS[SPLIT]
+const NUM_CTX = parseIntEnv("LUNA_LME_NUM_CTX", 8192, 512)
 const ANSWER_MODEL = process.env["LUNA_LME_ANSWER_MODEL"] ?? "llama3.2:1b"
 const EMBED_MODEL = process.env["LUNA_OLLAMA_EMBED_MODEL"] ?? "embeddinggemma"
 const OLLAMA_BASE_URL = (() => {
@@ -179,10 +195,13 @@ function textFromRecord(content: unknown): string {
     : ""
 }
 
+/** A scored question plus the prompt size the reader actually saw. */
+type ScoredRun = ScoredQA & { readonly promptTokens: number }
+
 interface QuestionOutcome {
   readonly ingested: number
   readonly retrieval: RetrievalRecord
-  readonly scored: ScoredQA | null
+  readonly scored: ScoredRun | null
 }
 
 function runQuestion(instance: LmeInstance, tracker: CostTracker) {
@@ -237,10 +256,22 @@ function runQuestion(instance: LmeInstance, tracker: CostTracker) {
           baseUrl: OLLAMA_BASE_URL,
           model: ANSWER_MODEL,
           tracker,
+          numCtx: NUM_CTX,
         }),
       catch: (cause) => new AnswerModelError(instance.question_id, cause),
     })
-    return { ingested, retrieval, scored: scoreQA(instance, result.text) } satisfies QuestionOutcome
+    // Ollama silently drops the START of an over-long prompt - the
+    // instructions. A prompt that fills num_ctx was truncated: stop, never score it.
+    if (result.tokensIn >= NUM_CTX) {
+      return yield* Effect.fail(
+        new AnswerModelError(
+          instance.question_id,
+          `prompt used ${result.tokensIn} tokens, the whole num_ctx=${NUM_CTX}; it was truncated (raise LUNA_LME_NUM_CTX)`,
+        ),
+      )
+    }
+    const scored: ScoredRun = { ...scoreQA(instance, result.text), promptTokens: result.tokensIn }
+    return { ingested, retrieval, scored } satisfies QuestionOutcome
   })
 }
 
@@ -271,7 +302,7 @@ async function main(): Promise<void> {
 
   let loaded: LoadedDataset
   try {
-    loaded = await fetchDataset()
+    loaded = await fetchDataset(DATASET_URL)
   } catch (e) {
     console.error(`[longmemeval-eval] dataset load failed: ${String(e)}`)
     process.exit(3)
@@ -298,7 +329,7 @@ async function main(): Promise<void> {
   console.log(`# topK=${TOP_K} · search=${SEARCH_MODE} · embedder=${EMBED_MODEL} · ollama=${OLLAMA_BASE_URL}`)
 
   const tracker: CostTracker = newCostTracker()
-  const scored: ScoredQA[] = []
+  const scored: ScoredRun[] = []
   const retrieval: RetrievalRecord[] = []
   const startedAt = Date.now()
   let ingestedTurns = 0
@@ -397,6 +428,9 @@ async function main(): Promise<void> {
     cost: tracker,
     wallClockSec,
     config: {
+      SPLIT,
+      DATASET_URL,
+      NUM_CTX,
       QA_LIMIT,
       SEED,
       TOP_K,

@@ -193,6 +193,8 @@ interface OllamaChatResponse {
   readonly eval_count?: number
 }
 
+const OLLAMA_LOCAL_REQUEST_TIMEOUT_MS = 5 * 60_000
+
 /**
  * Ask a local Ollama model to answer `question` using only `context` (the
  * memory_search hit texts) via `/api/chat` (non-streaming). Mutates
@@ -207,6 +209,15 @@ export async function answerFromContextOllama(args: {
   readonly model: string
   readonly tracker: CostTracker
   readonly dateIndex?: ReadonlyArray<SessionDateEntry>
+  /**
+   * Ollama `num_ctx`. Unset = the daemon's default, which varies by machine
+   * (Ollama sizes it from available memory), so a run is only reproducible
+   * with it pinned. Ollama silently drops the START of an over-long prompt,
+   * which is where the instructions sit - check `tokensIn` against it.
+   */
+  readonly numCtx?: number
+  /** Abort a hung request after this long (default 5 min: CPU-only boxes are slow). */
+  readonly timeoutMs?: number
 }): Promise<AnswerResult> {
   const prompt = buildPrompt(args.question, args.context, args.dateIndex)
   const url = `${normalizeBaseUrl(args.baseUrl)}/api/chat`
@@ -217,8 +228,9 @@ export async function answerFromContextOllama(args: {
       model: args.model,
       stream: false,
       messages: [{ role: "user", content: prompt }],
-      options: { temperature: 0 },
+      options: { temperature: 0, ...(args.numCtx !== undefined ? { num_ctx: args.numCtx } : {}) },
     }),
+    signal: AbortSignal.timeout(args.timeoutMs ?? OLLAMA_LOCAL_REQUEST_TIMEOUT_MS),
   })
   if (!res.ok) {
     const body = await res.text().catch(() => "<no body>")

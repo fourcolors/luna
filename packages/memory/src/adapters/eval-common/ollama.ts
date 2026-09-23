@@ -1,5 +1,6 @@
 /**
- * Ollama preflight for the LongMemEval smoke.
+ * Ollama preflight shared by the memory eval harnesses (locomo-eval,
+ * longmemeval-eval).
  *
  * One resolved base URL feeds BOTH the embedder and the answer model, so the
  * two can never silently talk to different daemons. `probeModel` checks a

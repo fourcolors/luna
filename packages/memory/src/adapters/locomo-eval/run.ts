@@ -125,6 +125,7 @@ import {
   rankSessions,
   sessionNumFromTags,
 } from "./retrieval-modes.js"
+import { resolveOllamaBaseUrl } from "../eval-common/ollama.js"
 import { writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -216,14 +217,21 @@ const TIME_CAP_WARMUP_QA = 5
 const ANSWER_MODEL = process.env["LUNA_LOCOMO_ANSWER_MODEL"] ?? DEFAULT_MODEL_BY_BACKEND[ANSWER_BACKEND]
 const API_KEY = process.env["ANTHROPIC_API_KEY"]
 const OLLAMA_CLOUD_KEY = process.env["OLLAMA_CLOUD_KEY"]
-const OLLAMA_BASE_URL =
-  process.env["LUNA_OLLAMA_BASE_URL"] ?? process.env["OLLAMA_HOST"] ?? "http://127.0.0.1:11434"
+// One resolved URL for embed AND answer (see eval-common/ollama.ts): the
+// embedder used to read only LUNA_OLLAMA_BASE_URL while answers fell back to
+// OLLAMA_HOST, so the two could silently hit different daemons.
+const OLLAMA_BASE_URL = (() => {
+  try {
+    return resolveOllamaBaseUrl(process.env)
+  } catch (e) {
+    console.error(`[locomo-eval] invalid LUNA_OLLAMA_BASE_URL / OLLAMA_HOST: ${e instanceof Error ? e.message : String(e)}`)
+    return process.exit(2)
+  }
+})()
 
 async function probeOllama(): Promise<boolean> {
-  const baseUrl = OLLAMA_BASE_URL
-  const url = baseUrl.startsWith("http") ? baseUrl : `http://${baseUrl}`
   try {
-    const res = await fetch(url.replace(/\/+$/, "") + "/", {
+    const res = await fetch(OLLAMA_BASE_URL + "/", {
       signal: AbortSignal.timeout(1500),
     })
     return res.ok || res.status < 500
@@ -236,10 +244,9 @@ function buildEmbedderLayer() {
   const choice = process.env["LUNA_EMBEDDER"]?.toLowerCase()
   if (choice === "ollama") {
     const model = process.env["LUNA_OLLAMA_EMBED_MODEL"]
-    const baseUrl = process.env["LUNA_OLLAMA_BASE_URL"]
     return makeOllamaEmbedderLayer({
       ...(model !== undefined ? { model } : {}),
-      ...(baseUrl !== undefined ? { baseUrl } : {}),
+      baseUrl: OLLAMA_BASE_URL,
     })
   }
   return StubEmbedderLayer

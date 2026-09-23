@@ -10,17 +10,32 @@
  *
  * Default file is `longmemeval_oracle.json` - the official "oracle
  * retrieval" split (only evidence sessions in the haystack). That is the
- * smallest official haystack, not a 10–20 question sample, and there is
- * no official 10–20 question sample file. `selectSubset` picks N instances
- * via a seeded shuffle (default seed 42) because the file is type-clustered.
+ * smallest official haystack, not a 10-20 question sample, and there is
+ * no official 10-20 question sample file. `SPLIT_URLS` lists the larger
+ * S / M haystacks. `selectSubset` picks N instances via a seeded shuffle
+ * (default seed 42) because the files are type-clustered.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { FlatTurn, LmeInstance } from "./types.js"
 
-const DEFAULT_DATASET_URL =
-  "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json"
+const HF_BASE = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main"
+
+/**
+ * The three official splits: the same 500 questions, different haystacks.
+ * oracle = evidence sessions only; s = ~50 sessions (~500 turns) per
+ * question; m = ~500 sessions. NB: the files list questions in DIFFERENT
+ * orders, which is why `selectSubset` sorts by id before shuffling.
+ */
+export const SPLIT_URLS = {
+  oracle: `${HF_BASE}/longmemeval_oracle.json`,
+  s: `${HF_BASE}/longmemeval_s_cleaned.json`,
+  m: `${HF_BASE}/longmemeval_m_cleaned.json`,
+} as const
+export type LmeSplit = keyof typeof SPLIT_URLS
+
+const DEFAULT_DATASET_URL = SPLIT_URLS.oracle
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const CACHE_DIR = resolve(here, ".cache")
@@ -69,16 +84,19 @@ export async function fetchDataset(
  * Deterministic subset. The official oracle file is grouped by
  * `question_type` (first ~N are all temporal-reasoning), so a raw
  * file-order slice is a one-category smoke. Default is a seeded
- * Fisher–Yates shuffle (seed 42) then first `limit` - still
- * non-cherry-picked, just not type-clustered. Set `seed` to null to
- * take file order instead.
+ * Fisher-Yates shuffle (seed 42) then first `limit` - still
+ * non-cherry-picked, just not type-clustered. The shuffle runs over the
+ * questions SORTED BY ID, so every split picks the same questions for a
+ * given seed and results are comparable across haystacks. Set `seed` to
+ * null to take file order instead.
  */
 export function seededShuffle<T>(items: ReadonlyArray<T>, seed: number): T[] {
   const arr = items.slice()
   let s = seed >>> 0
   for (let i = arr.length - 1; i > 0; i--) {
     s = (Math.imul(s, 1664525) + 1013904223) >>> 0
-    const j = s % (i + 1)
+    // Use the LCG's HIGH bits: its low bits cycle with short periods.
+    const j = Math.floor((s / 2 ** 32) * (i + 1))
     const tmp = arr[i]!
     arr[i] = arr[j]!
     arr[j] = tmp
@@ -92,8 +110,11 @@ export function selectSubset(
   seed: number | null = 42,
 ): ReadonlyArray<LmeInstance> {
   if (limit <= 0) return []
-  const ordered = seed === null ? dataset.slice() : seededShuffle(dataset, seed)
-  return ordered.slice(0, limit)
+  if (seed === null) return dataset.slice(0, limit)
+  const byId = dataset
+    .slice()
+    .sort((a, b) => (a.question_id < b.question_id ? -1 : a.question_id > b.question_id ? 1 : 0))
+  return seededShuffle(byId, seed).slice(0, limit)
 }
 
 /**

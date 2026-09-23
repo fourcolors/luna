@@ -10,19 +10,18 @@ Mirrors `../locomo-eval/`. Dataset is fetched and cached, never vendored.
 
 ## Dataset & license
 
-- **Source**: official cleaned release
-  [`xiaowu0162/longmemeval-cleaned`](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned)
-  on HuggingFace, file `longmemeval_oracle.json`. Paper repo:
-  [`xiaowu0162/LongMemEval`](https://github.com/xiaowu0162/LongMemEval).
-- **License**: **MIT** (repo LICENSE + HuggingFace card). Safer than LoCoMo's
-  CC BY-NC 4.0; still not committed (15MB JSON).
-- **Why oracle**: it is the official smallest haystack (evidence sessions
-  only). There is **no official 10–20 question sample file**. The oracle
-  JSON is grouped by `question_type` (a raw first-15 is all
-  temporal-reasoning). This smoke takes **15 questions after a seeded
-  Fisher–Yates shuffle (`LUNA_LME_SEED=42`)** - still not cherry-picked.
-  Set `LUNA_LME_SEED=order` for file order. Exact IDs are printed at run
-  time and recorded in `RESULTS.md`.
+- **Source**: official cleaned release [`xiaowu0162/longmemeval-cleaned`](https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned) on HuggingFace.
+  Paper repo: [`xiaowu0162/LongMemEval`](https://github.com/xiaowu0162/LongMemEval).
+- **License**: **MIT** (repo LICENSE + HuggingFace card), safer than LoCoMo's CC BY-NC 4.0.
+  Still never committed: the files are 15MB (oracle) to 277MB (S) and larger (M).
+- **Splits** (`LUNA_LME_SPLIT`): the same 500 questions with different haystacks.
+  - `oracle` (default): evidence sessions only, ~20 turns per question; retrieval is near-trivial here.
+  - `s`: ~50 sessions, ~500 turns per question; the first split where retrieval is tested.
+  - `m`: ~500 sessions per question.
+- **Subset**: there is **no official 10-20 question sample file**, and the files are grouped by `question_type`.
+  The harness takes **15 questions after a seeded Fisher-Yates shuffle (`LUNA_LME_SEED=42`) over the questions sorted by id**, so it is not cherry-picked and every split picks the same questions (the files list them in different orders).
+  Set `LUNA_LME_SEED=order` for file order.
+  Exact IDs are printed at run time and recorded in `RESULTS.md`.
 
 ## Luna surface hooked
 
@@ -68,7 +67,7 @@ bun run --filter '@luna/memory' eval:longmemeval
 ```
 
 Env vars: see the `run.ts` module docstring.
-`LUNA_LME_QA_LIMIT` (default 15), `LUNA_LME_SEED` (default 42; `order` = file order), `LUNA_LME_TOPK` (default 10), `LUNA_LME_SEARCH_MODE` (default `hybrid`), `LUNA_LME_ANSWER_MODEL`, `LUNA_OLLAMA_EMBED_MODEL`, and `LUNA_OLLAMA_BASE_URL` (falls back to `OLLAMA_HOST`; one URL serves both embed and answer).
+`LUNA_LME_SPLIT` (default `oracle`), `LUNA_LME_QA_LIMIT` (default 15), `LUNA_LME_SEED` (default 42; `order` = file order), `LUNA_LME_TOPK` (default 10), `LUNA_LME_SEARCH_MODE` (default `hybrid`), `LUNA_LME_ANSWER_MODEL`, `LUNA_LME_NUM_CTX` (default 8192; a prompt that fills it was truncated, so the run stops), `LUNA_OLLAMA_EMBED_MODEL`, and `LUNA_OLLAMA_BASE_URL` (falls back to `OLLAMA_HOST`; one URL serves both embed and answer).
 
 Exit codes: 2 = Ollama blocker (daemon down, model not pulled, answer call failed), 3 = dataset load, 4 = invalid config, 5 = memory backend failure.
 Every non-zero exit writes **no** results file: no invented scores.
