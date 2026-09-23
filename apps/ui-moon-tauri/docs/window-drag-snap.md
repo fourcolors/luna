@@ -11,9 +11,16 @@ resize, and snapping.
 ## Title bar
 
 - Tauri creates decorated macOS windows with an overlay title bar.
-- `WebviewWindowBuilder::traffic_light_position` places AppKit's native close,
-  minimize, and zoom controls once at construction time. The 36px horizontal
-  inset keeps the complete cluster inside the opaque rounded title bar.
+- `windows::configure_native_window_chrome` (wrapping
+  `configure_native_chrome_ns`) is the SOLE placer of AppKit's native close,
+  minimize, and zoom controls: it sets a 36pt top-anchored title-bar
+  container and centers the cluster at the `TRAFFIC_LIGHT_INSET_*` inset, so
+  the lights sit inside the opaque rounded title bar.
+- The builder's `traffic_light_position` is deliberately NOT set: tao
+  re-applies the stored inset inside the content view's `drawRect`, so every
+  repaint would re-assert tao's own container height + inset and undo the
+  centered layout (observed live as the cluster's top margin collapsing after
+  a drag/reorder repaint). With no stored inset, tao's re-apply is a no-op.
 - The controls stay visible on every Moon skin and AppKit owns hover, focus,
   hit testing, minimize, and zoom behavior.
 - Every window uses the standard native traffic lights with all three controls
@@ -28,6 +35,16 @@ resize, and snapping.
 - The chrome finalize runs at construction, once more after AppKit's deferred
   title-bar layout pass, and again on window focus as a self-healing fallback.
   It is best-effort and never fails the command that opened the window.
+- AppKit itself re-lays out the title bar — reverting the container to its
+  default height and the cluster to the default inset — on every window
+  resize and on re-show (verified live against a plain decorated+overlay
+  NSWindow; moves and attach/detach do not reset it). Coverage is therefore:
+  the macOS `Resized` arm in `main.rs` re-asserts the chrome on the resized
+  dock window every tick (its snapped children get theirs via reflush's
+  frame writes), `set_frame_top_left_ns` and `set_snap_parent_ns` re-apply
+  it synchronously at our own native mutation choke points, and the
+  gesture-end settle re-applies once more deferred (250ms, mirroring the
+  build-time retry) so a queued AppKit layout pass cannot win the race.
 - There is no JavaScript-to-Rust traffic-light visibility or positioning IPC.
 - Non-macOS builds keep these windows borderless and chrome-less by design
   (decorations are macOS-only); collapse-to-moon is the only window control
