@@ -589,6 +589,7 @@ pub(crate) async fn open_widget(
         if should_focus {
             let _ = win.set_focus();
         }
+        crate::lifecycle::conceal_orb_for_docks(&app);
         return Ok(label);
     }
     // Snap-on-open: a fresh panel with no explicit position docks onto the
@@ -616,6 +617,7 @@ pub(crate) async fn open_widget(
     // A new panel is layout-relevant immediately (a crash before the first
     // Moved event must not lose it).
     write_panel_layout(&app);
+    crate::lifecycle::conceal_orb_for_docks(&app);
     Ok(win_label)
 }
 
@@ -639,6 +641,7 @@ pub(crate) async fn open_artifact_widget(
         let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
+        crate::lifecycle::conceal_orb_for_docks(&app);
         return Ok(label);
     }
     // A dedicated, self-contained page (NOT index.html) — keeps the widget
@@ -670,6 +673,7 @@ pub(crate) async fn open_artifact_widget(
     if snapped_open {
         attach_to_flush_neighbor(&win);
     }
+    crate::lifecycle::conceal_orb_for_docks(&app);
     Ok(label)
 }
 

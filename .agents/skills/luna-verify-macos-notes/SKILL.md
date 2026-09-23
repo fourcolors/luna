@@ -125,6 +125,11 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
   expect the "settled" set to sometimes contain windows you didn't drag.
 - Launcher row clicks occasionally miss the row hit-area; pressing Enter on
   the filtered row reliably invokes open_widget.
+  Caveat: Enter activates the highlighted index-0 row (often "Luna"), not
+  your match — filter until the target is row 0, or click the row text.
+- Collapse→orb: the moon-collapse button sits at the title bar's far right
+  end and is often off-screen — `cmd+shift+K` (global toggle) is the reliable
+  trigger. Orb click → expand_from_moon restores every dock window.
 - Geometry ground truth: `~/.luna/layout.json` stores each panel's logical
   rect — use it to assert flushness exactly (child.y == parent.bottom).
 - Coordinate scale on the Devin box: 1 tool px = 1.5625 logical pt, so
