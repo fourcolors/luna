@@ -96,6 +96,7 @@ features = [
     "NSResponder",
     "NSWindowRestoration",
     "NSApplication",
+    "NSScreen",
     "block2",
 ]
 

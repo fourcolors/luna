@@ -73,7 +73,10 @@ fn main() {
             }
             // Snap seam maintenance (macOS): a resized dock window re-flushes
             // its snapped children so a stack tracks the live resize —
-            // AppKit children only follow position changes, never size.
+            // AppKit children only follow position changes, never size — then
+            // the plan re-derives the graph from the new geometry: a child
+            // the resize carried out of flush detaches, one flipped to a new
+            // edge stays parented.
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::WindowEvent::Resized(_))
                 && windows::is_dock_label(window.label())
@@ -81,16 +84,7 @@ fn main() {
                 if let Some(w) = window.app_handle().get_webview_window(window.label()) {
                     windows::reflush_snap_children(&w);
                 }
-            }
-            // Snap settle tracking: mark every dock window whose frame moved
-            // during the current gesture; the persistent watcher
-            // (install_snap_watcher) settles them on the next left mouse-up.
-            // Keys on Moved — fires no matter how the drag began — because a
-            // large share of real title-bar presses never reach the webview.
-            if matches!(event, tauri::WindowEvent::Moved(_))
-                && windows::is_dock_label(window.label())
-            {
-                windows::note_dock_moved(window.label());
+                windows::apply_attachment_plan(window.app_handle());
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
@@ -382,12 +376,6 @@ fn main() {
                         ));
                     }
                     windows::ensure_window_on_visible_display(&moon);
-                }
-                // A restored workspace means the orb is NOT the only surface:
-                // mutual exclusivity (lifecycle.rs) — the orb never stays up
-                // alongside widgets.
-                if spawned > 0 {
-                    lifecycle::conceal_orb_for_docks(&app.handle());
                 }
                 // Re-derive snap attachments from the restored geometry: any
                 // dock window flush against a neighbor becomes its AppKit

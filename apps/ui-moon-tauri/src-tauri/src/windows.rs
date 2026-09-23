@@ -450,10 +450,13 @@ fn build_card_window(
         {
             use objc2_app_kit::NSWindow;
             let _ = with_appkit_main_thread(window.clone(), move |w| {
+                let Some(mtm) = objc2::MainThreadMarker::new() else {
+                    return Err("off main thread".to_string());
+                };
                 let ptr = w.ns_window().map_err(|e| e.to_string())?;
                 let ns: &NSWindow = unsafe { &*ptr.cast() };
                 unsafe {
-                    set_frame_top_left_ns(ns, px, py);
+                    set_frame_top_left_ns(mtm, ns, px, py);
                 }
                 Ok(())
             });
@@ -624,7 +627,6 @@ pub(crate) async fn open_widget(
         if should_focus {
             let _ = win.set_focus();
         }
-        crate::lifecycle::conceal_orb_for_docks(&app);
         return Ok(label);
     }
     // Snap-on-open: a fresh panel with no explicit position docks onto the
@@ -642,8 +644,9 @@ pub(crate) async fn open_widget(
         };
     let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
     if snapped_open {
-        // Flush to a neighbor → become its AppKit child so anchor drags tow it.
-        attach_to_flush_neighbor(&win);
+        // Flush to a neighbor → the plan makes it an AppKit child so anchor
+        // drags tow it.
+        apply_attachment_plan(&app);
     }
     if should_focus {
         let _ = win.set_focus();
@@ -652,7 +655,6 @@ pub(crate) async fn open_widget(
     // A new panel is layout-relevant immediately (a crash before the first
     // Moved event must not lose it).
     write_panel_layout(&app);
-    crate::lifecycle::conceal_orb_for_docks(&app);
     Ok(win_label)
 }
 
@@ -676,7 +678,6 @@ pub(crate) async fn open_artifact_widget(
         let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
-        crate::lifecycle::conceal_orb_for_docks(&app);
         return Ok(label);
     }
     // A dedicated, self-contained page (NOT index.html) — keeps the widget
@@ -696,7 +697,7 @@ pub(crate) async fn open_artifact_widget(
     } else {
         (x, y, false)
     };
-    let win = build_card_window(
+    build_card_window(
         &app,
         &label,
         &url,
@@ -706,9 +707,8 @@ pub(crate) async fn open_artifact_widget(
         x.zip(y),
     )?;
     if snapped_open {
-        attach_to_flush_neighbor(&win);
+        apply_attachment_plan(&app);
     }
-    crate::lifecycle::conceal_orb_for_docks(&app);
     Ok(label)
 }
 
@@ -2235,28 +2235,29 @@ pub(crate) fn begin_native_pullout_drag(
 // GEOMETRY, not stored state.)
 //
 // The snap graph is never persisted: a window is attached to whichever dock
-// window it is flush against. Attach points:
+// window it is flush against — via ONE pure planner, `plan_attachments`.
+// Attach points all reduce to "fix geometry, then re-plan":
 //   - snap-on-open: a fresh widget with no explicit position is placed flush
-//     on the chat's right edge (cascading down past already-snapped siblings)
-//     and attached;
-//   - snap-on-release: `begin_snap_drag` (armed by moon-dock.js before every
-//     startDragging) installs the shared NSEvent monitors; on mouse-up after
-//     an actual drag the settle snaps the window to the nearest edge within
-//     SNAP_GAP and attaches — or DETACHES it when it was released out of
-//     range;
-//   - boot restore: `reattach_flushed_windows` re-derives attachments from
-//     the restored rects, so layout.json needs no edge bookkeeping.
+//     on the chat's right edge (cascading down past already-snapped
+//     siblings), then the plan attaches it;
+//   - snap-on-release: the persistent watcher snapshots dock frames on
+//     LeftMouseDown and, on LeftMouseUp, settles every window whose frame
+//     changed — snaps it to the nearest edge within SNAP_GAP (or DETACHES
+//     out of range), then re-plans the graph;
+//   - boot restore / resize: restored or re-flushed rects re-plan the same
+//     way, so layout.json needs no edge bookkeeping.
 // A middle-of-stack grab tows the tail (the grabbed window's own children
 // ride along); a leaf grab peels off alone. A parent RESIZE re-flushes its
 // children on the Resized event so stacks never open a seam. Cycles are
-// refused by walking the candidate parent's NSWindow ancestor chain.
+// impossible by construction: the plan is a spanning forest.
 //
-// Attachment direction is "dragged window becomes the child" — with one
-// exception: the chat is the cluster hub. When the CHAT settles onto a
-// neighbor, the neighbor docks under the chat instead, so a widget snapped
-// on any side always tows with the chat rather than being stranded the next
-// time the chat moves (a dragged child detaches; only a dragged parent
-// tows).
+// The plan is a pure function of GEOMETRY — not of drag history, not of
+// window iteration order: each flush-connected component becomes a BFS
+// spanning tree rooted at the chat when it contains one (the hub:
+// everything snapped to the chat tows with it), else at the smallest
+// label. A dragged-off widget detaches because it stops being flush, and
+// re-attaches the same way no matter which path — open, release, boot —
+// last touched the geometry.
 
 /// Max edge gap (logical pt) that still snaps flush on release.
 const SNAP_GAP: f64 = 20.0;
@@ -2371,31 +2372,106 @@ fn best_snap(w: SnapRect, others: &[(String, SnapRect)]) -> Option<(usize, SnapR
     best.map(|(i, r, _)| (i, r))
 }
 
-/// Which dock window is `w` flush against (edge gap <= SNAP_FLUSH with real
-/// overlap on the perpendicular axis)? Returns the label sharing the longest
-/// edge. Drives attachment for open-time placement and the boot restore.
-fn flush_parent(w: SnapRect, others: &[(String, SnapRect)]) -> Option<String> {
-    let mut best: Option<(&String, f64)> = None;
-    for (label, p) in others {
-        let beside =
-            (w.x - p.right()).abs() <= SNAP_FLUSH || (p.x - w.right()).abs() <= SNAP_FLUSH;
-        let stacked =
-            (w.y - p.bottom()).abs() <= SNAP_FLUSH || (p.y - w.bottom()).abs() <= SNAP_FLUSH;
-        let shared = if beside {
-            snap_overlap_len(w.y, w.bottom(), p.y, p.bottom())
-        } else if stacked {
-            snap_overlap_len(w.x, w.right(), p.x, p.right())
-        } else {
-            0.0
-        };
-        if shared <= 0.0 {
-            continue;
-        }
-        if best.is_none_or(|(_, s)| shared > s) {
-            best = Some((label, shared));
+/// Length of the edge `a` shares flush with `b` — >0 means the pair is
+/// flush-adjacent: touching on one axis (gap <= SNAP_FLUSH) with real
+/// overlap on the perpendicular axis.
+fn flush_shared_edge(a: SnapRect, b: SnapRect) -> f64 {
+    let beside = (a.x - b.right()).abs() <= SNAP_FLUSH || (b.x - a.right()).abs() <= SNAP_FLUSH;
+    let stacked = (a.y - b.bottom()).abs() <= SNAP_FLUSH || (b.y - a.bottom()).abs() <= SNAP_FLUSH;
+    if beside {
+        snap_overlap_len(a.y, a.bottom(), b.y, b.bottom())
+    } else if stacked {
+        snap_overlap_len(a.x, a.right(), b.x, b.right())
+    } else {
+        0.0
+    }
+}
+
+/// The dock graph as a pure function of geometry — never stored, and
+/// independent of drag history and of `rects`' order.
+///
+/// Builds the flush-adjacency graph, then per connected component a BFS
+/// spanning tree. The component containing a chat roots at the
+/// lexicographically smallest chat (the hub: everything snapped to the
+/// chat tows with it); a component with no chat roots at its smallest
+/// label. Each non-root node parents to its adjacent node NEAREST the
+/// root; ties break on the longest shared edge, then the smaller label —
+/// so one geometry always yields one tree. Returns label -> parent label
+/// (`None` for each component root, including every window with no flush
+/// neighbor at all).
+fn plan_attachments(rects: &[(String, SnapRect)]) -> std::collections::HashMap<String, Option<String>> {
+    let n = rects.len();
+    let mut adj: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let shared = flush_shared_edge(rects[i].1, rects[j].1);
+            if shared > 0.0 {
+                adj[i].push((j, shared));
+                adj[j].push((i, shared));
+            }
         }
     }
-    best.map(|(l, _)| l.clone())
+    let mut plan = std::collections::HashMap::new();
+    let mut visited = vec![false; n];
+    for seed in 0..n {
+        if visited[seed] {
+            continue;
+        }
+        // Collect this connected component.
+        let mut comp = vec![seed];
+        visited[seed] = true;
+        let mut head = 0;
+        while head < comp.len() {
+            let u = comp[head];
+            head += 1;
+            for &(v, _) in &adj[u] {
+                if !visited[v] {
+                    visited[v] = true;
+                    comp.push(v);
+                }
+            }
+        }
+        // Root: smallest chat label in the component, else smallest label.
+        let root = comp
+            .iter()
+            .copied()
+            .filter(|&k| is_chat_label(&rects[k].0))
+            .min_by(|&a, &b| rects[a].0.cmp(&rects[b].0))
+            .or_else(|| comp.iter().copied().min_by(|&a, &b| rects[a].0.cmp(&rects[b].0)))
+            .unwrap_or(seed);
+        // BFS distances from the root.
+        let mut dist = std::collections::HashMap::new();
+        dist.insert(root, 0usize);
+        let mut queue = std::collections::VecDeque::from([root]);
+        while let Some(u) = queue.pop_front() {
+            let du = dist[&u] + 1;
+            for &(v, _) in &adj[u] {
+                if !dist.contains_key(&v) {
+                    dist.insert(v, du);
+                    queue.push_back(v);
+                }
+            }
+        }
+        for &v in &comp {
+            if v == root {
+                plan.insert(rects[v].0.clone(), None);
+                continue;
+            }
+            let dv = dist[&v];
+            let parent = adj[v]
+                .iter()
+                .filter(|(u, _)| dist[u] == dv - 1)
+                // Longest shared edge wins; the smaller label breaks the tie.
+                .max_by(|(ua, sa), (ub, sb)| {
+                    sa.partial_cmp(sb)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| rects[*ub].0.cmp(&rects[*ua].0))
+                })
+                .map(|(u, _)| rects[*u].0.clone());
+            plan.insert(rects[v].0.clone(), parent);
+        }
+    }
+    plan
 }
 
 /// Initial snapped placement for a fresh widget against `anchor` (usually the
@@ -2605,15 +2681,17 @@ fn open_snap_top_left(app: &tauri::AppHandle, w: f64, h: f64) -> Option<(f64, f6
 /// child by the delta (a seam off flush), and the boot re-assert would
 /// land after the reattach pass read a constrained frame. Cocoa's y axis
 /// grows UP from the primary screen's bottom edge, so the top-left point
-/// converts as `primaryHeight - y`. Main thread only.
+/// converts as `primaryHeight - y`. The `MainThreadMarker` parameter makes
+/// the main-thread requirement type-enforced rather than a doc convention.
 #[cfg(target_os = "macos")]
-unsafe fn set_frame_top_left_ns(win_ns: &objc2_app_kit::NSWindow, x: f64, y: f64) {
-    use objc2::MainThreadMarker;
+unsafe fn set_frame_top_left_ns(
+    mtm: objc2::MainThreadMarker,
+    win_ns: &objc2_app_kit::NSWindow,
+    x: f64,
+    y: f64,
+) {
     use objc2_app_kit::NSScreen;
     use objc2_core_foundation::CGPoint;
-    let Some(mtm) = MainThreadMarker::new() else {
-        return;
-    };
     let Some(primary) = NSScreen::screens(mtm).firstObject() else {
         return;
     };
@@ -2663,57 +2741,74 @@ unsafe fn set_snap_parent_ns(
     }
 }
 
-/// Attach `win` to whichever dock window it is flush against (open-time
-/// placement, boot restore). No-op when it lands flush to nothing.
+/// Make the live AppKit parent/child graph equal `plan_attachments` on the
+/// current frames: detach every link the plan does not reproduce first
+/// (direction reversals MUST drop the old edge before the new one — the
+/// ancestor walk inside set_snap_parent_ns would refuse it otherwise),
+/// then attach every planned edge. Pure geometry in, AppKit out — this is
+/// the ONLY place attachment changes hands.
 #[cfg(target_os = "macos")]
-fn attach_to_flush_neighbor(win: &tauri::WebviewWindow) {
-    let app = win.app_handle().clone();
-    let label = win.label().to_string();
-    let Some((x, y, w, h)) = window_logical_rect(win) else {
+pub(crate) fn apply_attachment_plan(app: &tauri::AppHandle) {
+    use objc2_app_kit::NSWindow;
+    let Some(_mtm) = objc2::MainThreadMarker::new() else {
+        eprintln!("[snap] apply_attachment_plan off main thread — skipped");
         return;
     };
-    let wr = SnapRect {
-        x: x as f64,
-        y: y as f64,
-        w: w as f64,
-        h: h as f64,
+    let rects = dock_rects(app, "");
+    let plan = plan_attachments(&rects);
+    let ns_of = |label: &str| -> Option<*mut std::ffi::c_void> {
+        app.get_webview_window(label)
+            .and_then(|w| w.ns_window().ok())
     };
-    let others = dock_rects(&app, &label);
-    let Some(parent_label) = flush_parent(wr, &others) else {
-        return;
-    };
-    let Some(parent) = app.get_webview_window(&parent_label) else {
-        return;
-    };
-    let chat_is_win = is_chat_label(&label);
-    let _ = with_appkit_main_thread(win.clone(), move |w| {
-        use objc2_app_kit::NSWindow;
-        let wp = w.ns_window().map_err(|e| e.to_string())?;
-        let pp = parent.ns_window().map_err(|e| e.to_string())?;
-        unsafe {
-            let cns: &NSWindow = &*wp.cast();
-            let pns: &NSWindow = &*pp.cast();
-            if chat_is_win {
-                // The chat is the hub: the flush neighbor docks under it so
-                // the next chat drag tows the neighbor.
-                set_snap_parent_ns(pns, Some(cns));
-            } else {
-                set_snap_parent_ns(cns, Some(pns));
+    // Phase 1: drop every live link the plan does not reproduce.
+    for (label, parent) in &plan {
+        let Some(cptr) = ns_of(label) else {
+            continue;
+        };
+        let cns: &NSWindow = unsafe { &*cptr.cast() };
+        let cur_ok = match (cns.parentWindow(), parent) {
+            (Some(cur), Some(pl)) => ns_of(pl)
+                .map(|pp| std::ptr::eq::<NSWindow>(&*cur, unsafe { &*pp.cast() }))
+                .unwrap_or(false),
+            (None, None) => true,
+            _ => false,
+        };
+        if !cur_ok {
+            eprintln!("[snap] detach {label}");
+            unsafe {
+                set_snap_parent_ns(cns, None);
             }
         }
-        Ok(())
-    });
+    }
+    // Phase 2: attach every planned edge.
+    for (label, parent) in &plan {
+        let Some(pl) = parent else {
+            continue;
+        };
+        let (Some(cptr), Some(pptr)) = (ns_of(label), ns_of(pl)) else {
+            eprintln!("[snap] attach {label} -> {pl}: window gone");
+            continue;
+        };
+        let cns: &NSWindow = unsafe { &*cptr.cast() };
+        let pns: &NSWindow = unsafe { &*pptr.cast() };
+        unsafe {
+            set_snap_parent_ns(cns, Some(pns));
+        }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn attach_to_flush_neighbor(_win: &tauri::WebviewWindow) {}
+pub(crate) fn apply_attachment_plan(_app: &tauri::AppHandle) {}
 
-/// Mouse-up settle for a dragged dock window: snap to the nearest qualifying
-/// edge (and attach to it), or detach when released out of range. Runs on the
-/// main thread from `begin_snap_drag`'s monitor teardown — never mid-drag, so
-/// it can never fight AppKit's ownership of the gesture.
+/// The move half of a settle: snap `win` flush to the nearest qualifying
+/// edge (within SNAP_GAP, or shallow overlap within SNAP_OVERLAP) — never
+/// onto one of its own descendants, and never to a spot that leaves less
+/// than a grabbable strip on a monitor. The corrective move applies
+/// synchronously via AppKit so the attachment plan that follows sees the
+/// final geometry. Attachment itself is NOT decided here — geometry is
+/// truth, and `apply_attachment_plan` derives the graph from it afterward.
 #[cfg(target_os = "macos")]
-fn settle_snap(win: &tauri::WebviewWindow) {
+fn snap_to_flush_edge(mtm: objc2::MainThreadMarker, win: &tauri::WebviewWindow) {
     use objc2_app_kit::NSWindow;
     let app = win.app_handle().clone();
     let label = win.label().to_string();
@@ -2734,7 +2829,7 @@ fn settle_snap(win: &tauri::WebviewWindow) {
     };
     let win_ns: &NSWindow = unsafe { &*win_ptr.cast() };
     // Candidates: every other dock window that is NOT a descendant of `win`
-    // (snapping under your own child would create a cycle).
+    // (snapping onto your own child's edge is meaningless).
     let mut others: Vec<(String, SnapRect)> = Vec::new();
     for (l, wv) in app.webview_windows() {
         if l == label || !is_dock_label(&l) {
@@ -2760,109 +2855,105 @@ fn settle_snap(win: &tauri::WebviewWindow) {
             },
         ));
     }
-    let parent = match best_snap(w, &others) {
-        Some((i, r)) => {
-            // Refuse a snap that would park the window essentially off every
-            // display (e.g. flushing to the far edge of a chat sitting at the
-            // monitor's edge): it reads as "won't open" just like a stranded
-            // orb. Thresholds = a grab-able strip of the title bar.
-            let visible = monitor_bounds(&app).iter().any(|((mx, my), (mw, mh))| {
-                snap_overlap_len(r.x, r.right(), *mx, mx + mw) >= 64.0
-                    && snap_overlap_len(r.y, r.bottom(), *my, my + mh) >= 32.0
-            });
-            if !visible {
-                None
-            } else {
-                // Move into the flush position only when it differs — an
-                // already-flush release still attaches (geometry IS the truth).
-                // Synchronous AppKit move: tao's set_position is queued and
-                // would land AFTER the attach below — the new child would
-                // then tow by the corrective delta and end a seam off flush.
-                if (r.x - w.x).abs() >= 0.5 || (r.y - w.y).abs() >= 0.5 {
-                    unsafe {
-                        set_frame_top_left_ns(win_ns, r.x, r.y);
-                    }
-                }
-                let Some(p) = app.get_webview_window(&others[i].0) else {
-                    return;
-                };
-                let Ok(pp) = p.ns_window() else {
-                    return;
-                };
-                let pns: &NSWindow = unsafe { &*pp.cast() };
-                Some(pns)
-            }
-        }
-        None => None,
+    let Some((i, r)) = best_snap(w, &others) else {
+        eprintln!("[snap] settle {label}: no edge in range");
+        return;
     };
-    unsafe {
-        match parent {
-            // The chat is the hub: whatever it settles onto docks UNDER the
-            // chat, so the next chat drag tows that widget. Without this the
-            // chat would attach as the neighbor's child — and since a dragged
-            // child detaches instead of towing, the next chat drag would
-            // leave the widget behind with a visible gap.
-            Some(pns) if is_chat_label(&label) => {
-                set_snap_parent_ns(pns, Some(win_ns));
-            }
-            parent => set_snap_parent_ns(win_ns, parent),
+    // Refuse a snap that would park the window essentially off every
+    // display (e.g. flushing to the far edge of a chat sitting at the
+    // monitor's edge): it reads as "won't open" just like a stranded
+    // orb. Thresholds = a grab-able strip of the title bar.
+    let visible = monitor_bounds(&app).iter().any(|((mx, my), (mw, mh))| {
+        snap_overlap_len(r.x, r.right(), *mx, mx + mw) >= 64.0
+            && snap_overlap_len(r.y, r.bottom(), *my, my + mh) >= 32.0
+    });
+    if !visible {
+        eprintln!(
+            "[snap] settle {label}: snap to {} refused (off-monitor)",
+            others[i].0
+        );
+        return;
+    }
+    // Move into the flush position only when it differs — an already-flush
+    // release still attaches via the plan (geometry IS the truth).
+    if (r.x - w.x).abs() >= 0.5 || (r.y - w.y).abs() >= 0.5 {
+        eprintln!(
+            "[snap] settle {label}: move to ({},{}) onto {}",
+            r.x, r.y, others[i].0
+        );
+        unsafe {
+            set_frame_top_left_ns(mtm, win_ns, r.x, r.y);
         }
+    } else {
+        eprintln!("[snap] settle {label}: already flush to {}", others[i].0);
     }
 }
 
-// ── Persistent release watcher: the moved-set settles on every left-up ────
+// ── Persistent release watcher: snapshot on press, settle on release ────
 //
 // Per-gesture IPC arming proved unreliable in practice: a large fraction of
 // real title-bar presses are swallowed by the transparent NSWindow title-bar
 // zone before the webview ever sees pointerdown, so no JS call can arm the
 // drag — the window still drags natively, but its drop then settles nothing
 // (no snap, and a snapped window dragged off never detached). Settles
-// therefore key on GEOMETRY instead: every Moved event marks the window in
-// MOVED_SINCE_UP, and this watcher's persistent monitors settle every marked
-// window on the next left mouse-up — no matter how the drag started.
+// therefore key on GEOMETRY instead: dock frames are snapshotted on
+// LeftMouseDown, and on LeftMouseUp every window whose frame changed gets
+// the settle — no dependence on tao's Moved-event queue timing (a flick
+// released before a queued Moved still diffs), and a press that never
+// moves anything settles nothing.
 
 #[cfg(target_os = "macos")]
-static MOVED_SINCE_UP: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+static DRAG_SNAPSHOT: std::sync::Mutex<Option<std::collections::HashMap<String, SnapRect>>> =
     std::sync::Mutex::new(None);
 
-/// Left-button state, driven by the watcher's down/up monitors. Marks only
-/// count while a button is held — that is the definition of a drag — so
-/// programmatic moves (boot restore positions, settle's own set_position,
-/// reflush-on-resize) never queue a phantom settle into the user's next
-/// click.
 #[cfg(target_os = "macos")]
-static LEFT_BUTTON_DOWN: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+fn snapshot_dock_frames(app: &tauri::AppHandle) {
+    let map: std::collections::HashMap<String, SnapRect> =
+        dock_rects(app, "").into_iter().collect();
+    *DRAG_SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(map);
+}
 
-/// Record that a dock window's frame moved (from the Moved window event) —
-/// but only while the left button is held, i.e. during a real drag.
+/// Settle every dock window whose position changed since the press-time
+/// snapshot, then re-plan the graph once for the whole gesture. A window
+/// absent from the snapshot was SPAWNED mid-gesture (a drag-out pull) and
+/// counts as moved; a plain click that moved nothing settles nothing.
 #[cfg(target_os = "macos")]
-pub(crate) fn note_dock_moved(label: &str) {
-    if !LEFT_BUTTON_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+fn settle_changed_dock_frames(app: &tauri::AppHandle) {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        eprintln!("[snap] settle off main thread — skipped");
         return;
+    };
+    let Some(before) = DRAG_SNAPSHOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+    else {
+        return;
+    };
+    let mut changed = false;
+    for (label, r) in dock_rects(app, "") {
+        let unchanged = before
+            .get(&label)
+            .map(|b| (b.x - r.x).abs() < 0.5 && (b.y - r.y).abs() < 0.5)
+            .unwrap_or(false);
+        if unchanged {
+            continue;
+        }
+        changed = true;
+        if let Some(w) = app.get_webview_window(&label) {
+            snap_to_flush_edge(mtm, &w);
+        }
     }
-    let mut set = MOVED_SINCE_UP.lock().unwrap_or_else(|e| e.into_inner());
-    set.get_or_insert_with(Default::default)
-        .insert(label.to_string());
+    if changed {
+        apply_attachment_plan(app);
+    }
 }
 
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn note_dock_moved(_label: &str) {}
-
-#[cfg(target_os = "macos")]
-fn take_moved_labels() -> Vec<String> {
-    let mut set = MOVED_SINCE_UP.lock().unwrap_or_else(|e| e.into_inner());
-    std::mem::take(set.get_or_insert_with(Default::default))
-        .into_iter()
-        .collect()
-}
-
-/// Settle every dock window whose frame moved during the current drag
-/// (moves only mark while the left button is held — see note_dock_moved).
-/// Install once at setup; the monitor tokens are deliberately forgotten —
-/// the watcher lives for the app lifetime. Covers EVERY drag source
-/// (webview pointerdown, the native title-bar zone, programmatic drags)
-/// because it keys on Moved events, not on how the gesture began.
+/// Install the snapshot/settle monitors once at setup; the monitor tokens
+/// are deliberately forgotten — the watcher lives for the app lifetime.
+/// Covers EVERY drag source (webview pointerdown, the native title-bar
+/// zone, programmatic drags) because it keys on frame diffs, not on how
+/// the gesture began.
 #[cfg(target_os = "macos")]
 pub(crate) fn install_snap_watcher(app: &tauri::AppHandle) {
     use objc2::rc::Retained;
@@ -2871,70 +2962,82 @@ pub(crate) fn install_snap_watcher(app: &tauri::AppHandle) {
     use std::ptr::NonNull;
     use std::rc::Rc;
 
+    let snapshot = Rc::new({
+        let app = app.clone();
+        move || snapshot_dock_frames(&app)
+    });
     let settle = Rc::new({
         let app = app.clone();
-        move || {
-            for label in take_moved_labels() {
-                if let Some(w) = app.get_webview_window(&label) {
-                    settle_snap(&w);
-                }
-            }
-        }
+        move || settle_changed_dock_frames(&app)
     });
 
-    // Local monitor: releases delivered to our app (returns the event
-    // unchanged — it does not consume it). Handlers run on the main thread.
-    // Press monitors set the drag flag BEFORE any Moved events can mark:
-    // local for presses delivered to our app, global for presses that land
-    // on another app while a Moon window is mid-gesture (edge case, kept
-    // for symmetry with the release pair).
-    let down_local = block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-        LEFT_BUTTON_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
-        event.as_ptr()
+    // Press monitors: refresh the baseline before any motion can change
+    // frames. Local for presses delivered to our app, global for presses
+    // landing on another app mid-gesture.
+    let down_local = block2::RcBlock::new({
+        let snapshot = snapshot.clone();
+        move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            snapshot();
+            event.as_ptr()
+        }
     });
-    let down_global = block2::RcBlock::new(move |_: NonNull<NSEvent>| {
-        LEFT_BUTTON_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+    let down_global = block2::RcBlock::new({
+        let snapshot = snapshot.clone();
+        move |_: NonNull<NSEvent>| {
+            snapshot();
+        }
     });
-    let local_block = {
+    // Release monitors: local sees releases delivered to our app (returns
+    // the event unchanged — it does not consume it); global sees releases
+    // that land over ANOTHER app. Handlers run on the main thread.
+    let up_local = block2::RcBlock::new({
         let settle = settle.clone();
-        block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
-            LEFT_BUTTON_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        move |event: NonNull<NSEvent>| -> *mut NSEvent {
             settle();
             event.as_ptr()
-        })
-    };
-    // Global monitor: releases that land over ANOTHER app — the local
-    // monitor never sees those.
-    let global_block = {
+        }
+    });
+    let up_global = block2::RcBlock::new({
         let settle = settle.clone();
-        block2::RcBlock::new(move |_: NonNull<NSEvent>| {
-            LEFT_BUTTON_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
+        move |_: NonNull<NSEvent>| {
             settle();
-        })
-    };
+        }
+    });
     unsafe {
-        let local: Option<Retained<AnyObject>> =
-            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
-                NSEventMask::LeftMouseUp,
-                &local_block,
-            );
-        let global: Option<Retained<AnyObject>> = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
-            NSEventMask::LeftMouseUp,
-            &global_block,
-        );
         let down_l: Option<Retained<AnyObject>> =
             NSEvent::addLocalMonitorForEventsMatchingMask_handler(
                 NSEventMask::LeftMouseDown,
                 &down_local,
             );
-        let down_g: Option<Retained<AnyObject>> = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
-            NSEventMask::LeftMouseDown,
-            &down_global,
-        );
-        std::mem::forget(local);
-        std::mem::forget(global);
+        let down_g: Option<Retained<AnyObject>> =
+            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown,
+                &down_global,
+            );
+        let up_l: Option<Retained<AnyObject>> =
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseUp,
+                &up_local,
+            );
+        let up_g: Option<Retained<AnyObject>> =
+            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseUp,
+                &up_global,
+            );
+        for (name, m) in [
+            ("LeftMouseDown local", &down_l),
+            ("LeftMouseDown global", &down_g),
+            ("LeftMouseUp local", &up_l),
+            ("LeftMouseUp global", &up_g),
+        ] {
+            if m.is_none() {
+                eprintln!("[snap] install_snap_watcher: {name} monitor failed to install");
+            }
+        }
         std::mem::forget(down_l);
         std::mem::forget(down_g);
+        std::mem::forget(up_l);
+        std::mem::forget(up_g);
     }
 }
 
@@ -2946,10 +3049,16 @@ pub(crate) fn install_snap_watcher(_app: &tauri::AppHandle) {}
 /// the Resized event (which fires per native-resize tick), so a stack tracks
 /// a live resize instead of opening a seam. Children keep their
 /// perpendicular offset; chains hold because a towed child's own children
-/// ride along natively.
+/// ride along natively. The caller then re-plans attachments — a child the
+/// resize carried out of flush detaches, a child that flipped edges keeps
+/// its parent (parent identity comes from the plan, never from the move).
 #[cfg(target_os = "macos")]
 pub(crate) fn reflush_snap_children(win: &tauri::WebviewWindow) {
     use objc2_app_kit::NSWindow;
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        eprintln!("[snap] reflush_snap_children off main thread — skipped");
+        return;
+    };
     let app = win.app_handle().clone();
     let self_label = win.label().to_string();
     if !is_dock_label(&self_label) {
@@ -2997,7 +3106,7 @@ pub(crate) fn reflush_snap_children(win: &tauri::WebviewWindow) {
             if let Ok(ptr) = child.ns_window() {
                 let ns: &NSWindow = unsafe { &*ptr.cast() };
                 unsafe {
-                    set_frame_top_left_ns(ns, r.x, r.y);
+                    set_frame_top_left_ns(mtm, ns, r.x, r.y);
                 }
             }
         }
@@ -3014,15 +3123,21 @@ pub(crate) fn reflush_snap_children(_win: &tauri::WebviewWindow) {}
 /// Windows parked further out stay put and stay detached — the same
 /// geometry-derived truth a drop produces. Called once after the boot
 /// layout restore, so a saved stack tows again without any snap state in
-/// layout.json. Each settle reads live positions, so the pass converges;
-/// cycles are refused by the ancestor walk inside set_snap_parent_ns.
+/// layout.json. The settle only fixes POSITIONS; the resulting graph comes
+/// from one plan, so the tow direction is identical however the windows
+/// happen to iterate.
 #[cfg(target_os = "macos")]
 pub(crate) fn reattach_flushed_windows(app: &tauri::AppHandle) {
+    let Some(mtm) = objc2::MainThreadMarker::new() else {
+        eprintln!("[snap] reattach_flushed_windows off main thread — skipped");
+        return;
+    };
     for (label, win) in app.webview_windows() {
         if is_dock_label(&label) {
-            settle_snap(&win);
+            snap_to_flush_edge(mtm, &win);
         }
     }
+    apply_attachment_plan(app);
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -3423,20 +3538,14 @@ mod tests {
     }
 
     #[test]
-    fn flush_parent_names_the_longest_shared_edge() {
+    fn flush_shared_edge_names_the_longest_shared_edge() {
         let chat = r(0.0, 0.0, 400.0, 500.0);
         let stacked = r(400.0, 0.0, 300.0, 300.0); // flush on chat's right, full overlap
         let corner = r(0.0, 500.0, 100.0, 50.0); // flush under chat, only 100pt shared
-        let others = vec![
-            ("panel-chat".to_string(), chat),
-            ("widget-b".to_string(), corner),
-        ];
-        assert_eq!(
-            flush_parent(stacked, &others).as_deref(),
-            Some("panel-chat")
-        );
-        // A window touching nobody reports no parent.
-        assert!(flush_parent(r(900.0, 900.0, 100.0, 100.0), &others).is_none());
+        assert_eq!(flush_shared_edge(stacked, chat), 300.0);
+        assert_eq!(flush_shared_edge(corner, chat), 100.0);
+        // A window touching nobody shares no edge.
+        assert_eq!(flush_shared_edge(r(900.0, 900.0, 100.0, 100.0), chat), 0.0);
     }
 
     #[test]
@@ -3481,5 +3590,132 @@ mod tests {
         // new right edge at the same y.
         let chat_after = r(100.0, 100.0, 500.0, 500.0);
         assert_eq!(reflush_edge(child, chat_after), r(600.0, 150.0, 300.0, 300.0));
+    }
+
+    fn pl(pairs: Vec<(&str, SnapRect)>) -> std::collections::HashMap<String, Option<String>> {
+        plan_attachments(
+            &pairs
+                .iter()
+                .map(|(l, r)| (l.to_string(), *r))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[test]
+    fn plan_chain_ab_c_is_order_independent() {
+        // A | B | C flush in a row, no chat: the component roots at the
+        // smallest label regardless of how `rects` is ordered.
+        let a = r(0.0, 0.0, 100.0, 100.0);
+        let b = r(100.0, 0.0, 100.0, 100.0);
+        let c = r(200.0, 0.0, 100.0, 100.0);
+        for pairs in [
+            vec![("widget-a", a), ("widget-b", b), ("widget-c", c)],
+            vec![("widget-c", c), ("widget-a", a), ("widget-b", b)],
+            vec![("widget-b", b), ("widget-c", c), ("widget-a", a)],
+        ] {
+            let plan = pl(pairs);
+            assert_eq!(plan["widget-a"], None, "smallest label is the root");
+            assert_eq!(plan["widget-b"], Some("widget-a".to_string()));
+            assert_eq!(plan["widget-c"], Some("widget-b".to_string()));
+        }
+    }
+
+    #[test]
+    fn plan_chat_hub_never_strands_the_far_widget() {
+        // chat | A | B: every input order must produce chat root, A under
+        // chat, B under A — the bug where HashMap iteration could attach
+        // the chat under A and strand B.
+        let chat = r(0.0, 0.0, 100.0, 100.0);
+        let a = r(100.0, 0.0, 100.0, 100.0);
+        let b = r(200.0, 0.0, 100.0, 100.0);
+        for pairs in [
+            vec![("panel-chat", chat), ("widget-a", a), ("widget-b", b)],
+            vec![("widget-b", b), ("widget-a", a), ("panel-chat", chat)],
+            vec![("widget-a", a), ("panel-chat", chat), ("widget-b", b)],
+        ] {
+            let plan = pl(pairs);
+            assert_eq!(plan["panel-chat"], None, "chat is the hub root");
+            assert_eq!(plan["widget-a"], Some("panel-chat".to_string()));
+            assert_eq!(plan["widget-b"], Some("widget-a".to_string()));
+        }
+    }
+
+    #[test]
+    fn plan_two_neighbour_tiebreak_shared_edge_then_label() {
+        // W is flush to two nodes at the same BFS distance: the longer
+        // shared edge wins.
+        let chat = r(0.0, 0.0, 100.0, 100.0);
+        let x = r(100.0, 0.0, 100.0, 100.0); // right of chat
+        let y = r(0.0, 100.0, 100.0, 100.0); // below chat
+        // W below X and right of Y; tall → shares a longer edge with Y.
+        let w = r(100.0, 100.0, 50.0, 120.0);
+        let plan = pl(vec![
+            ("panel-chat", chat),
+            ("widget-x", x),
+            ("widget-y", y),
+            ("widget-w", w),
+        ]);
+        assert_eq!(
+            plan["widget-w"],
+            Some("widget-y".to_string()),
+            "60pt shared edge beats 50pt"
+        );
+        // Same-distance, equal shared edges → the smaller label wins.
+        let w = r(100.0, 100.0, 50.0, 50.0);
+        let plan = pl(vec![
+            ("panel-chat", chat),
+            ("widget-x", x),
+            ("widget-y", y),
+            ("widget-w", w),
+        ]);
+        assert_eq!(
+            plan["widget-w"],
+            Some("widget-x".to_string()),
+            "50pt/50pt tie → smaller label"
+        );
+        // And the hub beats both neighbours by distance alone.
+        let w = r(0.0, 200.0, 50.0, 50.0);
+        let plan = pl(vec![
+            ("panel-chat", chat),
+            ("widget-x", x),
+            ("widget-y", y),
+            ("widget-w", w),
+        ]);
+        assert_eq!(
+            plan["widget-w"],
+            Some("widget-y".to_string()),
+            "W flush only to Y attaches there"
+        );
+    }
+
+    #[test]
+    fn plan_no_chat_component_picks_deterministic_root() {
+        // Two widget-only clusters: each roots at its smallest label, and
+        // a window floating off everything plans to nothing.
+        let a = r(0.0, 0.0, 100.0, 100.0);
+        let b = r(100.0, 0.0, 100.0, 100.0);
+        let c = r(500.0, 500.0, 100.0, 100.0); // its own component
+        let plan = pl(vec![
+            ("widget-b", b),
+            ("widget-c", c),
+            ("widget-a", a),
+        ]);
+        assert_eq!(plan["widget-a"], None);
+        assert_eq!(plan["widget-b"], Some("widget-a".to_string()));
+        assert_eq!(plan["widget-c"], None, "lone window is its own root");
+    }
+
+    #[test]
+    fn plan_near_but_not_flush_is_detached() {
+        // A 5pt seam is NOT flush: the widget plans detached even though
+        // it sits inside the visual snap zone.
+        let chat = r(0.0, 0.0, 100.0, 100.0);
+        let w = r(105.0, 0.0, 100.0, 100.0);
+        let plan = pl(vec![("panel-chat", chat), ("widget-w", w)]);
+        assert_eq!(plan["widget-w"], None);
+        // SNAP_FLUSH tolerance still counts 2pt.
+        let w = r(102.0, 0.0, 100.0, 100.0);
+        let plan = pl(vec![("panel-chat", chat), ("widget-w", w)]);
+        assert_eq!(plan["widget-w"], Some("panel-chat".to_string()));
     }
 }
