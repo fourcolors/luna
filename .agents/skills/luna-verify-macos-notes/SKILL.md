@@ -135,19 +135,22 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
 - Collapse→orb: the moon-collapse button sits at the title bar's far right
   end and is often off-screen — `cmd+shift+K` (global toggle) is the reliable
   trigger. Orb click → expand_from_moon restores every dock window.
-- Saved positions do NOT round-trip for windows restored near the screen
-  bottom: `builder.position(x,y)` gets constrained inside tao/AppKit at build
-  (observed: written y=760/800/900/945 → spawned y=675/715/755/755, i.e.
-  `top = min(req−85, visibleFrame_maxY − h)`), then drifts to the requested
-  value a beat later. The e89dcd79 re-assert (set_position right after
-  build()) fixes the FINAL frame but NOT the boot-reattach read — tao defers
-  the frame apply past the synchronous settle pass, so `reattach_flushed_windows`
-  still evaluates the constrained position (observed live: settle logged
-  (811,671) for a window written at 756 → detached instead of attaching).
-  Same deferred-set_position explains why a hub snap leaves a transient seam:
-  the child attaches before the parent's corrective move lands, then tows it.
-  When crafting a parked-window scenario, aim ~150pt+ clear of neighbors AND
-  verify the settle-time position (instrument settle_snap), not just layout.json.
+- Saved positions now round-trip at settle time: e389ec75 applies all snap
+  frames synchronously via `setFrameTopLeftPoint` (`set_frame_top_left_ns`),
+  so the post-build re-assert lands before `reattach_flushed_windows` reads
+  frames (observed: window written y=756 settles at exactly (811,756), not
+  the old tao-constrained 671), and the settle's corrective move lands
+  before child attach (no transient seam). tao's `set_position` alone is
+  still deferred — any new position path must use the AppKit helper.
+- Attach direction and parent choice: `settle_snap` and the open-path
+  `attach_to_flush_neighbor` pick the flush parent by LONGEST shared edge
+  (`flush_parent`), not by which neighbor you think is "the" anchor. A
+  widget flush on TWO edges (e.g. chat's right edge AND under a parked
+  widget's bottom) attaches to whichever overlap is longer — verify the
+  actual parent via instrumentation or a tow test on EACH candidate before
+  concluding "not attached" (a "doesn't tow with chat" observation may just
+  mean it's another window's child). When the settled window is the chat,
+  direction reverses: the neighbor docks under the chat (chat is the hub).
 - Geometry ground truth: `~/.luna/layout.json` stores each panel's logical
   rect — use it to assert flushness exactly (child.y == parent.bottom).
 - Coordinate scale on the Devin box: 1 tool px = 1.5625 logical pt, so
