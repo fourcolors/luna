@@ -42,14 +42,16 @@ The snap settle does NOT rely on per-gesture arming: a large share of real
 title-bar presses are swallowed by the transparent NSWindow title-bar zone
 before the webview ever sees `pointerdown`, so an arm-IPC can miss the
 gesture while the window still drags natively. Instead the settle keys on
-GEOMETRY — a `Moved` event while the left button is held marks the window
-(programmatic moves with no button down — boot restore, a settle's own
-`set_position`, resize re-flush — never mark), and a persistent native
-watcher (`windows::install_snap_watcher`) settles every marked window on
-the next left mouse-up: `windows::settle_snap` snaps it flush to the
-nearest qualifying edge (within `SNAP_GAP`, or shallow overlap within
-`SNAP_OVERLAP`) and attaches it as an AppKit child — or detaches it when
-released out of range. A press that never moves anything settles nothing.
+GEOMETRY — a persistent native watcher (`windows::install_snap_watcher`)
+snapshots every dock window's frame on `LeftMouseDown`, and on
+`LeftMouseUp` settles each window whose frame changed:
+`windows::snap_to_flush_edge` moves it flush to the nearest qualifying
+edge (within `SNAP_GAP`, or shallow overlap within `SNAP_OVERLAP`), then
+`windows::apply_attachment_plan` re-derives the whole parent/child graph
+from the new geometry. A flick released before tao can deliver a queued
+`Moved` event still diffs; a press that never moves anything settles
+nothing; programmatic moves (boot restore, a settle's own corrective
+move, resize re-flush) only settle when they coincide with a real press.
 
 `begin_redock_drag` (pinned chat floaters only) is still armed per-gesture
 from JS before `startDragging` — its hit-probe must be live DURING the
@@ -73,26 +75,41 @@ other's edges:
   launcher never snap-on-open.
 - **Snap-on-release:** dropping a window within `SNAP_GAP` of a neighbor's
   edge settles it flush and attaches it; releasing out of range detaches.
-  Coverage is total — the Moved-event watcher catches drags the webview
-  never saw start.
+  Coverage is total — the snapshot watcher catches drags the webview never
+  saw start, with no dependence on `Moved`-event queue timing.
 - **Cluster towing:** attachment is the real AppKit parent/child
   (`NSWindow.addChildWindow`/`removeChildWindow`). Moving a window tows its
   snapped children natively in the same gesture — atomic, zero IPC. A
-  middle-of-stack grab tows the tail; a leaf grab peels off alone. Cycles
-  are refused by walking the candidate parent's ancestor chain. The dragged
-  window becomes the child — EXCEPT the chat, which is the cluster hub:
-  whatever the chat settles onto docks under the chat, so a widget snapped
-  on any side tows with the next chat drag instead of being stranded with
-  a visible gap when the chat moves away.
+  middle-of-stack grab tows the tail; a leaf grab peels off alone.
+
+  The graph itself is a PURE function of geometry
+  (`windows::plan_attachments`): the flush-adjacency graph is built over
+  the current frames, and each connected component becomes a BFS spanning
+  tree rooted at the chat when it contains one — the chat is the cluster
+  hub, so a widget snapped on any side tows with the next chat drag
+  instead of being stranded — or at the smallest label when it does not.
+  Each non-root node parents to its adjacent node nearest the root; ties
+  break on the longest shared edge, then the smaller label. Because the
+  tree is a spanning forest by construction, cycles cannot form; because
+  the plan is order-independent, boot restore, open-time placement, and
+  the mouse-up settle always produce the same graph for the same
+  geometry. `apply_attachment_plan` is the single AppKit adapter: it
+  diffs live links against the plan — detaching mismatches first (a
+  direction reversal must drop the old edge before the new one takes),
+  then attaching planned edges — so no entry point ever decides a parent
+  on its own. Children also follow the parent's visibility: hiding or
+  minimizing the chat shelves its snapped widgets with it, and they
+  return when it does — intended, since a snapped stack reads as one
+  surface (verify manually after windowing changes).
 - **Resize re-flush:** AppKit children follow position, never size — a
   parent's `Resized` event re-flushes each snapped child against its
   nearest parent edge (`windows::reflush_snap_children`) so stacks never
   open a seam.
 
-The snap graph is emergent geometry, never stored: a window is attached to
-whichever dock window it is flush against (edge gap `<= SNAP_FLUSH` with
-real perpendicular overlap). `layout.json` stores plain positions only; boot
-restore runs the same settle a mouse-up would on every dock window
+The snap graph is emergent geometry, never stored: flush-adjacency means an
+edge gap `<= SNAP_FLUSH` with real perpendicular overlap. `layout.json`
+stores plain positions only; boot restore moves every restored dock window
+flush to its snap target, then applies the same plan
 (`windows::reattach_flushed_windows`), so a window restored inside the snap
 zone goes flush and attaches — no gutter hovering next to a neighbor — and
 a saved stack tows again with no schema change. Windows parked further out
@@ -155,4 +172,6 @@ tracks a live resize instead of opening a seam.
 - `test/widget-window.test.ts` verifies widget pages do not load the old
   `deck-snap.js` engine.
 - `windows::tests` cover the pure snap geometry: edge candidates, flush
-  detection, cheapest-target choice, open-time cascade, and resize re-flush.
+  detection, cheapest-target choice, open-time cascade, resize re-flush,
+  and the attachment planner (input-order independence, the chat-hub
+  stranding case, two-neighbor tie-breaks, no-chat components).
