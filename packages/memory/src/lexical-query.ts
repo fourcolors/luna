@@ -101,6 +101,29 @@ export function termsMatch(terms: ReadonlyArray<string>): string {
   return terms.map(quoteFts).join(" OR ")
 }
 
+/** Terms considered when requiring a minimum match: C(12, 2) = 66 AND-pairs at most. */
+export const MAX_MIN_MATCH_TERMS = 12
+
+/**
+ * MATCH requiring at least `minMatch` (1 or 2) DISTINCT query terms in a
+ * record. 1 is the plain OR. 2 is an OR of AND-pairs, evaluated by FTS5
+ * itself so porter stemming still applies: a record sharing ONE casual word
+ * with the question ("app", "get") can no longer be a lexical hit, while a
+ * record matching several content words still ranks by bm25(). Queries with
+ * a single content term fall back to that term. Only the first
+ * MAX_MIN_MATCH_TERMS terms are paired.
+ */
+export function minMatchTermsMatch(terms: ReadonlyArray<string>, minMatch: number): string {
+  if (minMatch <= 1 || terms.length < 2) return termsMatch(terms)
+  if (minMatch !== 2) throw new Error(`minMatch ${minMatch} unsupported (1 or 2)`)
+  const t = terms.slice(0, MAX_MIN_MATCH_TERMS).map(quoteFts)
+  const pairs: string[] = []
+  for (let i = 0; i < t.length; i++) {
+    for (let j = i + 1; j < t.length; j++) pairs.push(`(${t[i]} AND ${t[j]})`)
+  }
+  return pairs.join(" OR ")
+}
+
 /** Caps on expansion keywords: FTS5 sums repeated/overlapping terms, so volume = weight. */
 export const MAX_EXPANSION_PHRASES = 8
 export const MAX_EXPANSION_PHRASE_WORDS = 6
@@ -141,6 +164,8 @@ export interface LexicalFusionOptions {
   /** RRF weight of the BM25 arm over expansion keywords, when any are given. */
   readonly expansionWeight: number
   readonly stopwords: StopwordSet
+  /** Distinct query terms a record must contain to be a query-arm hit (1 or 2). */
+  readonly minMatch: number
 }
 
 /**
@@ -151,6 +176,7 @@ export const HYBRID_WEIGHTED_DEFAULTS: LexicalFusionOptions = {
   lexicalWeight: 0.5,
   expansionWeight: 0.5,
   stopwords: "extended",
+  minMatch: 1,
 }
 
 /** RRF constant (Cormack et al.; every major engine's default). */

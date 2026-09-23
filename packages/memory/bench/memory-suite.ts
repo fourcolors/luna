@@ -59,7 +59,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { basename, resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import {
   Clock,
   ObservabilityService,
@@ -77,6 +77,8 @@ import {
   type ExpansionSidecar,
   type SearchConfig,
 } from "../src/search-config.js"
+import { makeJudges, type Judge, type JudgeName } from "../src/adapters/eval-common/judge.js"
+import { searchWithConfig } from "../src/adapters/eval-common/search.js"
 
 type RecordKind = "project" | "preference" | "episodic" | "distractor"
 type QuerySlice =
@@ -585,6 +587,17 @@ async function main(): Promise<void> {
     )
     process.exit(3)
   }
+  // Relevance judges for rr=<judge>@<n> configs (adapters/eval-common/judge.ts).
+  let judges: ReadonlyMap<JudgeName, Judge>
+  try {
+    judges = makeJudges(
+      configs.flatMap((c) => (c.rerank !== undefined ? [c.rerank.judge] : [])),
+      process.env,
+    )
+  } catch (e) {
+    console.error(`[bench] invalid config: ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(3)
+  }
   // Validate every query against every config's expansion needs up front,
   // before any timing, so a missing sample fails fast instead of mid-sweep.
   for (const q of corpus.queries) {
@@ -697,15 +710,16 @@ async function main(): Promise<void> {
         for (const q of corpus.queries.slice(0, 25)) {
           for (const config of configs) {
             const expansionTerms = expansionFor(config, q.id, sidecars)
-            yield* Stream.runCollect(
-              router.search({
+            yield* searchWithConfig(
+              router,
+              config,
+              {
                 queryText: q.text,
                 namespace: NAMESPACE,
                 topK: TOP_K,
-                mode: config.mode,
-                ...(config.fusion !== undefined ? { fusion: config.fusion } : {}),
                 ...(expansionTerms !== undefined ? { expansionTerms } : {}),
-              }),
+              },
+              judges,
             )
           }
         }
@@ -715,15 +729,16 @@ async function main(): Promise<void> {
           for (const config of configs) {
             const expansionTerms = expansionFor(config, q.id, sidecars)
             const t0 = performance.now()
-            const hits = yield* Stream.runCollect(
-              router.search({
+            const hits = yield* searchWithConfig(
+              router,
+              config,
+              {
                 queryText: q.text,
                 namespace: NAMESPACE,
                 topK: TOP_K,
-                mode: config.mode,
-                ...(config.fusion !== undefined ? { fusion: config.fusion } : {}),
                 ...(expansionTerms !== undefined ? { expansionTerms } : {}),
-              }),
+              },
+              judges,
             )
             const tookMs = performance.now() - t0
             const arr = Array.from(hits)

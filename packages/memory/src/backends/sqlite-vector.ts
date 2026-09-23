@@ -83,6 +83,7 @@ import {
   HYBRID_WEIGHTED_DEFAULTS,
   expansionMatch,
   extractTerms,
+  minMatchTermsMatch,
   quoteFts,
   termsMatch,
   weightedRrf,
@@ -1095,7 +1096,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 const queryTerms = extractTerms(args.queryText, cfg.stopwords)
                 const [queryRanked, expansionRanked] = yield* Effect.try({
                   try: () => [
-                    rankByFts(termsMatch(queryTerms), args.namespace, candidateLimit, scope),
+                    rankByFts(minMatchTermsMatch(queryTerms, cfg.minMatch), args.namespace, candidateLimit, scope),
                     rankByFts(
                       expansionMatch(args.expansionTerms ?? [], cfg.stopwords, queryTerms),
                       args.namespace,

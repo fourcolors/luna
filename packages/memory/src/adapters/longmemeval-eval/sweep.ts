@@ -32,6 +32,8 @@ import { Effect, Stream } from "effect"
 import { MemoryRouterTag } from "../../router.js"
 import { expansionFor, parseSearchConfigs, type ExpansionSidecar, type SearchConfig } from "../../search-config.js"
 import { fetchOllamaVersion, probeModel, resolveOllamaBaseUrl } from "../eval-common/ollama.js"
+import { makeJudges, type Judge, type JudgeName } from "../eval-common/judge.js"
+import { searchWithConfig } from "../eval-common/search.js"
 import { signTestP } from "./baselines.js"
 import { fetchDataset, flattenTurns, isAbstentionId, selectSubset, SPLIT_URLS, type LmeSplit } from "./dataset.js"
 import { describeError, hasErrorTag, loadExpansionSidecars, makeQuestionLayer } from "./harness.js"
@@ -99,7 +101,11 @@ interface QuestionResult {
   readonly evidenceVecRank: Readonly<Record<string, number | null>>
 }
 
-function runQuestion(instance: LmeInstance, sidecars: ReadonlyMap<string, ExpansionSidecar>) {
+function runQuestion(
+  instance: LmeInstance,
+  sidecars: ReadonlyMap<string, ExpansionSidecar>,
+  judges: ReadonlyMap<JudgeName, Judge>,
+) {
   return Effect.gen(function* () {
     const router = yield* MemoryRouterTag
     const turns = flattenTurns(instance)
@@ -110,26 +116,19 @@ function runQuestion(instance: LmeInstance, sidecars: ReadonlyMap<string, Expans
     const answerSessions = new Set(instance.answer_session_ids)
     const namespace = namespaceFor(instance.question_id)
 
-    const search = (config: SearchConfig | { mode: "vec" }, topK: number) =>
-      Stream.runCollect(
-        router.search({
-          queryText: instance.question,
-          topK,
-          namespace,
-          mode: config.mode,
-          ...("fusion" in config && config.fusion !== undefined ? { fusion: config.fusion } : {}),
-          ...("label" in config
-            ? (() => {
-                const kw = expansionFor(config, instance.question_id, sidecars)
-                return kw !== undefined ? { expansionTerms: kw } : {}
-              })()
-            : {}),
-        }),
-      ).pipe(Effect.map((hits) => Array.from(hits, (h) => h.record.id)))
+    const search = (config: SearchConfig) => {
+      const kw = expansionFor(config, instance.question_id, sidecars)
+      return searchWithConfig(
+        router,
+        config,
+        { queryText: instance.question, topK: 10, namespace, ...(kw !== undefined ? { expansionTerms: kw } : {}) },
+        judges,
+      ).pipe(Effect.map((hits) => hits.map((h) => h.record.id)))
+    }
 
     const perConfig: Record<string, ConfigHits> = {}
     for (const config of CONFIGS) {
-      const top10 = yield* search(config, 10)
+      const top10 = yield* search(config)
       const top5 = top10.slice(0, 5)
       const sessions5 = new Set(top5.flatMap((id) => turnById.get(id)?.sessionId ?? []))
       perConfig[config.label] = {
@@ -139,7 +138,10 @@ function runQuestion(instance: LmeInstance, sidecars: ReadonlyMap<string, Expans
         top10,
       }
     }
-    const vecDeep = yield* search({ mode: "vec" }, DIAG_VEC_DEPTH)
+    const vecDeep = Array.from(
+      yield* Stream.runCollect(router.search({ queryText: instance.question, topK: DIAG_VEC_DEPTH, namespace, mode: "vec" })),
+      (h) => h.record.id,
+    )
     const evidenceVecRank: Record<string, number | null> = {}
     for (const id of evidence) {
       const r = vecDeep.indexOf(id)
@@ -175,6 +177,13 @@ async function main(): Promise<void> {
     fail(4, `invalid config: expansion keywords: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  let judges: ReadonlyMap<JudgeName, Judge>
+  try {
+    judges = makeJudges(CONFIGS.flatMap((c) => (c.rerank !== undefined ? [c.rerank.judge] : [])), process.env)
+  } catch (e) {
+    fail(4, `invalid config: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   let instances: ReadonlyArray<LmeInstance>
   let file: string
   try {
@@ -204,13 +213,14 @@ async function main(): Promise<void> {
     try {
       results.push(
         await Effect.runPromise(
-          Effect.scoped(runQuestion(instance, sidecars)).pipe(
+          Effect.scoped(runQuestion(instance, sidecars, judges)).pipe(
             Effect.provide(makeQuestionLayer(EMBED_MODEL, OLLAMA_BASE_URL)),
           ),
         ),
       )
     } catch (e) {
       if (hasErrorTag(e, "EmbedderError")) fail(2, `BLOCKED: embedder failed on ${instance.question_id}: ${describeError(e)}.`)
+      if (hasErrorTag(e, "JudgeError")) fail(2, `BLOCKED: rerank judge failed on ${instance.question_id}: ${describeError(e)}.`)
       fail(5, `memory backend failure on ${instance.question_id}: ${describeError(e)}.`)
     }
     if ((i + 1) % 10 === 0) console.log(`# ${i + 1}/${subset.length} questions`)

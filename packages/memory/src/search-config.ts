@@ -4,17 +4,21 @@
  * so a sweep is a list of strings and every result row is labelled with the
  * exact config that produced it.
  *
- *   <mode>[:w=<lexicalWeight>][:e=<expansionWeight>][:s=<stopwords>][:kw=<model>#<sample>]
+ *   <mode>[:w=<lexicalWeight>][:e=<expansionWeight>][:s=<stopwords>][:m=<1|2>][:kw=<model>#<sample>][:rr=<judge>@<depth>]
  *
  *   hybrid
  *   hybrid-weighted:w=0.25:s=extended
  *   hybrid-weighted:w=0.25:s=extended:e=0.5:kw=haiku#0
  *
- * w / e / s only apply to hybrid-weighted. kw names an expansion-keyword
+ * w / e / s / m only apply to hybrid-weighted (m = distinct query terms a
+ * record must contain to count as a lexical hit). kw names an expansion-keyword
  * sidecar (bench/expansion/<source>-<model>.json, see bench/expand-queries.ts)
- * and which of its independent samples to use.
+ * and which of its independent samples to use. rr (any mode) re-orders the
+ * top <depth> results with a relevance judge (adapters/eval-common/judge.ts:
+ * `ce` = the local cross-encoder, `jev` = TypeSafe Jev).
  */
 import { MEMORY_SEARCH_MODES, type MemorySearchMode } from "@luna/core"
+import type { JudgeName } from "./adapters/eval-common/judge.js"
 import type { LexicalFusionOptions, StopwordSet } from "./lexical-query.js"
 
 export interface SearchConfig {
@@ -22,6 +26,7 @@ export interface SearchConfig {
   readonly mode: MemorySearchMode
   readonly fusion?: Partial<LexicalFusionOptions>
   readonly expansion?: { readonly model: string; readonly sample: number }
+  readonly rerank?: { readonly judge: JudgeName; readonly depth: number }
 }
 
 const STOPWORD_SETS: ReadonlyArray<StopwordSet> = ["none", "lucene", "extended", "question"]
@@ -41,8 +46,9 @@ export function parseSearchConfig(label: string): SearchConfig {
   if (!(MEMORY_SEARCH_MODES as ReadonlyArray<string>).includes(mode)) {
     throw new Error(`search config "${label}": unknown mode "${modeRaw}" (${MEMORY_SEARCH_MODES.join(", ")})`)
   }
-  const fusion: { lexicalWeight?: number; expansionWeight?: number; stopwords?: StopwordSet } = {}
+  const fusion: { lexicalWeight?: number; expansionWeight?: number; stopwords?: StopwordSet; minMatch?: number } = {}
   let expansion: SearchConfig["expansion"]
+  let rerank: SearchConfig["rerank"]
   for (const part of parts) {
     const eq = part.indexOf("=")
     const key = eq < 0 ? part : part.slice(0, eq)
@@ -53,12 +59,24 @@ export function parseSearchConfig(label: string): SearchConfig {
       expansion = { model: m[1]!, sample: Number(m[2]) }
       continue
     }
+    if (key === "rr") {
+      const m = /^(ce|jev)@(\d+)$/.exec(value)
+      const depth = m ? Number(m[2]) : 0
+      if (!m || depth < 1 || depth > 100) {
+        throw new Error(`search config "${label}": rr must look like <ce|jev>@<depth 1-100>`)
+      }
+      rerank = { judge: m[1] as JudgeName, depth }
+      continue
+    }
     if (mode !== "hybrid-weighted") {
       throw new Error(`search config "${label}": ${key}= only applies to hybrid-weighted`)
     }
     if (key === "w") fusion.lexicalWeight = weight(key, value, label)
     else if (key === "e") fusion.expansionWeight = weight(key, value, label)
-    else if (key === "s") {
+    else if (key === "m") {
+      if (value !== "1" && value !== "2") throw new Error(`search config "${label}": m must be 1 or 2`)
+      fusion.minMatch = Number(value)
+    } else if (key === "s") {
       if (!(STOPWORD_SETS as ReadonlyArray<string>).includes(value)) {
         throw new Error(`search config "${label}": s must be one of ${STOPWORD_SETS.join(", ")}`)
       }
@@ -73,6 +91,7 @@ export function parseSearchConfig(label: string): SearchConfig {
     mode,
     ...(Object.keys(fusion).length > 0 ? { fusion } : {}),
     ...(expansion !== undefined ? { expansion } : {}),
+    ...(rerank !== undefined ? { rerank } : {}),
   }
 }
 

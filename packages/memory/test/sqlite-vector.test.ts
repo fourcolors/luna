@@ -1998,6 +1998,33 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(out.hostile).toContain("tax")
   })
 
+  it("hybrid-weighted m=2: one shared word is not a lexical hit, two are", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw6")
+        const lex = (queryText: string, minMatch: number) =>
+          Stream.runCollect(
+            b.search({
+              queryText,
+              namespace: "hw6",
+              topK: 1,
+              mode: "hybrid-weighted",
+              fusion: { lexicalWeight: 50, minMatch },
+            }),
+          )
+        return {
+          oneWordM1: ids(yield* lex("quarterly weather", 1)),
+          oneWordM2: ids(yield* lex("quarterly weather", 2)),
+          twoWordsM2: ids(yield* lex("quarterly accountant", 2)),
+        }
+      }),
+    )
+    // lexicalWeight 50 makes the lexical arm decide rank 1 whenever it has a hit.
+    expect(out.oneWordM1).toEqual(["tax"])
+    expect(out.oneWordM2).not.toEqual(["tax"])
+    expect(out.twoWordsM2).toEqual(["tax"])
+  })
+
   it("expansionTerms are ignored by every mode except hybrid-weighted (production hybrid unchanged)", async () => {
     const out = await run(
       Effect.gen(function* () {

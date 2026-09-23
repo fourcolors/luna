@@ -4,6 +4,7 @@ import {
   MAX_LEXICAL_TERMS,
   expansionMatch,
   extractTerms,
+  minMatchTermsMatch,
   quoteFts,
   termsMatch,
   weightedRrf,
@@ -66,5 +67,14 @@ describe("lexical-query", () => {
     expect(fused[0]!.score).toBeCloseTo(1 / 62 + 0.5 / 61, 12)
     expect(fused.find((f) => f.id === "z")).toBeUndefined()
     expect(weightedRrf([{ ids: ["x", "y"], weight: 1 }, { ids: ["y", "x"], weight: 1 }]).map((f) => f.id)).toEqual(["x", "y"])
+  })
+
+  it("minMatchTermsMatch: 1 = plain OR; 2 = OR of AND-pairs; single term falls back; pairs capped", () => {
+    expect(minMatchTermsMatch(["a", "b"], 1)).toBe('"a" OR "b"')
+    expect(minMatchTermsMatch(["a", "b", "c"], 2)).toBe('("a" AND "b") OR ("a" AND "c") OR ("b" AND "c")')
+    expect(minMatchTermsMatch(["a"], 2)).toBe('"a"')
+    const many = Array.from({ length: 20 }, (_, i) => `t${i}`)
+    expect(minMatchTermsMatch(many, 2).split(" OR ")).toHaveLength(66)
+    expect(() => minMatchTermsMatch(["a", "b"], 3)).toThrow(/unsupported/)
   })
 })
