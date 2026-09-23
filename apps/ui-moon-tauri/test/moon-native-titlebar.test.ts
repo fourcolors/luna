@@ -6,6 +6,7 @@ import * as path from 'node:path'
 // builders) lives in src-tauri/src/windows.rs, split out of main.rs in the
 // moon-next main.rs split - main.rs itself no longer has any of this code.
 const windowsRs = fs.readFileSync(path.resolve(__dirname, '../src-tauri/src/windows.rs'), 'utf8')
+const mainRs = fs.readFileSync(path.resolve(__dirname, '../src-tauri/src/main.rs'), 'utf8')
 const appearance = fs.readFileSync(
   path.resolve(__dirname, '../frontend/vendor/moon-appearance.js'),
   'utf8',
@@ -27,21 +28,31 @@ const pages = [
 ].map((p) => fs.readFileSync(p, 'utf8'))
 
 describe('native macOS titlebar ownership', () => {
-  it('configures AppKit traffic lights once when each native window is created', () => {
-    const placements = windowsRs.match(
-      /\.traffic_light_position\(tauri::LogicalPosition::new\(\s*TRAFFIC_LIGHT_INSET_X,\s*TRAFFIC_LIGHT_INSET_Y,?\s*\)\)/g,
-    )
-    // The shared build_card_window is the single placement site.
-    expect(placements).toHaveLength(1)
-    // One source of truth for the inset — the builder and the AppKit re-apply
-    // share these consts so the two placements cannot drift apart.
+  it('places AppKit traffic lights only via the chrome finalize — never via a tao inset', () => {
+    // tao re-applies a stored `traffic_light_position` inset inside the content
+    // view's drawRect on EVERY repaint — silently undoing the centered cluster
+    // configure_native_chrome_ns lays out (the live drag/reorder margin-collapse
+    // bug). build_card_window must leave it unset so tao's re-apply is a no-op;
+    // the finalize is the single placer.
+    expect(windowsRs).not.toMatch(/\.traffic_light_position\(/)
+    // One source of truth for the inset.
     // Values track --card-inset in vendor/moon-theme.css, which a natively
     // framed (macOS) window collapses to 0 — see test/moon-native-frame.test.ts,
     // which asserts the arithmetic rather than these literals.
     expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_X: f64 = 14.0')
     expect(windowsRs).toContain('const TRAFFIC_LIGHT_INSET_Y: f64 = 8.0')
     expect(windowsRs).toContain('fn configure_native_window_chrome(')
+    expect(windowsRs).toContain('fn configure_native_chrome_ns(')
     expect(windowsRs).toContain('button.setHidden(false)')
+    // The finalize also re-asserts the layout at the native mutation choke
+    // points (a programmatic move or attach/detach can hand the title bar back
+    // to AppKit's layout) plus a deferred re-apply at gesture end.
+    expect(windowsRs).toContain('chrome re-apply after native move')
+    expect(windowsRs).toContain('chrome re-apply after attach/detach')
+    // AppKit re-lays out the title bar on every resize tick, reverting the
+    // cluster to the default inset — the macOS Resized arm in main.rs
+    // re-asserts the chrome on the resized dock window itself.
+    expect(mainRs).toContain('configure_native_window_chrome(&w)')
   })
 
   it('uses standard native traffic lights everywhere: the zoom (green) button is never disabled', () => {
