@@ -41,6 +41,18 @@ describe("rateFor — model resolution precedence", () => {
     })
   })
 
+  // claude-opus-5-5 is the DEFAULT model (resolver.ts daily-driver), so this
+  // proxy rate is on the default cost path: it feeds the spend meter and
+  // monthlyCapUsd enforcement for most threads. Pinned separately from opus-5
+  // so that publishing a real 5.5 rate is a deliberate, visible edit here
+  // rather than something that silently rides the shared "claude-opus" prefix.
+  it("resolves opus-5-5 (the default model) via the same 5/25 proxy", () => {
+    expect(rateFor("claude-opus-5-5", "anthropic")).toEqual({
+      pricePerMInput: 5,
+      pricePerMOutput: 25,
+    })
+  })
+
   it("resolves fable and mythos by their new RATE_TABLE prefixes (UNKNOWN=0/0 until overridden)", () => {
     // Pricing for these models is not yet published (2026-07); marked as 0/0
     // in the table. Override via LUNA_MODEL_RATES env var when known.

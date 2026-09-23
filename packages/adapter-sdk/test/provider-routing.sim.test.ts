@@ -167,12 +167,18 @@ describe("provider routing through the real broker + adapter", () => {
  * #253 default-lane resolution: an omitted model acquires the broker's
  * "default" lane. When that lane lands on a NATIVE Anthropic account with no
  * overflow-chain step redirecting it, the adapter prefers the daily-driver
- * default (claude-sonnet-5) over the SDK's own default model. Everything else
+ * default (claude-opus-5-5) over the SDK's own default model. Everything else
  * about the lane is untouched: a configured default chain always wins, a
  * non-Anthropic default lane leaves Options.model unset, and a deployment
  * with no viable account fails the acquire exactly as before.
+ *
+ * This suite is the one that actually proves what a default thread RUNS.
+ * chat-server's BASE_MODELS[0] only orders the UI list; if these two ever
+ * disagree the UI advertises one model while the server runs another, so this
+ * expectation is deliberately pinned to the literal id rather than imported
+ * from the resolver table it is meant to check.
  */
-describe("default-lane resolution (#253): Sonnet 5 preferred when Anthropic is available", () => {
+describe("default-lane resolution (#253): Opus 5.5 preferred when Anthropic is available", () => {
   const anthropicSeed: ReadonlyArray<AccountSeed> = [
     { id: "a1", kind: "anthropic", secretRef: "env:PROV_TOK_A" },
   ]
@@ -180,10 +186,10 @@ describe("default-lane resolution (#253): Sonnet 5 preferred when Anthropic is a
     { id: "o1", kind: "ollama-cloud", secretRef: "env:PROV_TOK_O" },
   ]
 
-  it("omitted model + native Anthropic account → SDK runs claude-sonnet-5", async () => {
+  it("omitted model + native Anthropic account → SDK runs claude-opus-5-5", async () => {
     const fake = makeEnvCapturingFake()
     await runOnce(fake, anthropicSeed)
-    expect(lastOptions(fake).model).toBe("claude-sonnet-5")
+    expect(lastOptions(fake).model).toBe("claude-opus-5-5")
     const env = lastEnv(fake)
     expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("tok-a")
     expect(env["ANTHROPIC_BASE_URL"]).toBeUndefined()
@@ -192,7 +198,7 @@ describe("default-lane resolution (#253): Sonnet 5 preferred when Anthropic is a
   it('a caller-persisted "default" sentinel resolves identically (never sent verbatim)', async () => {
     const fake = makeEnvCapturingFake()
     await runOnce(fake, anthropicSeed, "default")
-    expect(lastOptions(fake).model).toBe("claude-sonnet-5")
+    expect(lastOptions(fake).model).toBe("claude-opus-5-5")
   })
 
   it("no Anthropic account + configured default chain → the chain wins (no Sonnet 5 stamp)", async () => {

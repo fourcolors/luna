@@ -42,6 +42,7 @@ import {
   type ThreadRegistryApi,
   type SessionSummary,
   type SessionOptions,
+  resolveRoleModel,
 } from "@luna/core"
 import type { SDKAdapterService } from "@luna/adapter-sdk"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -463,8 +464,15 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
       // (defaultEffortForModel returns a real EffortLevel or undefined), so
       // the ultracode demux is unaffected. Only rebuilds the options object
       // when a default is actually injected (opts.effort was absent).
+      // When the caller supplies NO model, the thread runs on the default lane,
+      // whose model the adapter resolves through resolveRoleModel("daily-driver")
+      // — NOT the empty string. Resolving the effort default against "" here
+      // would silently skip the default model's own effort (e.g. Opus 5.5's
+      // "medium"), so default-lane threads would fall back to the SDK's effort
+      // while an explicit pick of the SAME model got "medium". Resolve against
+      // the same table the adapter uses so the two cannot drift.
       const resolvedEffort: EffortOption | undefined =
-        opts.effort ?? defaultEffortForModel(opts.model ?? "")
+        opts.effort ?? defaultEffortForModel(opts.model ?? resolveRoleModel("daily-driver", null))
       // Rebuild the options object only when a default was actually injected
       // (opts.effort was absent and the model has one). The `!== undefined`
       // clause also narrows resolvedEffort so the `effort` key is never

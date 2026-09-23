@@ -18,7 +18,7 @@
  *
  * Role defaults (v1):
  *   advisor      -> claude-opus-4-8   (most capable)
- *   daily-driver -> claude-sonnet-5   (balanced default)
+ *   daily-driver -> claude-opus-5-5   (recommended default)
  *   wake         -> claude-sonnet-4-6 (cheapest capable)
  *   dream        -> claude-haiku-4-5  (cheapest)
  *
@@ -39,9 +39,12 @@ export const ROLE_LABELS: Record<Role, string> = {
   dream: "Dream (nightly synthesis)",
 }
 
+// Mirror of DEFAULT_ROLE_MODELS in packages/core/src/provider-settings/resolver.ts.
+// These two tables MUST agree: the server one decides what actually runs, this
+// one decides what the settings panel shows as the role's default.
 export const DEFAULT_ROLE_MODEL: Record<Role, string> = {
   advisor: "claude-opus-4-8",
-  "daily-driver": "claude-sonnet-5",
+  "daily-driver": "claude-opus-5-5",
   wake: "claude-sonnet-4-6",
   dream: "claude-haiku-4-5",
 }
@@ -66,7 +69,8 @@ export interface ModelOption {
 }
 
 export const ANTHROPIC_MODELS: readonly ModelOption[] = [
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5 - balanced default" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5 - recommended default" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5 - balanced" },
   { id: "claude-fable-5", label: "Claude Fable 5 - 1M context, xhigh reasoning" },
   { id: "claude-fable-5-1", label: "Claude Fable 5.1 - 1M context, xhigh reasoning" },
   { id: "claude-mythos-5", label: "Claude Mythos 5 - 1M context, first-party only" },
