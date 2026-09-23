@@ -5,7 +5,7 @@
  * `src/adapters/locomo-eval/README.md`, which needs live services and is
  * intentionally NOT part of the hermetic test suite.
  */
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { aggregateByCategory, f1Score, scoreQA } from "../src/adapters/locomo-eval/scoring.js"
 import {
   answerFromContextOllama,
@@ -449,13 +449,21 @@ describe("retrieval-modes: sessionNumFromTags + prioritizeBySessions", () => {
 })
 
 describe("answerFromContextOllama request (stubbed fetch)", () => {
-  afterEach(() => vi.unstubAllGlobals())
+  // Plain save/restore, not vi.stubGlobal: CI also runs this file under
+  // `bun test`, whose `vi` shim has no stubGlobal.
+  const realFetch = globalThis.fetch
+  const stubFetch = (impl: (url: string, init: RequestInit) => Promise<Response>) => {
+    globalThis.fetch = impl as unknown as typeof fetch
+  }
+  afterEach(() => {
+    globalThis.fetch = realFetch
+  })
 
   const args = { question: "q?", context: ["c"], baseUrl: "http://127.0.0.1:11434", model: "m" }
 
   it("pins num_ctx only when asked, and reports prompt tokens", async () => {
     const bodies: Array<Record<string, unknown>> = []
-    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+    stubFetch(async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
       return new Response(JSON.stringify({ message: { content: " ok " }, prompt_eval_count: 42, eval_count: 1 }))
     })
@@ -468,7 +476,7 @@ describe("answerFromContextOllama request (stubbed fetch)", () => {
 
   it("strictContext forbids truncation and context shift, and surfaces done_reason", async () => {
     let body: Record<string, unknown> = {}
-    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+    stubFetch(async (_url: string, init: RequestInit) => {
       body = JSON.parse(String(init.body)) as Record<string, unknown>
       return new Response(JSON.stringify({ message: { content: "x" }, done_reason: "length" }))
     })
@@ -481,8 +489,7 @@ describe("answerFromContextOllama request (stubbed fetch)", () => {
   })
 
   it("aborts a hung request when a timeout is given", async () => {
-    vi.stubGlobal(
-      "fetch",
+    stubFetch(
       (_url: string, init: RequestInit) =>
         new Promise((_resolve, reject) => {
           init.signal?.addEventListener("abort", () => reject(init.signal?.reason))
