@@ -26,7 +26,7 @@ export interface ProviderConfig {
 }
 
 /** Role names Luna routes by. */
-export type RoleName = "advisor" | "daily-driver" | "wake" | "dream"
+export type RoleName = "advisor" | "daily-driver" | "wake" | "dream" | "classifier"
 
 /** One role-to-model binding. A preference-ordered list means index 0 is
  *  tried first; if unavailable, fallback to index 1, etc. */
