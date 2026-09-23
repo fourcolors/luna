@@ -49,3 +49,34 @@ Two options:
   leaves the panel at "Loading…" (title never flips), a wrong formatter fails exact strings.
 - Payload key names differ per panel: voice uses `downloadedBytes`/`totalBytes`, update events
   use `downloaded`/`total` — read the reducer's `applyEvent`, don't guess.
+
+## WS-backed panels (settings.models, settings.vault, …)
+
+Panels that call `ctx.connectWs(registry, …)` don't use Tauri events — they speak
+LunaWS JSON frames over a real `WebSocket`. Strongest mock: point the stubbed
+`load_connection` invoke at a REAL local WS server so the full transport path
+(`LunaWS.createClient` → socket → registry dispatch → outbound `client.send`)
+runs unmodified.
+
+- In the `panel-mock.html` stub, answer `invoke('load_connection')` with
+  `{ wsUrl: 'ws://127.0.0.1:<port>/', wsToken: 'mock' }`; reject everything else.
+  `MoonSession.resolveBootRoute` calls route commands that reject → it degrades
+  to `null` → panel falls into the legacy `load_connection` path automatically —
+  no route-command stubbing needed.
+- Mock server: `Bun.serve({ websocket: … })` — send `hello`
+  (`{capabilities:{modelRouting:true}}`) + `model-routing-list` on `open`; reply
+  `model-routing-status {requestId, ok, message}` to `model-routing-save`; append
+  every inbound frame to a log file for byte-level assertions. HTTP control
+  endpoints on the same port (`/push?model=X` → send a fresh list;
+  `/state` → dump received frames as JSON) make server-initiated frames
+  scriptable mid-run AND displayable on camera — open `/state` in a second
+  Chrome tab to show the captured outbound frame in the recording.
+- Port gotcha: `lsof -nP -iTCP:<port> -sTCP:LISTEN` first — 9876 was already
+  bound by `devin-rem` here; pick a verified-free port.
+- Astryx `Selector` is a combobox: click the trigger → a popover listbox opens
+  (options are plain click targets by their label text; checkmark = current
+  value). The panel's `data-testid` lands on the field wrapper, not the trigger.
+- Remember the reducer's `isDirty` guard: a pushed `model-routing-list` is
+  IGNORED while unsaved draft edits exist — only applies after a successful
+  save ack clears dirty. Sequence push-while-dirty (no-op) → save → push
+  (applies) to prove both branches.
