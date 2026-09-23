@@ -217,6 +217,9 @@ describe.skipIf(!hasBunSqlite)("retrieval mechanics (stub embedder)", () => {
     expect(collected).toHaveLength(1)
     const ev = collected[0]!
     expect(ev.kind).toBe("RetrievalCall")
+    // router.search emits the full retrieval event; only memory_search's
+    // rerank step emits the embedder-less `reranked: true` variant.
+    if (ev.reranked === true) throw new Error("expected a retrieval event, got a rerank event")
     expect(ev.mode).toBe("hybrid")
     expect(ev.namespace).toBe("k")
     expect(ev.embedderProvider).toBe("stub")
