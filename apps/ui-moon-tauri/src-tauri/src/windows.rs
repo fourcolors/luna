@@ -430,6 +430,17 @@ fn build_card_window(
         builder = builder.position(px, py);
     }
     let window = builder.build().map_err(|e| e.to_string())?;
+    // The builder position does not round-trip for spots tao/AppKit
+    // constrains at build (windows near the screen bottom land ~85pt above
+    // the requested y, then drift back a beat later — observed live). Any
+    // position-sensitive reader of the frame before the drift (the boot
+    // snap settle) sees the intermediate spot, so re-assert the requested
+    // top-left now.
+    if let Some((px, py)) = position {
+        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+            px, py,
+        )));
+    }
     finalize_native_window_chrome(&window);
     Ok(window)
 }
