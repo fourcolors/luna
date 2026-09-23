@@ -51,6 +51,8 @@ export interface AnswerResult {
   readonly tokensIn: number
   readonly tokensOut: number
   readonly costUsd: number
+  /** Ollama `done_reason` ("stop", "length", ...), when the backend reports one. */
+  readonly doneReason?: string
 }
 
 export interface CostTracker {
@@ -191,6 +193,7 @@ interface OllamaChatResponse {
   readonly message?: { readonly role?: string; readonly content?: string }
   readonly prompt_eval_count?: number
   readonly eval_count?: number
+  readonly done_reason?: string
 }
 
 /**
@@ -207,6 +210,24 @@ export async function answerFromContextOllama(args: {
   readonly model: string
   readonly tracker: CostTracker
   readonly dateIndex?: ReadonlyArray<SessionDateEntry>
+  /**
+   * Ollama `num_ctx`. Unset = the daemon's default, which varies by machine
+   * (Ollama sizes it from available memory), so a run is only reproducible
+   * with it pinned.
+   */
+  readonly numCtx?: number
+  /**
+   * Fail instead of silently degrading when the context overflows. By
+   * default Ollama (verified on 0.34.2) cuts an over-long prompt to ~half of
+   * num_ctx, dropping its START (the instructions), and REPORTS THE CUT
+   * SIZE in prompt_eval_count, so the overflow is invisible; and it shifts
+   * context mid-answer. `strictContext` sends `truncate: false` + `shift:
+   * false`: an over-long prompt becomes HTTP 400, and an answer that runs
+   * out of room ends with `doneReason: "length"`, which callers must check.
+   */
+  readonly strictContext?: boolean
+  /** Abort a hung request after this long. Unset = no timeout (historical behavior). */
+  readonly timeoutMs?: number
 }): Promise<AnswerResult> {
   const prompt = buildPrompt(args.question, args.context, args.dateIndex)
   const url = `${normalizeBaseUrl(args.baseUrl)}/api/chat`
@@ -217,8 +238,10 @@ export async function answerFromContextOllama(args: {
       model: args.model,
       stream: false,
       messages: [{ role: "user", content: prompt }],
-      options: { temperature: 0 },
+      options: { temperature: 0, ...(args.numCtx !== undefined ? { num_ctx: args.numCtx } : {}) },
+      ...(args.strictContext === true ? { truncate: false, shift: false } : {}),
     }),
+    ...(args.timeoutMs !== undefined ? { signal: AbortSignal.timeout(args.timeoutMs) } : {}),
   })
   if (!res.ok) {
     const body = await res.text().catch(() => "<no body>")
@@ -238,7 +261,7 @@ export async function answerFromContextOllama(args: {
   args.tracker.totalCostUsd += costUsd
   args.tracker.calls += 1
 
-  return { text, tokensIn, tokensOut, costUsd }
+  return { text, tokensIn, tokensOut, costUsd, ...(json.done_reason !== undefined ? { doneReason: json.done_reason } : {}) }
 }
 
 const OLLAMA_CLOUD_DEFAULT_BASE_URL = "https://ollama.com/api"

@@ -5,12 +5,14 @@
  * `src/adapters/locomo-eval/README.md`, which needs live services and is
  * intentionally NOT part of the hermetic test suite.
  */
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it } from "vitest"
 import { aggregateByCategory, f1Score, scoreQA } from "../src/adapters/locomo-eval/scoring.js"
 import {
+  answerFromContextOllama,
   backoffDelayMs,
   buildDateIndexBlock,
   classifyOllamaCloudResponse,
+  newCostTracker,
 } from "../src/adapters/locomo-eval/answer-model.js"
 import { flattenTurns } from "../src/adapters/locomo-eval/dataset.js"
 import {
@@ -443,5 +445,58 @@ describe("retrieval-modes: sessionNumFromTags + prioritizeBySessions", () => {
     ]
     const result = prioritizeBySessions(hits, new Set([5]), 3)
     expect(result.map((h) => h.id)).toEqual(["b", "d", "a"])
+  })
+})
+
+describe("answerFromContextOllama request (stubbed fetch)", () => {
+  // Plain save/restore, not vi.stubGlobal: CI also runs this file under
+  // `bun test`, whose `vi` shim has no stubGlobal.
+  const realFetch = globalThis.fetch
+  const stubFetch = (impl: (url: string, init: RequestInit) => Promise<Response>) => {
+    globalThis.fetch = impl as unknown as typeof fetch
+  }
+  afterEach(() => {
+    globalThis.fetch = realFetch
+  })
+
+  const args = { question: "q?", context: ["c"], baseUrl: "http://127.0.0.1:11434", model: "m" }
+
+  it("pins num_ctx only when asked, and reports prompt tokens", async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    stubFetch(async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as Record<string, unknown>)
+      return new Response(JSON.stringify({ message: { content: " ok " }, prompt_eval_count: 42, eval_count: 1 }))
+    })
+    const pinned = await answerFromContextOllama({ ...args, tracker: newCostTracker(), numCtx: 8192 })
+    await answerFromContextOllama({ ...args, tracker: newCostTracker() })
+    expect(pinned).toMatchObject({ text: "ok", tokensIn: 42 })
+    expect(bodies[0]?.["options"]).toEqual({ temperature: 0, num_ctx: 8192 })
+    expect(bodies[1]?.["options"]).toEqual({ temperature: 0 })
+  })
+
+  it("strictContext forbids truncation and context shift, and surfaces done_reason", async () => {
+    let body: Record<string, unknown> = {}
+    stubFetch(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body)) as Record<string, unknown>
+      return new Response(JSON.stringify({ message: { content: "x" }, done_reason: "length" }))
+    })
+    const r = await answerFromContextOllama({ ...args, tracker: newCostTracker(), strictContext: true })
+    expect(body).toMatchObject({ truncate: false, shift: false })
+    expect(r.doneReason).toBe("length")
+    await answerFromContextOllama({ ...args, tracker: newCostTracker() })
+    expect(body).not.toHaveProperty("truncate")
+    expect(body).not.toHaveProperty("shift")
+  })
+
+  it("aborts a hung request when a timeout is given", async () => {
+    stubFetch(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(init.signal?.reason))
+        }),
+    )
+    await expect(
+      answerFromContextOllama({ ...args, tracker: newCostTracker(), timeoutMs: 20 }),
+    ).rejects.toThrow(/timed out|abort/i)
   })
 })

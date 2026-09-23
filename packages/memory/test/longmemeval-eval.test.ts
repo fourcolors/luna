@@ -11,9 +11,10 @@ import {
   isAbstentionId,
   seededShuffle,
   selectSubset,
+  SPLIT_URLS,
 } from "../src/adapters/longmemeval-eval/dataset.js"
 import { ingestInstance, namespaceFor } from "../src/adapters/longmemeval-eval/ingest.js"
-import { resolveOllamaBaseUrl } from "../src/adapters/longmemeval-eval/ollama.js"
+import { resolveOllamaBaseUrl } from "../src/adapters/eval-common/ollama.js"
 import {
   ALWAYS_ABSTAIN_PREDICTION,
   aggregateByType,
@@ -22,6 +23,9 @@ import {
   scoreQA,
 } from "../src/adapters/longmemeval-eval/scoring.js"
 import type { LmeInstance } from "../src/adapters/longmemeval-eval/types.js"
+
+// Regenerate ONLY on a deliberate selection change; it invalidates RESULTS.md.
+const PINNED_SEED42_PICK = ["q31", "q07", "q22", "q35", "q01"]
 
 function sample(over: Partial<LmeInstance> = {}): LmeInstance {
   return {
@@ -62,6 +66,25 @@ describe("longmemeval-eval dataset helpers", () => {
     expect(seededShuffle(ids, 42)).toEqual(seededShuffle(ids, 42))
     expect(seededShuffle(ids, 42)).not.toEqual(ids)
     expect(seededShuffle(ids, 1)).not.toEqual(seededShuffle(ids, 42))
+  })
+
+  it("selectSubset picks the same ids whatever the file order (splits list questions differently)", () => {
+    const ds = "abcdefghijklmnop".split("").map((id) => sample({ question_id: id }))
+    const reversed = ds.slice().reverse()
+    const pick = (d: ReadonlyArray<LmeInstance>) => selectSubset(d, 5, 42).map((q) => q.question_id)
+    expect(pick(reversed)).toEqual(pick(ds))
+  })
+
+  it("SPLIT_URLS point at the loadable official cleaned files", () => {
+    expect(SPLIT_URLS.oracle).toMatch(/\/longmemeval_oracle\.json$/)
+    expect(SPLIT_URLS.s).toMatch(/\/longmemeval_s_cleaned\.json$/)
+    // M is 2.7GB: past the JS max string length, so it is not offered.
+    expect(Object.keys(SPLIT_URLS)).toEqual(["oracle", "s"])
+  })
+
+  it("selectSubset seed 42 is pinned (committed results depend on it)", () => {
+    const ds = Array.from({ length: 40 }, (_, i) => sample({ question_id: `q${String(i).padStart(2, "0")}` }))
+    expect(selectSubset(ds, 5, 42).map((q) => q.question_id)).toEqual(PINNED_SEED42_PICK)
   })
 
   it("flattenTurns keeps haystack order and stamps session + has_answer", () => {

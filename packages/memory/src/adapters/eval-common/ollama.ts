@@ -1,5 +1,6 @@
 /**
- * Ollama preflight for the LongMemEval smoke.
+ * Ollama preflight shared by the memory eval harnesses (locomo-eval,
+ * longmemeval-eval).
  *
  * One resolved base URL feeds BOTH the embedder and the answer model, so the
  * two can never silently talk to different daemons. `probeModel` checks a
@@ -59,5 +60,17 @@ export async function probeModel(baseUrl: string, model: string): Promise<ModelP
     return { ok: false, reason: `/api/show for "${model}" returned HTTP ${res.status}` }
   } catch (cause) {
     return { ok: false, reason: `Ollama unreachable at ${baseUrl}: ${String(cause)}` }
+  }
+}
+
+/** The daemon's version string, or "unknown". Never throws. */
+export async function fetchOllamaVersion(baseUrl: string): Promise<string> {
+  try {
+    const res = await fetch(`${baseUrl}/api/version`, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return "unknown"
+    const json = (await res.json()) as { version?: unknown }
+    return typeof json.version === "string" ? json.version : "unknown"
+  } catch {
+    return "unknown"
   }
 }
