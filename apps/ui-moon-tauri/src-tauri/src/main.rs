@@ -383,6 +383,12 @@ fn main() {
                     }
                     windows::ensure_window_on_visible_display(&moon);
                 }
+                // A restored workspace means the orb is NOT the only surface:
+                // mutual exclusivity (lifecycle.rs) — the orb never stays up
+                // alongside widgets.
+                if spawned > 0 {
+                    lifecycle::conceal_orb_for_docks(&app.handle());
+                }
                 // Re-derive snap attachments from the restored geometry: any
                 // dock window flush against a neighbor becomes its AppKit
                 // child, so a saved stack tows again — layout.json never
