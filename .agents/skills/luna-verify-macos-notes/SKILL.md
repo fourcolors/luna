@@ -123,6 +123,11 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
   moves a frame re-marks it — so one drop can visibly re-dock OTHER windows
   (including flipping parent/child direction). Convergence, not a bug — but
   expect the "settled" set to sometimes contain windows you didn't drag.
+- Boot settle (`reattach_flushed_windows` now settles every dock window):
+  restore moves + boot settles leave EVERY restored window marked, so the
+  first post-boot left-up re-settles ALL of them against current geometry —
+  parked windows can visibly re-dock on the first real drag. When testing
+  boot-snap, drive the FIRST gesture deliberately and expect side-settles.
 - Launcher row clicks occasionally miss the row hit-area; pressing Enter on
   the filtered row reliably invokes open_widget.
   Caveat: Enter activates the highlighted index-0 row (often "Luna"), not
