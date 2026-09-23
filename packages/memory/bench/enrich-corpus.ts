@@ -34,7 +34,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { spawn } from "node:child_process"
+import { spawnIsolatedClaude } from "./isolated-claude.js"
 import { sleep } from "../src/sleep.js"
 
 // node:child_process, not `Bun.spawn` - the project avoids @types/bun (see
@@ -154,7 +154,7 @@ const CALL_TIMEOUT_MS = 90_000
  * timeout so callClaudeWithRetry can treat both as a transient failure. */
 function callClaudeOnce(prompt: string, model: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("claude", ["-p", "--model", model], { stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawnIsolatedClaude(model)
     let stdout = ""
     let stderr = ""
     const timer = setTimeout(() => {

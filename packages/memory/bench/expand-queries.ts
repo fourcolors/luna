@@ -55,7 +55,7 @@
 import { readFileSync, writeFileSync, renameSync, existsSync, mkdirSync } from "node:fs"
 import { resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { spawn } from "node:child_process"
+import { GENERATOR_ISOLATION, spawnIsolatedClaude } from "./isolated-claude.js"
 import { createHash } from "node:crypto"
 import { sleep } from "../src/sleep.js"
 import { fetchDataset, selectSubset, SPLIT_URLS } from "../src/adapters/longmemeval-eval/dataset.js"
@@ -152,7 +152,9 @@ Output ONLY a single JSON object mapping each query id to an array of
 keyword/phrase strings. No markdown code fences, no explanation, no extra
 keys. Example shape: {"q_001": ["term one", "term two"], "q_002": []}`
 
-const PROMPT_HASH = createHash("sha256").update(PROMPT_RULES).digest("hex").slice(0, 16)
+// The hash also pins the generator isolation, so sidecars written by a
+// context-leaking generator are refused rather than reused.
+const PROMPT_HASH = createHash("sha256").update(PROMPT_RULES).update(GENERATOR_ISOLATION).digest("hex").slice(0, 16)
 
 function buildPrompt(batch: ReadonlyArray<QueryItem>): string {
   const queries = batch.map((q) => `- id: ${q.id}\n  query: ${q.text}`).join("\n")
@@ -166,7 +168,7 @@ const CALL_TIMEOUT_MS = 90_000
  * timeout so callClaudeWithRetry can treat both as a transient failure. */
 function callClaudeOnce(prompt: string, model: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn("claude", ["-p", "--model", model], { stdio: ["pipe", "pipe", "pipe"] })
+    const child = spawnIsolatedClaude(model)
     let stdout = ""
     let stderr = ""
     const timer = setTimeout(() => {
