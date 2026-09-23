@@ -32,7 +32,8 @@
 import { useEffect, useMemo, useReducer, useRef } from "react"
 import { newRequestId } from "@luna/ui-shared/core"
 import type { ModelRoutingListFrame, ModelRoutingStatusFrame } from "@luna/ui-shared/core"
-import { Banner, Button, Card, HStack, NumberInput, Selector, Switch, Text, TextInput, VStack } from "../../astryx-kit"
+import { Badge, Banner, Button, Card, Divider, EmptyState, HStack, NumberInput, Selector, Switch, Text, TextInput, VStack } from "../../astryx-kit"
+import type { SelectorOptionData, SelectorOptionType } from "../../astryx-kit"
 import { socketOpen } from "../panel-ctx"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
 import {
@@ -42,6 +43,7 @@ import {
   initialModelRoutingState,
   PROVIDERS,
   reduceModelRouting,
+  ROLE_DESCRIPTIONS,
   ROLE_LABELS,
   ROLES,
 } from "./logic"
@@ -127,58 +129,101 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
   const ollamaLocalEnabled = state.draftProviders["ollama-local"]?.enabled ?? false
   const ollamaCloudEnabled = state.draftProviders["ollama-cloud"]?.enabled ?? false
 
-  const roleModelOptions = useMemo(() => {
-    const base = ANTHROPIC_MODELS.map((m) => ({ value: m.id, label: m.label }))
-    if (ollamaLocalEnabled) base.push({ value: "local/qwen3:4b", label: "Ollama Local (e.g. local/qwen3:4b)" })
-    if (ollamaCloudEnabled) base.push({ value: "qwen3:4b:cloud", label: "Ollama Cloud (e.g. qwen3:4b:cloud)" })
-    return base
+  const roleModelSections = useMemo<SelectorOptionType[]>(() => {
+    const sections: SelectorOptionType[] = [
+      {
+        type: "section",
+        title: "Anthropic",
+        options: ANTHROPIC_MODELS.map((m) => ({ value: m.id, label: m.label })),
+      },
+    ]
+    if (ollamaLocalEnabled) {
+      sections.push({
+        type: "section",
+        title: "Ollama Local",
+        options: [{ value: "local/qwen3:4b", label: "Qwen3 4B — runs on this machine" }],
+      })
+    }
+    if (ollamaCloudEnabled) {
+      sections.push({
+        type: "section",
+        title: "Ollama Cloud",
+        options: [{ value: "qwen3:4b:cloud", label: "Qwen3 4B — hosted by Ollama" }],
+      })
+    }
+    return sections
   }, [ollamaLocalEnabled, ollamaCloudEnabled])
+
+  const knownModelIds = useMemo(
+    () =>
+      new Set(
+        roleModelSections.flatMap((o) =>
+          typeof o === "object" && "options" in o ? o.options.map((item) => item.value) : []
+        )
+      ),
+    [roleModelSections],
+  )
+
+  // A binding saved outside the picker list (e.g. an older LiteLLM id) still
+  // has to display as the current value - surface it as its own top option.
+  function optionsForRole(current: string): SelectorOptionType[] {
+    if (knownModelIds.has(current)) return roleModelSections
+    return [{ value: current, label: `${current} — custom` }, { type: "divider" }, ...roleModelSections]
+  }
 
   if (!state.serverSupports) {
     return (
-      <div className="notice" data-testid="settings-models-unsupported">
-        This server does not support model-routing settings.
-      </div>
+      <EmptyState
+        title="Model settings need a newer Luna server"
+        description="This server doesn't expose model routing yet — update Luna, then come back here to pick a model for each job."
+        data-testid="settings-models-unsupported"
+      />
     )
   }
 
   return (
     <VStack gap={4} data-testid="settings-models-root">
-      <VStack gap={2}>
-        <Text type="label">Providers</Text>
-        <Text type="supporting" color="secondary">
-          Enable providers and optionally set a monthly spend ceiling. Credential entry uses the Luna
-          Vault or the agent's request_secret flow.
-        </Text>
+      <VStack gap={3}>
+        <VStack gap={1}>
+          <Text type="label">Model providers</Text>
+          <Text type="supporting" color="secondary">
+            Turn on the services you have keys for — Luna uses them to run the jobs below.
+          </Text>
+        </VStack>
         {PROVIDERS.map((pd) => {
           const draft = state.draftProviders[pd.kind] ?? { enabled: false, credentialRef: "", monthlyCapUsd: "" as const }
           return (
             <Card key={pd.kind} data-testid={`provider-card-${pd.kind}`}>
-              <VStack gap={2}>
-                <HStack gap={2} vAlign="center">
-                  <Text type="body" weight="semibold" style={{ flex: 1 }}>
-                    {pd.label}
-                  </Text>
-                  {pd.gated && <Text type="supporting" color="secondary">needs gateway</Text>}
+              <VStack gap={3}>
+                <HStack gap={3} vAlign="center">
+                  <VStack gap={0} style={{ flex: 1, minWidth: 0 }}>
+                    <Text type="body" weight="semibold">
+                      {pd.label}
+                    </Text>
+                    <Text type="supporting" color="secondary">
+                      {pd.description}
+                    </Text>
+                  </VStack>
                   <Switch
-                    label={draft.enabled ? "Enabled" : "Disabled"}
+                    label={draft.enabled ? "On" : "Off"}
                     value={draft.enabled}
                     onChange={(checked) => dispatch({ type: "toggle-provider", kind: pd.kind, enabled: checked })}
                     data-testid={`provider-${pd.kind}-toggle`}
                   />
                 </HStack>
                 {draft.enabled && (
-                  <>
+                  <VStack gap={3}>
                     <TextInput
-                      label="Credential ref (e.g. env:ANTHROPIC_API_KEY)"
-                      placeholder="env:MY_API_KEY or luna-op://label/item"
+                      label="Credential reference"
+                      description="A pointer to your key — an env var or Luna Vault item, never the key itself."
+                      placeholder="env:ANTHROPIC_API_KEY or luna-op://label/item"
                       value={draft.credentialRef}
                       onChange={(value) => dispatch({ type: "set-credential-ref", kind: pd.kind, value })}
                       data-testid={`provider-${pd.kind}-credential`}
                     />
                     <NumberInput
-                      label="Monthly cap (USD)"
-                      description="not yet enforced (coming in next update)"
+                      label="Monthly spend cap (USD)"
+                      description="Informational for now — Luna doesn't enforce it yet."
                       placeholder="50"
                       min={0}
                       step={1}
@@ -196,7 +241,7 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
                         description="Set LUNA_LLM_GATEWAY_URL and configure the provider there."
                       />
                     )}
-                  </>
+                  </VStack>
                 )}
               </VStack>
             </Card>
@@ -204,52 +249,73 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
         })}
       </VStack>
 
-      <VStack gap={2}>
-        <Text type="label">Role Model Assignments</Text>
-        <Text type="supporting" color="secondary">
-          Choose which model Luna uses for each role. Changes take effect after the server restarts.
-        </Text>
+      <VStack gap={3}>
+        <VStack gap={1}>
+          <Text type="label">Models for each job</Text>
+          <Text type="supporting" color="secondary">
+            Every job Luna does can use its own model — a bigger one for hard thinking, a faster one for
+            quick work. Changes apply after a short server restart.
+          </Text>
+          {!ollamaLocalEnabled && !ollamaCloudEnabled && (
+            <Text type="supporting" color="secondary">
+              Tip: turn on an Ollama provider above to add its models to these pickers.
+            </Text>
+          )}
+        </VStack>
         {ROLES.map((role) => {
           const current = state.draftRoleModel[role] || DEFAULT_ROLE_MODEL[role]
           return (
-            <HStack key={role} gap={2} vAlign="center" data-testid={`role-row-${role}`}>
-              <VStack gap={0} style={{ flex: 1, minWidth: 0 }}>
-                <Text type="body" weight="semibold">
-                  {ROLE_LABELS[role]}
-                </Text>
-                <Text type="supporting" color="secondary">
-                  current: {current}
-                </Text>
-              </VStack>
-              <Selector
-                label={ROLE_LABELS[role]}
-                isLabelHidden
-                options={roleModelOptions}
-                value={current}
-                onChange={(value) => dispatch({ type: "set-role-model", role, model: value })}
-                data-testid={`role-${role}-select`}
-              />
-            </HStack>
+            <Card key={role} data-testid={`role-row-${role}`}>
+              <HStack gap={3} vAlign="center">
+                <VStack gap={0} style={{ flex: 1, minWidth: 0 }}>
+                  <Text type="body" weight="semibold">
+                    {ROLE_LABELS[role]}
+                  </Text>
+                  <Text type="supporting" color="secondary">
+                    {ROLE_DESCRIPTIONS[role]}
+                  </Text>
+                </VStack>
+                <Selector
+                  label={ROLE_LABELS[role]}
+                  isLabelHidden
+                  options={optionsForRole(current)}
+                  value={current}
+                  onChange={(value) => dispatch({ type: "set-role-model", role, model: value })}
+                  width={280}
+                  hasSearch
+                  searchPlaceholder="Search models…"
+                  renderOption={(option: SelectorOptionData) => (
+                    <HStack gap={2} vAlign="center" style={{ justifyContent: "space-between", width: "100%" }}>
+                      <span>{option.label ?? option.value}</span>
+                      {option.value === DEFAULT_ROLE_MODEL[role] && <Badge variant="info" label="Recommended" />}
+                    </HStack>
+                  )}
+                  data-testid={`role-${role}-select`}
+                />
+              </HStack>
+            </Card>
           )
         })}
       </VStack>
 
-      <HStack gap={2} vAlign="center">
-        <Button label="Save & Restart" variant="primary" onClick={submitSave} data-testid="save-models-btn" />
-        {state.status && (
-          <Text
-            type="supporting"
-            style={{ color: statusColor(state.status.kind) }}
-            data-testid="save-status"
-          >
-            {state.status.message}
-          </Text>
-        )}
-      </HStack>
-      <Text type="supporting" color="secondary">
-        Saving applies model-routing preferences on the next server restart (a brief pause - connections
-        auto-reconnect).
-      </Text>
+      <VStack gap={2}>
+        <Divider />
+        <HStack gap={2} vAlign="center">
+          <Button label="Save & Restart" variant="primary" onClick={submitSave} data-testid="save-models-btn" />
+          {state.status && (
+            <Text
+              type="supporting"
+              style={{ color: statusColor(state.status.kind) }}
+              data-testid="save-status"
+            >
+              {state.status.message}
+            </Text>
+          )}
+        </HStack>
+        <Text type="supporting" color="secondary">
+          Luna restarts briefly to apply — your windows reconnect on their own.
+        </Text>
+      </VStack>
     </VStack>
   )
 }

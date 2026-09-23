@@ -36,13 +36,15 @@ export { TextInput } from "@astryxdesign/core/TextInput"
 export { VStack } from "@astryxdesign/core/VStack"
 
 // settings.models panel (src/panels/settings-models/SettingsModelsPanel.tsx):
-// Card per provider row, Banner for the no-server-support / gated-provider /
-// saving-status notices, NumberInput for the (unenforced) monthly cap,
-// Selector for the per-role model dropdown.
+// Card per provider row, Banner for the gated-provider notice, NumberInput
+// for the (unenforced) monthly cap, Selector for the per-role model dropdown,
+// EmptyState for the no-server-support notice (Divider/EmptyState/Badge
+// already exported above), Selector option types for grouped dropdowns.
 // settings.voice panel (src/panels/settings-voice/VoicePanel.tsx): Banner for
 // the "voice unavailable in this build" notice.
 export { Card } from "@astryxdesign/core/Card"
 export { Selector } from "@astryxdesign/core/Selector"
+export type { SelectorOptionType, SelectorOptionData } from "@astryxdesign/core/Selector"
 export { NumberInput } from "@astryxdesign/core/NumberInput"
 export { Banner } from "@astryxdesign/core/Banner"
 
