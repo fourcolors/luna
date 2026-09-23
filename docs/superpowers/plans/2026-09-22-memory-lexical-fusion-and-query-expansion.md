@@ -136,6 +136,30 @@ Verdict: agent-keyword expansion alone is promising (large with Sonnet keywords 
 The held-out set strongly confirms the other finding: bag-of-words BM25 (`hybrid-terms`) finds far more evidence on conversational memory (+15.1 points, 54 vs 3), and 63 of the 64 extra evidence turns sit at vector ranks 11-50, i.e. inside production's own candidate pool but ranked too low.
 That makes a relevance judge over a wider pool the next hypothesis (see `rr=` in `src/search-config.ts`).
 
+## Relevance judge: tuning results and second lock (recorded 2026-09-23, BEFORE its held-out run)
+
+Tuning sets as above; judge = the local Qwen3-Reranker-0.6B cross-encoder production already uses (`rr=ce@<depth>` re-orders the top <depth> results).
+
+| config | memory-suite vocab-mismatch r@5 (W/L vs hybrid) | LongMemEval evidence@5 (W/L vs hybrid) | memory-suite p50 on an M-series Mac |
+|---|---:|---:|---:|
+| `hybrid` (production recall) | 0.683 | 49/104 | 26 ms |
+| `hybrid:rr=ce@8` (production `memory_search` today: rerank cap 8) | 0.767 (6/1) | 58/104 (10/3) | 300 ms |
+| `hybrid:rr=ce@20` | 0.817 (11/3) | 69/104 (19/3) | 440 ms |
+| `hybrid:rr=ce@40` | 0.850 (14/4) | 73/104 (23/2) | 885 ms |
+| `hybrid-terms:rr=ce@40` | 0.783 (10/4) | 77/104 (26/2) | 886 ms |
+| `hybrid-weighted:w=0:e=0.5` + Sonnet keywords `:rr=ce@20` | 0.833 | 68-69/104 | 757 ms |
+
+No slice of memory-suite has more losses than wins for any `hybrid:rr=ce@N` config.
+The judge fixes both benches at once; depth is the lever; a lexical pool still trades vocab-mismatch for LongMemEval even after judging.
+
+LOCKED CANDIDATES: `hybrid:rr=ce@20` and `hybrid:rr=ce@40` (no lexical change, no keywords, so they apply to per-turn recall as well as `memory_search`).
+
+Held-out test, run once, on FRESH LongMemEval S questions 261-460 (never used; 61-260 was spent on the keyword test):
+1. Each candidate must beat `hybrid` on evidence@5 with a paired two-sided sign test p < 0.025 (Bonferroni for two candidates).
+2. Each candidate must also beat `hybrid:rr=ce@8` (what `memory_search` ships today) with p < 0.025, or it is not worth raising the production cap.
+memory-suite has no held-out split; its role stays a regression guard (above: no slice with net losses).
+Latency is NOT settled by these numbers: the production GPU (the production server GPU) measured ~7.5 s for 8 candidates, so depth 20-40 is not shippable there as-is; a faster judge (e.g. Jev, hosted) or faster hardware is a precondition for rollout.
+
 ## Rollout PR (separate, after results)
 
 - `LUNA_MEMORY_SEARCH_MODE` validated at startup (unknown value = loud failure), default unchanged.
