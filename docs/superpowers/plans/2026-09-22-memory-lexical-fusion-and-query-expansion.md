@@ -98,7 +98,7 @@ Tuning sets: LongMemEval S questions 1-60 (54 answerable, 104 evidence turns) an
 | `hybrid-terms` | 62/104 (15/3, p = 0.008) | 0.333 (6/27) |
 | `bm25` | 65/104 (19/3, p = 0.001) | 0.117 (2/36) |
 | weighted, query words only, w 0.1 to 1, any stopword set | 52 to 62 | 0.217 to 0.633, always net losses |
-| weighted, query words must match 2+ terms (m = 2) | 50 to 56 | 0.567 to 0.600, always net losses |
+| weighted, query words must match 2+ terms (m = 2) | 50 to 56 | 0.350 to 0.600 (0.350 without stopwords), always net losses |
 | **vector + agent keywords only (w = 0, e = 0.5), Sonnet, 3 samples** | **47 to 50 (neutral)** | **0.761 (14/0 summed)** |
 
 Findings:
@@ -120,7 +120,7 @@ Held-out test, run once:
 The keyword generator ran `claude -p` from the repo, which loaded the user's and the project's CLAUDE.md and auto-memory.
 The memory-suite corpus describes Luna itself, so generated keywords named internal terms the query never mentioned but the target record contains (vectorlite, LUNA_* variables; in 24/180 Sonnet and 35/180 Haiku vocab-mismatch samples), and some carried personal details.
 So the "+7.8 points, 14/0" vocab-mismatch result for Sonnet keywords, and the Haiku replication, over-state what query-only keywords can do (the clean re-run below measures about +2 points).
-The LongMemEval keyword files show no such leakage (their questions are about fictional users' lives), and no relevance-judge config uses keywords, so the judge results are unaffected.
+The LongMemEval keyword files show no such leakage (their questions are about fictional users' lives), and no LOCKED judge candidate uses keywords, so the judge results and their held-out test are unaffected.
 Fix: `bench/isolated-claude.ts` (no setting sources, tools, MCP or session persistence; fresh temp cwd; verified it no longer knows the user); every keyword file is regenerated and the keyword measurements re-run; the contaminated files never entered git history.
 
 ## Held-out result (2026-09-23, run once, recorded before any further change)
@@ -137,11 +137,14 @@ LongMemEval S questions 61-260 (185 answerable, 351 evidence turns), evidence@5:
 memory-suite, Haiku keywords (efficacy replication), vocab-mismatch recall@5 vs `hybrid` 0.683: #0 0.667 (0/1), #1 0.733 (3/0), #2 0.700 (1/0).
 
 Outcome against the locked rules:
-1. Safety: PASS. No keyword sample is significantly worse than `hybrid` on held-out LongMemEval (neutral, one Sonnet sample leaning worse).
-2. Efficacy replication: FAIL. Haiku sample #0 has more losses than wins on vocab-mismatch.
+1. Safety: PASS.
+   No keyword sample is significantly worse than `hybrid` on held-out LongMemEval (neutral, one Sonnet sample leaning worse).
+2. Efficacy replication: FAIL.
+   Haiku sample #0 has more losses than wins on vocab-mismatch.
 Verdict: agent-keyword expansion alone is promising (large with Sonnet keywords on the tuning set, small with Haiku) but NOT proven; it does not ship on this evidence.
 
-The held-out set strongly confirms the other finding: bag-of-words BM25 (`hybrid-terms`) finds far more evidence on conversational memory (+15.1 points, 54 vs 3). Of the evidence turns `hybrid-terms` alone finds but `hybrid` misses, 54 of 55 sit at vector ranks 11-50 (the sweep's diagnostic counts all non-baseline configs together: 63 of 64), i.e. inside production's own candidate pool but ranked too low.
+The held-out set strongly confirms the other finding: bag-of-words BM25 (`hybrid-terms`) finds far more evidence on conversational memory (+15.1 points, 54 vs 3).
+Of the evidence turns `hybrid-terms` alone finds but `hybrid` misses, 54 of 55 sit at vector ranks 11-50 (the sweep's diagnostic counts all non-baseline configs together: 63 of 64), i.e. inside production's own candidate pool but ranked too low.
 That makes a relevance judge over a wider pool the next hypothesis (see `rr=` in `src/search-config.ts`).
 
 ## Relevance judge: tuning results and second lock (recorded 2026-09-23, BEFORE its held-out run)
@@ -155,9 +158,10 @@ Tuning sets as above; judge = the local Qwen3-Reranker-0.6B cross-encoder produc
 | `hybrid:rr=ce@20` | 0.817 (11/3) | 69/104 (19/3) | 440 ms |
 | `hybrid:rr=ce@40` | 0.850 (14/4) | 73/104 (23/2) | 885 ms |
 | `hybrid-terms:rr=ce@40` | 0.783 (10/4) | 77/104 (26/2) | 886 ms |
-| `hybrid-weighted:w=0:e=0.5` + Sonnet keywords `:rr=ce@20` | 0.833 | 68-69/104 | 757 ms |
+| `hybrid-weighted:w=0:e=0.5` + Sonnet keywords `:rr=ce@20` | 0.817 (clean keywords; the 0.833 first measured used contaminated keywords) | not re-run with clean keywords | 457 ms |
 
 No slice of memory-suite has more losses than wins for any `hybrid:rr=ce@N` config.
+Latency is indicative only: the same config measured 440 ms in one sweep and 763 ms in another, because some sweeps overlapped with other runs on the same machine; recall numbers are deterministic, latencies are not.
 The judge fixes both benches at once; depth is the lever; a lexical pool still trades vocab-mismatch for LongMemEval even after judging.
 
 LOCKED CANDIDATES: `hybrid:rr=ce@20` and `hybrid:rr=ce@40` (no lexical change, no keywords, so they apply to per-turn recall as well as `memory_search`).
