@@ -2739,11 +2739,22 @@ fn settle_snap(win: &tauri::WebviewWindow) {
 static MOVED_SINCE_UP: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
     std::sync::Mutex::new(None);
 
-/// Record that a dock window's frame moved (from the Moved window event).
-/// Programmatic moves also land here — harmless: their next-up settle is
-/// just the geometry-derived attach/detach the model already defines.
+/// Left-button state, driven by the watcher's down/up monitors. Marks only
+/// count while a button is held — that is the definition of a drag — so
+/// programmatic moves (boot restore positions, settle's own set_position,
+/// reflush-on-resize) never queue a phantom settle into the user's next
+/// click.
+#[cfg(target_os = "macos")]
+static LEFT_BUTTON_DOWN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Record that a dock window's frame moved (from the Moved window event) —
+/// but only while the left button is held, i.e. during a real drag.
 #[cfg(target_os = "macos")]
 pub(crate) fn note_dock_moved(label: &str) {
+    if !LEFT_BUTTON_DOWN.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let mut set = MOVED_SINCE_UP.lock().unwrap_or_else(|e| e.into_inner());
     set.get_or_insert_with(Default::default)
         .insert(label.to_string());
@@ -2760,7 +2771,8 @@ fn take_moved_labels() -> Vec<String> {
         .collect()
 }
 
-/// Settle every dock window whose frame moved since the previous left-up.
+/// Settle every dock window whose frame moved during the current drag
+/// (moves only mark while the left button is held — see note_dock_moved).
 /// Install once at setup; the monitor tokens are deliberately forgotten —
 /// the watcher lives for the app lifetime. Covers EVERY drag source
 /// (webview pointerdown, the native title-bar zone, programmatic drags)
@@ -2786,9 +2798,21 @@ pub(crate) fn install_snap_watcher(app: &tauri::AppHandle) {
 
     // Local monitor: releases delivered to our app (returns the event
     // unchanged — it does not consume it). Handlers run on the main thread.
+    // Press monitors set the drag flag BEFORE any Moved events can mark:
+    // local for presses delivered to our app, global for presses that land
+    // on another app while a Moon window is mid-gesture (edge case, kept
+    // for symmetry with the release pair).
+    let down_local = block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+        LEFT_BUTTON_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+        event.as_ptr()
+    });
+    let down_global = block2::RcBlock::new(move |_: NonNull<NSEvent>| {
+        LEFT_BUTTON_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
     let local_block = {
         let settle = settle.clone();
         block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            LEFT_BUTTON_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
             settle();
             event.as_ptr()
         })
@@ -2798,6 +2822,7 @@ pub(crate) fn install_snap_watcher(app: &tauri::AppHandle) {
     let global_block = {
         let settle = settle.clone();
         block2::RcBlock::new(move |_: NonNull<NSEvent>| {
+            LEFT_BUTTON_DOWN.store(false, std::sync::atomic::Ordering::SeqCst);
             settle();
         })
     };
@@ -2811,8 +2836,19 @@ pub(crate) fn install_snap_watcher(app: &tauri::AppHandle) {
             NSEventMask::LeftMouseUp,
             &global_block,
         );
+        let down_l: Option<Retained<AnyObject>> =
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseDown,
+                &down_local,
+            );
+        let down_g: Option<Retained<AnyObject>> = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseDown,
+            &down_global,
+        );
         std::mem::forget(local);
         std::mem::forget(global);
+        std::mem::forget(down_l);
+        std::mem::forget(down_g);
     }
 }
 

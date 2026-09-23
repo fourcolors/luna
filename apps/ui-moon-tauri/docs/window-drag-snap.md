@@ -42,7 +42,9 @@ The snap settle does NOT rely on per-gesture arming: a large share of real
 title-bar presses are swallowed by the transparent NSWindow title-bar zone
 before the webview ever sees `pointerdown`, so an arm-IPC can miss the
 gesture while the window still drags natively. Instead the settle keys on
-GEOMETRY — every `Moved` event marks the window, and a persistent native
+GEOMETRY — a `Moved` event while the left button is held marks the window
+(programmatic moves with no button down — boot restore, a settle's own
+`set_position`, resize re-flush — never mark), and a persistent native
 watcher (`windows::install_snap_watcher`) settles every marked window on
 the next left mouse-up: `windows::settle_snap` snaps it flush to the
 nearest qualifying edge (within `SNAP_GAP`, or shallow overlap within
