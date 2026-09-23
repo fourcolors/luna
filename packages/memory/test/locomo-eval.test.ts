@@ -466,7 +466,21 @@ describe("answerFromContextOllama request (stubbed fetch)", () => {
     expect(bodies[1]?.["options"]).toEqual({ temperature: 0 })
   })
 
-  it("aborts a hung request instead of waiting forever", async () => {
+  it("strictContext forbids truncation and context shift, and surfaces done_reason", async () => {
+    let body: Record<string, unknown> = {}
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body)) as Record<string, unknown>
+      return new Response(JSON.stringify({ message: { content: "x" }, done_reason: "length" }))
+    })
+    const r = await answerFromContextOllama({ ...args, tracker: newCostTracker(), strictContext: true })
+    expect(body).toMatchObject({ truncate: false, shift: false })
+    expect(r.doneReason).toBe("length")
+    await answerFromContextOllama({ ...args, tracker: newCostTracker() })
+    expect(body).not.toHaveProperty("truncate")
+    expect(body).not.toHaveProperty("shift")
+  })
+
+  it("aborts a hung request when a timeout is given", async () => {
     vi.stubGlobal(
       "fetch",
       (_url: string, init: RequestInit) =>

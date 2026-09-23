@@ -63,7 +63,8 @@
  *                                token for https://ollama.com/api. Never log
  *                                or print this value.
  *   ANTHROPIC_API_KEY            REQUIRED only when LUNA_LOCOMO_ANSWER_BACKEND=anthropic
- *   LUNA_OLLAMA_BASE_URL         Ollama daemon base URL (default: http://127.0.0.1:11434)
+ *   LUNA_OLLAMA_BASE_URL         Ollama daemon base URL for embed AND answer (falls back
+ *                                to OLLAMA_HOST, then http://127.0.0.1:11434)
  *   LUNA_EMBEDDER=ollama         required (same convention as bench/paraphrase-recall.ts)
  *   LUNA_LOCOMO_RETRIEVAL_MODE   "flat" (default, unchanged baseline), "decompose", or
  *                                "hierarchical" — see retrieval-modes.ts module docstring

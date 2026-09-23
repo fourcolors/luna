@@ -62,3 +62,15 @@ export async function probeModel(baseUrl: string, model: string): Promise<ModelP
     return { ok: false, reason: `Ollama unreachable at ${baseUrl}: ${String(cause)}` }
   }
 }
+
+/** The daemon's version string, or "unknown". Never throws. */
+export async function fetchOllamaVersion(baseUrl: string): Promise<string> {
+  try {
+    const res = await fetch(`${baseUrl}/api/version`, { signal: AbortSignal.timeout(5000) })
+    if (!res.ok) return "unknown"
+    const json = (await res.json()) as { version?: unknown }
+    return typeof json.version === "string" ? json.version : "unknown"
+  } catch {
+    return "unknown"
+  }
+}

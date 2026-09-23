@@ -25,13 +25,15 @@ const HF_BASE = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/
 /**
  * The three official splits: the same 500 questions, different haystacks.
  * oracle = evidence sessions only; s = ~50 sessions (~500 turns) per
- * question; m = ~500 sessions. NB: the files list questions in DIFFERENT
+ * question (m = ~500 sessions, see below). NB: the files list questions in DIFFERENT
  * orders, which is why `selectSubset` sorts by id before shuffling.
  */
 export const SPLIT_URLS = {
   oracle: `${HF_BASE}/longmemeval_oracle.json`,
   s: `${HF_BASE}/longmemeval_s_cleaned.json`,
-  m: `${HF_BASE}/longmemeval_m_cleaned.json`,
+  // m (longmemeval_m_cleaned.json) is deliberately absent: at 2.7GB it
+  // exceeds the JS max string length, so `fetchDataset` cannot load it
+  // without a streaming JSON parser.
 } as const
 export type LmeSplit = keyof typeof SPLIT_URLS
 
@@ -80,16 +82,7 @@ export async function fetchDataset(
   return { file, instances: parsed as ReadonlyArray<LmeInstance> }
 }
 
-/**
- * Deterministic subset. The official oracle file is grouped by
- * `question_type` (first ~N are all temporal-reasoning), so a raw
- * file-order slice is a one-category smoke. Default is a seeded
- * Fisher-Yates shuffle (seed 42) then first `limit` - still
- * non-cherry-picked, just not type-clustered. The shuffle runs over the
- * questions SORTED BY ID, so every split picks the same questions for a
- * given seed and results are comparable across haystacks. Set `seed` to
- * null to take file order instead.
- */
+/** Seeded Fisher-Yates over a copy of `items` (LCG, high bits). */
 export function seededShuffle<T>(items: ReadonlyArray<T>, seed: number): T[] {
   const arr = items.slice()
   let s = seed >>> 0
@@ -104,6 +97,16 @@ export function seededShuffle<T>(items: ReadonlyArray<T>, seed: number): T[] {
   return arr
 }
 
+/**
+ * Deterministic subset. The official oracle file is grouped by
+ * `question_type` (first ~N are all temporal-reasoning), so a raw
+ * file-order slice is a one-category smoke. Default is a seeded
+ * Fisher-Yates shuffle (seed 42) then first `limit` - still
+ * non-cherry-picked, just not type-clustered. The shuffle runs over the
+ * questions SORTED BY ID, so every split picks the same questions for a
+ * given seed and results are comparable across haystacks. Set `seed` to
+ * null to take file order instead.
+ */
 export function selectSubset(
   dataset: ReadonlyArray<LmeInstance>,
   limit: number,
