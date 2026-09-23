@@ -1,15 +1,21 @@
 /**
  * moon-dock.js — minimal native window dragging shared by Moon card windows.
  *
- * Each panel is an independent macOS window. There is deliberately no magnetic
- * docking, cluster towing, overlap correction, snap-on-open, or weld state.
- * The operating system owns the drag from pointer-down until release.
+ * Each panel is an independent macOS window. The operating system owns the
+ * drag from pointer-down until release; JS never moves windows mid-gesture.
  *
- * Optional redock arming: when `opts.redock` is set on a pinned chat floater,
- * we await `begin_redock_drag` BEFORE `startDragging` so NSEvent monitors are
- * live before AppKit takes the gesture. Window motion stays 100% AppKit —
- * never a JS setPosition loop, never CSS scale of .widget-shell (breaks
- * native traffic lights).
+ * WinAmp-style edge snap and cluster towing run on the NATIVE side only
+ * (windows.rs): a persistent watcher settles every window that moved since
+ * the last mouse-up. There is intentionally no per-gesture arming IPC — a
+ * large share of real title-bar presses are swallowed by the transparent
+ * NSWindow title-bar zone before the webview sees pointerdown, so geometry
+ * (Moved events), not how the gesture began, drives the settle.
+ *
+ * When `opts.redock` is present, we first invoke `begin_redock_drag` so the
+ * Rust-side NSEvent monitors for the strip preview / redock hit probe are
+ * armed BEFORE `startDragging`; motion itself stays 100% AppKit — never a
+ * JS setPosition loop, never CSS scale of .widget-shell (breaks native
+ * traffic lights).
  *
  * Usage: LunaDock.wire({ win, label, redock?: { owner, threadId, title? } })
  */
@@ -53,8 +59,9 @@
         } catch (_) { /* window chrome must never break the page */ }
       };
 
-      // Arm native redock tracking first, then hand motion to AppKit.
-      // Awaiting prevents the race where the move loop starts before monitors.
+      // Arm native redock monitors FIRST, then hand motion to AppKit.
+      // Awaiting prevents the race where the move loop starts before
+      // monitors — the strip's live hit-probe would strobe.
       if (redock && g.__TAURI__ && g.__TAURI__.core) {
         dragArming = true;
         var title = null;

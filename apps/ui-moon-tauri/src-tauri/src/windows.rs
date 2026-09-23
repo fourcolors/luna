@@ -591,7 +591,24 @@ pub(crate) async fn open_widget(
         }
         return Ok(label);
     }
+    // Snap-on-open: a fresh panel with no explicit position docks onto the
+    // chat's edge (WinAmp-style — see the snap section below). Explicit x/y
+    // (drag-out pull, layout restore) skips it: the caller placed the window.
+    // The chat itself and the transient launcher never snap-on-open.
+    let (x, y, snapped_open) =
+        if x.is_none() && y.is_none() && kind != "chat" && kind != "launcher" {
+            match open_snap_top_left(&app, desc.width, desc.height) {
+                Some((sx, sy)) => (Some(sx), Some(sy), true),
+                None => (x, y, false),
+            }
+        } else {
+            (x, y, false)
+        };
     let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
+    if snapped_open {
+        // Flush to a neighbor → become its AppKit child so anchor drags tow it.
+        attach_to_flush_neighbor(&win);
+    }
     if should_focus {
         let _ = win.set_focus();
     }
@@ -627,7 +644,21 @@ pub(crate) async fn open_artifact_widget(
     // A dedicated, self-contained page (NOT index.html) — keeps the widget
     // runtime isolated from the moon monolith. The real id rides in the query.
     let url = format!("widget.html?id={}", encode_query_value(&artifact_id));
-    build_card_window(
+    // Snap-on-open: same as open_widget — a fresh widget with no explicit
+    // position docks onto the chat's edge and rides its drags.
+    let (x, y, snapped_open) = if x.is_none() && y.is_none() {
+        match open_snap_top_left(
+            &app,
+            width.unwrap_or(360.0),
+            height.unwrap_or(440.0),
+        ) {
+            Some((sx, sy)) => (Some(sx), Some(sy), true),
+            None => (x, y, false),
+        }
+    } else {
+        (x, y, false)
+    };
+    let win = build_card_window(
         &app,
         &label,
         &url,
@@ -636,6 +667,9 @@ pub(crate) async fn open_artifact_widget(
         (220.0, 160.0),
         x.zip(y),
     )?;
+    if snapped_open {
+        attach_to_flush_neighbor(&win);
+    }
     Ok(label)
 }
 
@@ -2151,6 +2185,734 @@ pub(crate) fn begin_native_pullout_drag(
     Ok(())
 }
 
+// ── WinAmp-style edge snap + cluster towing (macOS) ─────────────────────────
+//
+// Widget/panel windows magnet-snap to the edges of other dock windows, and a
+// snapped window rides its parent via `NSWindow addChildWindow:ordered:` — the
+// window server tows the whole cluster in the SAME transaction as the parent's
+// drag, 1:1 with the cursor, zero per-frame IPC. (The same mechanism powered
+// cluster towing in #229 before the geometry engine was retired in 1fdb373f;
+// this re-introduction is much smaller because the graph is emergent
+// GEOMETRY, not stored state.)
+//
+// The snap graph is never persisted: a window is attached to whichever dock
+// window it is flush against. Attach points:
+//   - snap-on-open: a fresh widget with no explicit position is placed flush
+//     on the chat's right edge (cascading down past already-snapped siblings)
+//     and attached;
+//   - snap-on-release: `begin_snap_drag` (armed by moon-dock.js before every
+//     startDragging) installs the shared NSEvent monitors; on mouse-up after
+//     an actual drag the settle snaps the window to the nearest edge within
+//     SNAP_GAP and attaches — or DETACHES it when it was released out of
+//     range;
+//   - boot restore: `reattach_flushed_windows` re-derives attachments from
+//     the restored rects, so layout.json needs no edge bookkeeping.
+// A middle-of-stack grab tows the tail (the grabbed window's own children
+// ride along); a leaf grab peels off alone. A parent RESIZE re-flushes its
+// children on the Resized event so stacks never open a seam. Cycles are
+// refused by walking the candidate parent's NSWindow ancestor chain.
+
+/// Max edge gap (logical pt) that still snaps flush on release.
+const SNAP_GAP: f64 = 20.0;
+/// How far a dropped window may already overlap the target's edge and still
+/// snap flush — deeper overlap reads as "parked on top", not docking.
+const SNAP_OVERLAP: f64 = 40.0;
+/// Edge distance counted as "flush" when deriving an attachment from
+/// geometry (open-time placement and the boot restore).
+const SNAP_FLUSH: f64 = 2.0;
+
+/// Axis-aligned rect in TOP-LEFT logical points (the `window_logical_rect`
+/// family, y grows downward). Pure value type so the snap math is testable
+/// without a webview.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SnapRect {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+impl SnapRect {
+    fn right(&self) -> f64 {
+        self.x + self.w
+    }
+    fn bottom(&self) -> f64 {
+        self.y + self.h
+    }
+}
+
+fn snap_ranges_overlap(a0: f64, a1: f64, b0: f64, b1: f64) -> bool {
+    a0 < b1 && b0 < a1
+}
+
+fn snap_overlap_len(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
+    (a1.min(b1) - a0.max(b0)).max(0.0)
+}
+
+fn snap_rects_intersect(a: &SnapRect, b: &SnapRect) -> bool {
+    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
+}
+
+/// If `w` is close enough to an edge of `p` to dock, return the flushed rect.
+/// Four edges, WinAmp-style: beside right/left, above, below. The
+/// perpendicular axis keeps the dragged coordinate when the two already
+/// overlap there; otherwise it aligns to the nearer shared end (top/bottom
+/// for side docks, left/right for top/bottom docks) within SNAP_GAP. When
+/// several edges qualify, the smallest total move wins.
+fn snap_position(w: SnapRect, p: SnapRect) -> Option<SnapRect> {
+    let mut best: Option<(f64, SnapRect)> = None;
+    let mut consider = |nx: f64, ny: f64| {
+        let cost = (nx - w.x).abs() + (ny - w.y).abs();
+        if best.is_none_or(|(c, _)| cost < c) {
+            best = Some((cost, SnapRect { x: nx, y: ny, w: w.w, h: w.h }));
+        }
+    };
+    // Side docks: W's left edge onto P's right, or W's right edge onto P's left.
+    for (nx, gap) in [
+        (p.right(), w.x - p.right()),
+        (p.x - w.w, p.x - w.right()),
+    ] {
+        if !(-SNAP_OVERLAP..=SNAP_GAP).contains(&gap) {
+            continue;
+        }
+        let ny = if snap_ranges_overlap(w.y, w.bottom(), p.y, p.bottom()) {
+            w.y
+        } else if (w.y - p.y).abs() <= SNAP_GAP {
+            p.y
+        } else if (w.bottom() - p.bottom()).abs() <= SNAP_GAP {
+            p.bottom() - w.h
+        } else {
+            continue;
+        };
+        consider(nx, ny);
+    }
+    // Top/bottom docks: W below P (W top onto P bottom) or W above P.
+    for (ny, gap) in [
+        (p.bottom(), w.y - p.bottom()),
+        (p.y - w.h, p.y - w.bottom()),
+    ] {
+        if !(-SNAP_OVERLAP..=SNAP_GAP).contains(&gap) {
+            continue;
+        }
+        let nx = if snap_ranges_overlap(w.x, w.right(), p.x, p.right()) {
+            w.x
+        } else if (w.x - p.x).abs() <= SNAP_GAP {
+            p.x
+        } else if (w.right() - p.right()).abs() <= SNAP_GAP {
+            p.right() - w.w
+        } else {
+            continue;
+        };
+        consider(nx, ny);
+    }
+    best.map(|(_, r)| r)
+}
+
+/// Best dock target for `w` among `others` (already filtered): the index into
+/// `others` plus the flushed rect. A zero-cost hit (already flush) still
+/// counts — the caller attaches on the geometry alone.
+fn best_snap(w: SnapRect, others: &[(String, SnapRect)]) -> Option<(usize, SnapRect)> {
+    let mut best: Option<(usize, SnapRect, f64)> = None;
+    for (i, (_, p)) in others.iter().enumerate() {
+        let Some(r) = snap_position(w, *p) else {
+            continue;
+        };
+        let cost = (r.x - w.x).abs() + (r.y - w.y).abs();
+        if best.is_none_or(|(_, _, c)| cost < c) {
+            best = Some((i, r, cost));
+        }
+    }
+    best.map(|(i, r, _)| (i, r))
+}
+
+/// Which dock window is `w` flush against (edge gap <= SNAP_FLUSH with real
+/// overlap on the perpendicular axis)? Returns the label sharing the longest
+/// edge. Drives attachment for open-time placement and the boot restore.
+fn flush_parent(w: SnapRect, others: &[(String, SnapRect)]) -> Option<String> {
+    let mut best: Option<(&String, f64)> = None;
+    for (label, p) in others {
+        let beside =
+            (w.x - p.right()).abs() <= SNAP_FLUSH || (p.x - w.right()).abs() <= SNAP_FLUSH;
+        let stacked =
+            (w.y - p.bottom()).abs() <= SNAP_FLUSH || (p.y - w.bottom()).abs() <= SNAP_FLUSH;
+        let shared = if beside {
+            snap_overlap_len(w.y, w.bottom(), p.y, p.bottom())
+        } else if stacked {
+            snap_overlap_len(w.x, w.right(), p.x, p.right())
+        } else {
+            0.0
+        };
+        if shared <= 0.0 {
+            continue;
+        }
+        if best.is_none_or(|(_, s)| shared > s) {
+            best = Some((label, shared));
+        }
+    }
+    best.map(|(l, _)| l.clone())
+}
+
+/// Initial snapped placement for a fresh widget against `anchor` (usually the
+/// chat). Tries right / below / left / above in order; each edge cascades
+/// past whatever already occupies that lane so a run of opened widgets STACKS
+/// instead of piling onto one spot. The first edge whose cascaded rect fits
+/// inside `monitor` wins; when nothing fits we take the right-edge cascade
+/// anyway (better a clamped stack than no opinion).
+fn open_snap_position(
+    anchor: SnapRect,
+    w: f64,
+    h: f64,
+    occupied: &[SnapRect],
+    monitor: Option<SnapRect>,
+) -> SnapRect {
+    // Cascades run DOWN for side docks (a column off the anchor's flank) and
+    // RIGHT for top/bottom docks (a row over/under the anchor).
+    let candidates = [
+        (
+            SnapRect {
+                x: anchor.right(),
+                y: anchor.y,
+                w,
+                h,
+            },
+            false,
+        ),
+        (
+            SnapRect {
+                x: anchor.x,
+                y: anchor.bottom(),
+                w,
+                h,
+            },
+            true,
+        ),
+        (
+            SnapRect {
+                x: anchor.x - w,
+                y: anchor.y,
+                w,
+                h,
+            },
+            false,
+        ),
+        (
+            SnapRect {
+                x: anchor.x,
+                y: anchor.y - h,
+                w,
+                h,
+            },
+            true,
+        ),
+    ];
+    let mut fallback = None;
+    for (base, slide_x) in candidates {
+        let r = cascade_past(base, occupied, slide_x);
+        if fallback.is_none() {
+            fallback = Some(r);
+        }
+        let fits = match monitor {
+            Some(m) => r.x >= m.x && r.y >= m.y && r.right() <= m.right() && r.bottom() <= m.bottom(),
+            None => true,
+        };
+        if fits {
+            return r;
+        }
+    }
+    // Every lane failed the fit: take the right-edge cascade but clamp it
+    // back INSIDE the monitor — a widget that partially overlaps the stack
+    // is recoverable; one parked off every display is a "won't open" bug.
+    let mut r = fallback.unwrap_or(candidates[0].0);
+    if let Some(m) = monitor {
+        if r.w <= m.w {
+            r.x = r.x.clamp(m.x, m.right() - r.w);
+        }
+        if r.h <= m.h {
+            r.y = r.y.clamp(m.y, m.bottom() - r.h);
+        }
+    }
+    r
+}
+
+/// Slide `base` along one axis until it intersects no `occupied` rect —
+/// each step clears the deepest current blocker, so the loop is bounded.
+fn cascade_past(base: SnapRect, occupied: &[SnapRect], slide_x: bool) -> SnapRect {
+    let mut r = base;
+    for _ in 0..(occupied.len() * 2 + 1) {
+        let blocker = occupied
+            .iter()
+            .filter(|o| snap_rects_intersect(&r, o))
+            .map(|o| if slide_x { o.right() } else { o.bottom() })
+            .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))));
+        match blocker {
+            Some(edge) => {
+                if slide_x {
+                    r.x = edge;
+                } else {
+                    r.y = edge;
+                }
+            }
+            None => return r,
+        }
+    }
+    r
+}
+
+/// Re-flush `child` against whichever edge of `parent` it is nearest to: a
+/// parent resize moved that edge, and the child keeps its perpendicular
+/// offset so a stack stays tight instead of drifting open a seam.
+fn reflush_edge(c: SnapRect, p: SnapRect) -> SnapRect {
+    let mut best = (f64::MAX, c);
+    for (gap, nx, ny) in [
+        (c.x - p.right(), p.right(), c.y),   // child on parent's right
+        (p.x - c.right(), p.x - c.w, c.y),   // on parent's left
+        (c.y - p.bottom(), c.x, p.bottom()), // below parent
+        (p.y - c.bottom(), c.x, p.y - c.h),  // above parent
+    ] {
+        if gap.abs() < best.0 {
+            best = (gap.abs(), SnapRect { x: nx, y: ny, w: c.w, h: c.h });
+        }
+    }
+    best.1
+}
+
+/// Every open dock window's rect except `exclude_label` ("" excludes none).
+fn dock_rects(app: &tauri::AppHandle, exclude_label: &str) -> Vec<(String, SnapRect)> {
+    app.webview_windows()
+        .iter()
+        .filter(|(label, _)| is_dock_label(label) && label.as_str() != exclude_label)
+        .filter_map(|(label, w)| {
+            window_logical_rect(w).map(|(x, y, wd, ht)| {
+                (
+                    label.clone(),
+                    SnapRect {
+                        x: x as f64,
+                        y: y as f64,
+                        w: wd as f64,
+                        h: ht as f64,
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// The window a freshly opened widget snaps onto: the main chat line first,
+/// then any other dock window. The launcher never anchors — a transient
+/// palette is a poor column root.
+fn snap_anchor_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(chat) = app.get_webview_window("panel-chat") {
+        return Some(chat);
+    }
+    let windows = app.webview_windows();
+    let mut candidates: Vec<&String> = windows
+        .keys()
+        .filter(|l| is_dock_label(l) && l.as_str() != "panel-launcher")
+        .collect();
+    candidates.sort();
+    candidates
+        .first()
+        .and_then(|l| app.get_webview_window(l))
+}
+
+/// Where a freshly spawned widget should sit, or `None` to leave placement to
+/// the OS. `w`/`h` are the descriptor's logical size; the result is a
+/// top-left logical position snapped to the anchor's edge with the cascade.
+fn open_snap_top_left(app: &tauri::AppHandle, w: f64, h: f64) -> Option<(f64, f64)> {
+    let anchor_win = snap_anchor_window(app)?;
+    let (ax, ay, aw, ah) = window_logical_rect(&anchor_win)?;
+    let anchor = SnapRect {
+        x: ax as f64,
+        y: ay as f64,
+        w: aw as f64,
+        h: ah as f64,
+    };
+    let occupied: Vec<SnapRect> = dock_rects(app, "")
+        .into_iter()
+        .map(|(_, r)| r)
+        .collect();
+    // Monitor fit is judged in the monitor containing the anchor's center —
+    // snapping should never park the new widget on a different display.
+    let monitors = monitor_bounds(app);
+    let monitor = monitors
+        .iter()
+        .find(|((mx, my), (mw, mh))| {
+            let cx = anchor.x + anchor.w / 2.0;
+            let cy = anchor.y + anchor.h / 2.0;
+            cx >= *mx && cx < mx + mw && cy >= *my && cy < my + mh
+        })
+        .map(|((mx, my), (mw, mh))| SnapRect {
+            x: *mx,
+            y: *my,
+            w: *mw,
+            h: *mh,
+        });
+    let r = open_snap_position(anchor, w, h, &occupied, monitor);
+    Some((r.x, r.y))
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn ns_has_ancestor(
+    win: &objc2_app_kit::NSWindow,
+    ancestor: &objc2_app_kit::NSWindow,
+) -> bool {
+    let mut cur = win.parentWindow();
+    while let Some(p) = cur {
+        if std::ptr::eq::<objc2_app_kit::NSWindow>(&*p, ancestor) {
+            return true;
+        }
+        cur = p.parentWindow();
+    }
+    false
+}
+
+/// Point `child_ns`'s parent at `parent_ns` (or detach entirely). Refuses a
+/// cycle: a window can never sit under one of its own descendants. A no-op
+/// when the desired parent already holds it. MUST run on the main thread.
+#[cfg(target_os = "macos")]
+unsafe fn set_snap_parent_ns(
+    child_ns: &objc2_app_kit::NSWindow,
+    parent_ns: Option<&objc2_app_kit::NSWindow>,
+) {
+    use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
+    let parent_ns = parent_ns.filter(|p| !ns_has_ancestor(p, child_ns));
+    let cur = child_ns.parentWindow();
+    let already = match (&cur, &parent_ns) {
+        (Some(c), Some(p)) => std::ptr::eq::<NSWindow>(&**c, *p),
+        (None, None) => true,
+        _ => false,
+    };
+    if already {
+        return;
+    }
+    if let Some(c) = cur {
+        c.removeChildWindow(child_ns);
+    }
+    if let Some(p) = parent_ns {
+        p.addChildWindow_ordered(child_ns, NSWindowOrderingMode::Above);
+    }
+}
+
+/// Attach `win` to whichever dock window it is flush against (open-time
+/// placement, boot restore). No-op when it lands flush to nothing.
+#[cfg(target_os = "macos")]
+fn attach_to_flush_neighbor(win: &tauri::WebviewWindow) {
+    let app = win.app_handle().clone();
+    let label = win.label().to_string();
+    let Some((x, y, w, h)) = window_logical_rect(win) else {
+        return;
+    };
+    let wr = SnapRect {
+        x: x as f64,
+        y: y as f64,
+        w: w as f64,
+        h: h as f64,
+    };
+    let others = dock_rects(&app, &label);
+    let Some(parent_label) = flush_parent(wr, &others) else {
+        return;
+    };
+    let Some(parent) = app.get_webview_window(&parent_label) else {
+        return;
+    };
+    let _ = with_appkit_main_thread(win.clone(), move |w| {
+        use objc2_app_kit::NSWindow;
+        let wp = w.ns_window().map_err(|e| e.to_string())?;
+        let pp = parent.ns_window().map_err(|e| e.to_string())?;
+        unsafe {
+            let cns: &NSWindow = &*wp.cast();
+            let pns: &NSWindow = &*pp.cast();
+            set_snap_parent_ns(cns, Some(pns));
+        }
+        Ok(())
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn attach_to_flush_neighbor(_win: &tauri::WebviewWindow) {}
+
+/// Mouse-up settle for a dragged dock window: snap to the nearest qualifying
+/// edge (and attach to it), or detach when released out of range. Runs on the
+/// main thread from `begin_snap_drag`'s monitor teardown — never mid-drag, so
+/// it can never fight AppKit's ownership of the gesture.
+#[cfg(target_os = "macos")]
+fn settle_snap(win: &tauri::WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+    let app = win.app_handle().clone();
+    let label = win.label().to_string();
+    if !is_dock_label(&label) {
+        return;
+    }
+    let Some((wx, wy, ww, wh)) = window_logical_rect(win) else {
+        return;
+    };
+    let w = SnapRect {
+        x: wx as f64,
+        y: wy as f64,
+        w: ww as f64,
+        h: wh as f64,
+    };
+    let Ok(win_ptr) = win.ns_window() else {
+        return;
+    };
+    let win_ns: &NSWindow = unsafe { &*win_ptr.cast() };
+    // Candidates: every other dock window that is NOT a descendant of `win`
+    // (snapping under your own child would create a cycle).
+    let mut others: Vec<(String, SnapRect)> = Vec::new();
+    for (l, wv) in app.webview_windows() {
+        if l == label || !is_dock_label(&l) {
+            continue;
+        }
+        let Ok(ptr) = wv.ns_window() else {
+            continue;
+        };
+        let ns: &NSWindow = unsafe { &*ptr.cast() };
+        if unsafe { ns_has_ancestor(ns, win_ns) } {
+            continue;
+        }
+        let Some((x, y, wd, ht)) = window_logical_rect(&wv) else {
+            continue;
+        };
+        others.push((
+            l,
+            SnapRect {
+                x: x as f64,
+                y: y as f64,
+                w: wd as f64,
+                h: ht as f64,
+            },
+        ));
+    }
+    let parent = match best_snap(w, &others) {
+        Some((i, r)) => {
+            // Refuse a snap that would park the window essentially off every
+            // display (e.g. flushing to the far edge of a chat sitting at the
+            // monitor's edge): it reads as "won't open" just like a stranded
+            // orb. Thresholds = a grab-able strip of the title bar.
+            let visible = monitor_bounds(&app).iter().any(|((mx, my), (mw, mh))| {
+                snap_overlap_len(r.x, r.right(), *mx, mx + mw) >= 64.0
+                    && snap_overlap_len(r.y, r.bottom(), *my, my + mh) >= 32.0
+            });
+            if !visible {
+                None
+            } else {
+                // Move into the flush position only when it differs — an
+                // already-flush release still attaches (geometry IS the truth).
+                if (r.x - w.x).abs() >= 0.5 || (r.y - w.y).abs() >= 0.5 {
+                    let _ = win.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition::new(r.x, r.y),
+                    ));
+                }
+                let Some(p) = app.get_webview_window(&others[i].0) else {
+                    return;
+                };
+                let Ok(pp) = p.ns_window() else {
+                    return;
+                };
+                let pns: &NSWindow = unsafe { &*pp.cast() };
+                Some(pns)
+            }
+        }
+        None => None,
+    };
+    unsafe {
+        set_snap_parent_ns(win_ns, parent);
+    }
+}
+
+// ── Persistent release watcher: the moved-set settles on every left-up ────
+//
+// Per-gesture IPC arming proved unreliable in practice: a large fraction of
+// real title-bar presses are swallowed by the transparent NSWindow title-bar
+// zone before the webview ever sees pointerdown, so no JS call can arm the
+// drag — the window still drags natively, but its drop then settles nothing
+// (no snap, and a snapped window dragged off never detached). Settles
+// therefore key on GEOMETRY instead: every Moved event marks the window in
+// MOVED_SINCE_UP, and this watcher's persistent monitors settle every marked
+// window on the next left mouse-up — no matter how the drag started.
+
+#[cfg(target_os = "macos")]
+static MOVED_SINCE_UP: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Record that a dock window's frame moved (from the Moved window event).
+/// Programmatic moves also land here — harmless: their next-up settle is
+/// just the geometry-derived attach/detach the model already defines.
+#[cfg(target_os = "macos")]
+pub(crate) fn note_dock_moved(label: &str) {
+    let mut set = MOVED_SINCE_UP.lock().unwrap_or_else(|e| e.into_inner());
+    set.get_or_insert_with(Default::default)
+        .insert(label.to_string());
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn note_dock_moved(_label: &str) {}
+
+#[cfg(target_os = "macos")]
+fn take_moved_labels() -> Vec<String> {
+    let mut set = MOVED_SINCE_UP.lock().unwrap_or_else(|e| e.into_inner());
+    std::mem::take(set.get_or_insert_with(Default::default))
+        .into_iter()
+        .collect()
+}
+
+/// Settle every dock window whose frame moved since the previous left-up.
+/// Install once at setup; the monitor tokens are deliberately forgotten —
+/// the watcher lives for the app lifetime. Covers EVERY drag source
+/// (webview pointerdown, the native title-bar zone, programmatic drags)
+/// because it keys on Moved events, not on how the gesture began.
+#[cfg(target_os = "macos")]
+pub(crate) fn install_snap_watcher(app: &tauri::AppHandle) {
+    use objc2::rc::Retained;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSEvent, NSEventMask};
+    use std::ptr::NonNull;
+    use std::rc::Rc;
+
+    let settle = Rc::new({
+        let app = app.clone();
+        move || {
+            for label in take_moved_labels() {
+                if let Some(w) = app.get_webview_window(&label) {
+                    settle_snap(&w);
+                }
+            }
+        }
+    });
+
+    // Local monitor: releases delivered to our app (returns the event
+    // unchanged — it does not consume it). Handlers run on the main thread.
+    let local_block = {
+        let settle = settle.clone();
+        block2::RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            settle();
+            event.as_ptr()
+        })
+    };
+    // Global monitor: releases that land over ANOTHER app — the local
+    // monitor never sees those.
+    let global_block = {
+        let settle = settle.clone();
+        block2::RcBlock::new(move |_: NonNull<NSEvent>| {
+            settle();
+        })
+    };
+    unsafe {
+        let local: Option<Retained<AnyObject>> =
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(
+                NSEventMask::LeftMouseUp,
+                &local_block,
+            );
+        let global: Option<Retained<AnyObject>> = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(
+            NSEventMask::LeftMouseUp,
+            &global_block,
+        );
+        std::mem::forget(local);
+        std::mem::forget(global);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn install_snap_watcher(_app: &tauri::AppHandle) {}
+
+/// Keep a resized window's snapped children flush: for each dock window
+/// parented to `win`, re-flush it against its nearest parent edge. Driven by
+/// the Resized event (which fires per native-resize tick), so a stack tracks
+/// a live resize instead of opening a seam. Children keep their
+/// perpendicular offset; chains hold because a towed child's own children
+/// ride along natively.
+#[cfg(target_os = "macos")]
+pub(crate) fn reflush_snap_children(win: &tauri::WebviewWindow) {
+    use objc2_app_kit::NSWindow;
+    let app = win.app_handle().clone();
+    let self_label = win.label().to_string();
+    if !is_dock_label(&self_label) {
+        return;
+    }
+    let Ok(parent_ptr) = win.ns_window() else {
+        return;
+    };
+    let Some((px, py, pw, ph)) = window_logical_rect(win) else {
+        return;
+    };
+    let parent_rect = SnapRect {
+        x: px as f64,
+        y: py as f64,
+        w: pw as f64,
+        h: ph as f64,
+    };
+    for (label, child) in app.webview_windows() {
+        if label == self_label || !is_dock_label(&label) {
+            continue;
+        }
+        let Ok(child_ptr) = child.ns_window() else {
+            continue;
+        };
+        let is_child = unsafe {
+            let cns: &NSWindow = &*child_ptr.cast();
+            let pns: &NSWindow = &*parent_ptr.cast();
+            cns.parentWindow()
+                .is_some_and(|pp| std::ptr::eq::<NSWindow>(&*pp, pns))
+        };
+        if !is_child {
+            continue;
+        }
+        let Some((x, y, w, h)) = window_logical_rect(&child) else {
+            continue;
+        };
+        let c = SnapRect {
+            x: x as f64,
+            y: y as f64,
+            w: w as f64,
+            h: h as f64,
+        };
+        let r = reflush_edge(c, parent_rect);
+        if (r.x - c.x).abs() >= 0.5 || (r.y - c.y).abs() >= 0.5 {
+            let _ = child.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
+                r.x, r.y,
+            )));
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn reflush_snap_children(_win: &tauri::WebviewWindow) {}
+
+/// Re-derive every attachment from restored geometry: each dock window
+/// flush against a neighbor becomes its AppKit child. Called once after the
+/// boot layout restore, so a saved stack tows again without any snap state
+/// in layout.json. Order-independent: cycles are refused by the ancestor
+/// walk inside set_snap_parent_ns.
+#[cfg(target_os = "macos")]
+pub(crate) fn reattach_flushed_windows(app: &tauri::AppHandle) {
+    let rects = dock_rects(app, "");
+    for (label, win) in app.webview_windows() {
+        if !is_dock_label(&label) {
+            continue;
+        }
+        let Some((x, y, w, h)) = window_logical_rect(&win) else {
+            continue;
+        };
+        let wr = SnapRect {
+            x: x as f64,
+            y: y as f64,
+            w: w as f64,
+            h: h as f64,
+        };
+        let others: Vec<(String, SnapRect)> = rects
+            .iter()
+            .filter(|(l, _)| *l != label)
+            .cloned()
+            .collect();
+        if flush_parent(wr, &others).is_some() {
+            attach_to_flush_neighbor(&win);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn reattach_flushed_windows(_app: &tauri::AppHandle) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2474,5 +3236,135 @@ mod tests {
         assert_eq!(kind, "agents");
         assert!(restored.is_none());
         assert!(registry_lookup(&kind).is_some());
+    }
+
+    // ── WinAmp snap geometry (pure, no webview) ────────────────────────────
+
+    fn r(x: f64, y: f64, w: f64, h: f64) -> SnapRect {
+        SnapRect { x, y, w, h }
+    }
+
+    #[test]
+    fn snaps_flush_to_the_right_edge_keeping_vertical_position() {
+        // Chat at (100,100) 400x500; widget dropped 12pt right of its edge,
+        // overlapping vertically → snaps flush, y unchanged.
+        let chat = r(100.0, 100.0, 400.0, 500.0);
+        let w = r(512.0, 160.0, 300.0, 400.0);
+        let s = snap_position(w, chat).expect("within SNAP_GAP must snap");
+        assert_eq!(s, r(500.0, 160.0, 300.0, 400.0));
+    }
+
+    #[test]
+    fn snaps_to_the_left_and_below_edges() {
+        let chat = r(400.0, 200.0, 500.0, 400.0);
+        // Widget's right edge 8pt left of the chat's left edge.
+        let left = snap_position(r(85.0, 250.0, 300.0, 300.0), chat).unwrap();
+        assert_eq!(left, r(100.0, 250.0, 300.0, 300.0));
+        // Widget's top edge 15pt below the chat's bottom.
+        let below = snap_position(r(420.0, 615.0, 300.0, 200.0), chat).unwrap();
+        assert_eq!(below, r(420.0, 600.0, 300.0, 200.0));
+    }
+
+    #[test]
+    fn aligns_to_the_nearest_shared_end_when_ranges_do_not_overlap() {
+        let chat = r(100.0, 100.0, 400.0, 400.0);
+        // Widget dropped right of chat, just above its top: vertical ranges
+        // don't overlap but tops are within SNAP_GAP → align to the top end.
+        let s = snap_position(r(508.0, 82.0, 300.0, 12.0), chat).unwrap();
+        assert_eq!(s, r(500.0, 100.0, 300.0, 12.0));
+    }
+
+    #[test]
+    fn refuses_when_every_edge_is_out_of_range() {
+        let chat = r(100.0, 100.0, 400.0, 400.0);
+        // 21pt past SNAP_GAP on every axis.
+        assert!(snap_position(r(600.0, 100.0, 300.0, 300.0), chat).is_none());
+        // Fully parked on top: deeper than SNAP_OVERLAP on every edge.
+        assert!(snap_position(r(150.0, 150.0, 200.0, 200.0), chat).is_none());
+    }
+
+    #[test]
+    fn small_overlap_still_snaps_flush() {
+        let chat = r(100.0, 100.0, 400.0, 400.0);
+        // Widget's left edge 30pt INSIDE the chat's right edge.
+        let s = snap_position(r(470.0, 150.0, 300.0, 300.0), chat).unwrap();
+        assert_eq!(s, r(500.0, 150.0, 300.0, 300.0));
+    }
+
+    #[test]
+    fn best_snap_picks_the_cheapest_target() {
+        let chat = r(0.0, 0.0, 400.0, 500.0);
+        let other = r(400.0, 600.0, 300.0, 200.0);
+        let others = vec![
+            ("panel-chat".to_string(), chat),
+            ("panel-settings".to_string(), other),
+        ];
+        // Almost flush with `other`'s left edge and 12pt from chat's bottom:
+        // whichever is actually closer wins.
+        let w = r(95.0, 605.0, 300.0, 300.0);
+        let (i, s) = best_snap(w, &others).expect("a snap target exists");
+        assert_eq!(others[i].0, "panel-settings");
+        assert_eq!(s, r(100.0, 605.0, 300.0, 300.0));
+    }
+
+    #[test]
+    fn flush_parent_names_the_longest_shared_edge() {
+        let chat = r(0.0, 0.0, 400.0, 500.0);
+        let stacked = r(400.0, 0.0, 300.0, 300.0); // flush on chat's right, full overlap
+        let corner = r(0.0, 500.0, 100.0, 50.0); // flush under chat, only 100pt shared
+        let others = vec![
+            ("panel-chat".to_string(), chat),
+            ("widget-b".to_string(), corner),
+        ];
+        assert_eq!(
+            flush_parent(stacked, &others).as_deref(),
+            Some("panel-chat")
+        );
+        // A window touching nobody reports no parent.
+        assert!(flush_parent(r(900.0, 900.0, 100.0, 100.0), &others).is_none());
+    }
+
+    #[test]
+    fn open_snap_cascades_down_the_right_edge_column() {
+        let chat = r(100.0, 100.0, 400.0, 500.0);
+        let monitor = Some(r(0.0, 0.0, 2000.0, 1200.0));
+        // First widget lands flush on the right edge, top-aligned.
+        let first = open_snap_position(chat, 300.0, 300.0, &[], monitor);
+        assert_eq!(first, r(500.0, 100.0, 300.0, 300.0));
+        // Second cascades beneath the first instead of covering it.
+        let second = open_snap_position(chat, 300.0, 300.0, &[first], monitor);
+        assert_eq!(second, r(500.0, 400.0, 300.0, 300.0));
+    }
+
+    #[test]
+    fn open_snap_falls_to_an_edge_that_fits_the_monitor() {
+        // Chat hard against the monitor's right edge: the right lane cannot
+        // fit, so the next edge (below) wins.
+        let chat = r(700.0, 100.0, 400.0, 400.0);
+        let monitor = Some(r(0.0, 0.0, 1100.0, 1200.0));
+        let s = open_snap_position(chat, 300.0, 300.0, &[], monitor);
+        assert_eq!(s, r(700.0, 500.0, 300.0, 300.0));
+    }
+
+    #[test]
+    fn open_snap_fallback_clamps_back_onto_the_monitor() {
+        // Anchor fills the monitor so every lane fails the fit — the fallback
+        // must still land on-screen rather than off the right/bottom edge.
+        let chat = r(0.0, 0.0, 1100.0, 1150.0);
+        let monitor = Some(r(0.0, 0.0, 1100.0, 1200.0));
+        let s = open_snap_position(chat, 300.0, 300.0, &[], monitor);
+        assert!(s.x >= 0.0 && s.y >= 0.0 && s.right() <= 1100.0 && s.bottom() <= 1200.0);
+    }
+
+    #[test]
+    fn reflush_keeps_the_child_on_its_edge_after_a_resize() {
+        let chat_before = r(100.0, 100.0, 400.0, 500.0);
+        let child = r(500.0, 150.0, 300.0, 300.0);
+        // Sanity: flush before the resize.
+        assert_eq!(reflush_edge(child, chat_before), child);
+        // Chat grows 100pt wider to the right: the child re-flushes to the
+        // new right edge at the same y.
+        let chat_after = r(100.0, 100.0, 500.0, 500.0);
+        assert_eq!(reflush_edge(child, chat_after), r(600.0, 150.0, 300.0, 300.0));
     }
 }

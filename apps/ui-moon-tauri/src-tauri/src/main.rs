@@ -71,6 +71,27 @@ fn main() {
             {
                 windows::write_panel_layout(window.app_handle());
             }
+            // Snap seam maintenance (macOS): a resized dock window re-flushes
+            // its snapped children so a stack tracks the live resize —
+            // AppKit children only follow position changes, never size.
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::WindowEvent::Resized(_))
+                && windows::is_dock_label(window.label())
+            {
+                if let Some(w) = window.app_handle().get_webview_window(window.label()) {
+                    windows::reflush_snap_children(&w);
+                }
+            }
+            // Snap settle tracking: mark every dock window whose frame moved
+            // during the current gesture; the persistent watcher
+            // (install_snap_watcher) settles them on the next left mouse-up.
+            // Keys on Moved — fires no matter how the drag began — because a
+            // large share of real title-bar presses never reach the webview.
+            if matches!(event, tauri::WindowEvent::Moved(_))
+                && windows::is_dock_label(window.label())
+            {
+                windows::note_dock_moved(window.label());
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
                 if window.label() == "main" {
@@ -362,7 +383,15 @@ fn main() {
                     }
                     windows::ensure_window_on_visible_display(&moon);
                 }
+                // Re-derive snap attachments from the restored geometry: any
+                // dock window flush against a neighbor becomes its AppKit
+                // child, so a saved stack tows again — layout.json never
+                // stores snap state (windows::reattach_flushed_windows).
+                windows::reattach_flushed_windows(&app.handle());
             }
+            // Persistent release watcher for the snap settle — see
+            // windows::install_snap_watcher.
+            windows::install_snap_watcher(&app.handle());
             // Voice pipeline controller (lazy: no mic/model touched until the
             // first non-off voice_set_mode). The AppHandle doubles as the
             // event sink — events land on the main window via emit_to.
