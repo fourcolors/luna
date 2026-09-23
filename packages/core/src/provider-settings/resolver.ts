@@ -31,10 +31,10 @@ import type { ProviderSettingsPayload, RoleName } from "./types.js"
 /**
  * v1 default model per role when the store has no binding for it.
  *
- * advisor      → claude-opus-4-8    (most capable)
+ * advisor      → claude-opus-5-5    (most capable)
  * daily-driver → claude-opus-5-5    (recommended default)
- * wake         → claude-sonnet-4-6  (cheapest capable)
- * dream        → claude-haiku-4-5   (cheapest)
+ * wake         → claude-sonnet-5    (latest sonnet)
+ * dream        → claude-haiku-4-5   (cheapest; latest haiku — no 5.x yet)
  *
  * NOTE: `daily-driver` is THE server-side default model. A thread created with
  * no explicit model resolves through here (adapter.ts's
@@ -44,9 +44,9 @@ import type { ProviderSettingsPayload, RoleName } from "./types.js"
  * advertises one model while the server runs another.
  */
 const DEFAULT_ROLE_MODELS: Record<RoleName, string> = {
-  advisor: "claude-opus-4-8",
+  advisor: "claude-opus-5-5",
   "daily-driver": "claude-opus-5-5",
-  wake: "claude-sonnet-4-6",
+  wake: "claude-sonnet-5",
   dream: "claude-haiku-4-5",
 }
 
