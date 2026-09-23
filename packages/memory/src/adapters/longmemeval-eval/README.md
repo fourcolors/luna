@@ -57,6 +57,11 @@ Both are checked before any work; no Anthropic / OpenAI / Fable fallback.
 LUNA_EMBEDDER=ollama LUNA_OLLAMA_EMBED_MODEL=nomic-embed-text \
   bun packages/memory/src/adapters/longmemeval-eval/run.ts --dry-run
 
+# S split, 60 questions, production search mode
+LUNA_EMBEDDER=ollama LUNA_OLLAMA_EMBED_MODEL=nomic-embed-text \
+  LUNA_LME_SPLIT=s LUNA_LME_QA_LIMIT=60 LUNA_LME_ANSWER_MODEL=gemma4:latest \
+  bun packages/memory/src/adapters/longmemeval-eval/run.ts
+
 # Full 15-question smoke (default)
 LUNA_EMBEDDER=ollama LUNA_OLLAMA_EMBED_MODEL=nomic-embed-text \
   LUNA_LME_ANSWER_MODEL=llama3.2:1b \
@@ -74,12 +79,11 @@ Every non-zero exit writes **no** results file: no invented scores.
 
 ## Results
 
-See `RESULTS.md` + committed `smoke-results.json` / `smoke-results-gemma4.json`.
+See `RESULTS.md` and the committed `smoke-results*.json` / `results-*.json` artifacts.
 
-Seed 42, 15 Qs, local Ollama `nomic-embed-text`, $0:
+60 questions, S split (~500 turns per question), local Ollama, $0:
 
-- Retrieval (hybrid top-10): `has_answer` turns 70.4% vs 43.9% at random; answer sessions 100% vs 99.1% at random (no signal).
-- Answerable QA, `llama3.2:1b`: F1 0.082, contains-gold 0/12 (always-abstain baseline: 0 / 0).
-- Answerable QA, `gemma4`: F1 0.532, contains-gold 5/12.
+- Retrieval (top-10 evidence turns): `hybrid` (production) 64.4%, identical to `vec`; `bm25` 73.1%; `hybrid-terms` 75.0%; random 2.1%.
+- Answerable QA with `gemma4`: contains-gold 10/50 with `hybrid`, 16/50 with `hybrid-terms` (13/50 on the oracle haystack with `hybrid`).
 
 Official GPT-4o judge was not run.

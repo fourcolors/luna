@@ -1,95 +1,135 @@
 {
   "officialSplit": "longmemeval_oracle.json",
-  "subsetRule": "seeded Fisher–Yates (seed=42) then first 15 (no cherry-pick)",
+  "subsetRule": "ids sorted, seeded Fisher-Yates (seed=42), first 15 (no cherry-pick; same ids on every split)",
   "seed": 42,
   "questionIds": [
-    "gpt4_2f8be40d",
-    "e5ba910e_abs",
-    "545bd2b5",
-    "9d25d4e0",
-    "gpt4_b5700ca9",
-    "16c90bf4",
-    "gpt4_b4a80587",
+    "945e3d21",
+    "gpt4_59149c78",
+    "726462e0",
+    "gpt4_468eb063",
+    "001be529",
+    "577d4d32",
+    "561fabcd",
+    "gpt4_2655b836",
+    "ba61f0b9",
+    "c14c00dd",
     "b759caee",
-    "gpt4_65aabe59",
-    "19b5f2b3_abs",
-    "195a1a1b",
-    "gpt4_e05b82a6",
-    "b9cfe692",
-    "58470ed2",
-    "08e075c7"
+    "d905b33f",
+    "e4e14d04",
+    "gpt4_2f91af09",
+    "4fd1909e"
   ],
-  "ingestedTurns": 315,
+  "ingestedTurns": 275,
   "scored": [
     {
-      "questionId": "gpt4_2f8be40d",
-      "question": "How many weddings have I attended in this year?",
-      "questionType": "multi-session",
-      "prediction": "No information available.",
+      "questionId": "945e3d21",
+      "question": "How often do I attend yoga classes to help with my anxiety?",
+      "questionType": "knowledge-update",
+      "prediction": "You attend yoga classes twice a week.",
       "abstention": false,
-      "groundTruth": "I attended three weddings. The couples were Rachel and Mike, Emily and Sarah, and Jen and Tom.",
-      "f1": 0,
-      "containsGold": 0
+      "groundTruth": "Three times a week.",
+      "f1": 0.2222222222222222,
+      "containsGold": 0,
+      "promptTokens": 3352
     },
     {
-      "questionId": "e5ba910e_abs",
-      "question": "What is the total cost of my recently purchased headphones and the iPad?",
-      "questionType": "multi-session",
-      "prediction": "No information available.",
-      "abstention": true,
-      "groundTruth": "(unanswerable - expects abstention)",
-      "f1": 1,
-      "containsGold": 1
+      "questionId": "gpt4_59149c78",
+      "question": "I mentioned that I participated in an art-related event two weeks ago. Where was that event held at?",
+      "questionType": "temporal-reasoning",
+      "prediction": "The event was held at the Brooklyn Museum.",
+      "abstention": false,
+      "groundTruth": "The Metropolitan Museum of Art.",
+      "f1": 0.3333333333333333,
+      "containsGold": 0,
+      "promptTokens": 5035
     },
     {
-      "questionId": "545bd2b5",
-      "question": "How much screen time have I been averaging on Instagram per day?",
+      "questionId": "726462e0",
+      "question": "What was the discount I got on my first purchase from the new clothing brand?",
       "questionType": "single-session-user",
       "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "2 hours",
+      "groundTruth": "10%",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 3416
     },
     {
-      "questionId": "9d25d4e0",
-      "question": "How many pieces of jewelry did I acquire in the last two months?",
-      "questionType": "multi-session",
-      "prediction": "No information available.",
-      "abstention": false,
-      "groundTruth": "3",
-      "f1": 0,
-      "containsGold": 0
-    },
-    {
-      "questionId": "gpt4_b5700ca9",
-      "question": "How many days ago did I attend the Maundy Thursday service at the Episcopal Church?",
+      "questionId": "gpt4_468eb063",
+      "question": "How many days ago did I meet Emma?",
       "questionType": "temporal-reasoning",
       "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "4 days.",
+      "groundTruth": "9 days ago. 10 days (including the last day) is also acceptable.",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 2758
     },
     {
-      "questionId": "16c90bf4",
-      "question": "I'm looking back at our previous conversation about the Seco de Cordero recipe from Ancash. You mentioned using a light or medium-bodied beer, but I was wondering if you could remind me what type of beer you specifically recommended?",
+      "questionId": "001be529",
+      "question": "How long did I wait for the decision on my asylum application?",
+      "questionType": "single-session-user",
+      "prediction": "No information available.",
+      "abstention": false,
+      "groundTruth": "over a year",
+      "f1": 0,
+      "containsGold": 0,
+      "promptTokens": 3310
+    },
+    {
+      "questionId": "577d4d32",
+      "question": "What time do I stop checking work emails and messages?",
+      "questionType": "single-session-user",
+      "prediction": "No information available.",
+      "abstention": false,
+      "groundTruth": "7 pm",
+      "f1": 0,
+      "containsGold": 0,
+      "promptTokens": 3040
+    },
+    {
+      "questionId": "561fabcd",
+      "question": "I was thinking back to our previous conversation about the Radiation Amplified zombie, and I was wondering if you remembered what we finally decided to name it?",
       "questionType": "single-session-assistant",
       "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "I recommended using a Pilsner or Lager for the recipe.",
+      "groundTruth": "Fissionator.",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 1764
     },
     {
-      "questionId": "gpt4_b4a80587",
-      "question": "Which event happened first, the road trip to the coast or the arrival of the new prime lens?",
+      "questionId": "gpt4_2655b836",
+      "question": "What was the first issue I had with my new car after its first service?",
       "questionType": "temporal-reasoning",
-      "prediction": "The road trip to the coast happened first, on May 30, 2023.",
+      "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "The arrival of the new prime lens",
-      "f1": 0.11764705882352942,
-      "containsGold": 0
+      "groundTruth": "GPS system not functioning correctly",
+      "f1": 0,
+      "containsGold": 0,
+      "promptTokens": 3259
+    },
+    {
+      "questionId": "ba61f0b9",
+      "question": "How many women are on the team led by my former manager Rachel?",
+      "questionType": "knowledge-update",
+      "prediction": "No information available.",
+      "abstention": false,
+      "groundTruth": "6",
+      "f1": 0,
+      "containsGold": 0,
+      "promptTokens": 3427
+    },
+    {
+      "questionId": "c14c00dd",
+      "question": "What brand of shampoo do I currently use?",
+      "questionType": "single-session-user",
+      "prediction": "No information available.",
+      "abstention": false,
+      "groundTruth": "Trader Joe's",
+      "f1": 0,
+      "containsGold": 0,
+      "promptTokens": 3178
     },
     {
       "questionId": "b759caee",
@@ -99,111 +139,86 @@
       "abstention": false,
       "groundTruth": "@jessica_poole_jewellery",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 716
     },
     {
-      "questionId": "gpt4_65aabe59",
-      "question": "Which device did I set up first, the smart thermostat or the mesh network system?",
-      "questionType": "temporal-reasoning",
-      "prediction": "No information available.",
-      "abstention": false,
-      "groundTruth": "Smart thermostat",
-      "f1": 0,
-      "containsGold": 0
-    },
-    {
-      "questionId": "19b5f2b3_abs",
-      "question": "How long was I in Korea for?",
-      "questionType": "single-session-user",
-      "prediction": "No information available.",
-      "abstention": true,
-      "groundTruth": "(unanswerable - expects abstention)",
-      "f1": 1,
-      "containsGold": 1
-    },
-    {
-      "questionId": "195a1a1b",
-      "question": "Can you suggest some activities that I can do in the evening?",
-      "questionType": "single-session-preference",
-      "prediction": "No information available.",
-      "abstention": false,
-      "groundTruth": "The user would prefer suggestions that involve relaxing activities that can be done in the evening, preferably before 9:30 pm. They would not prefer suggestions that involve using their phone or watching TV, as these activities have been affecting their sleep quality.",
-      "f1": null,
-      "containsGold": null
-    },
-    {
-      "questionId": "gpt4_e05b82a6",
-      "question": "How many times did I ride rollercoasters across all the events I attended from July to October?",
+      "questionId": "d905b33f",
+      "question": "What percentage discount did I get on the book from my favorite author?",
       "questionType": "multi-session",
       "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "10 times",
+      "groundTruth": "20%",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 2535
     },
     {
-      "questionId": "b9cfe692",
-      "question": "How long did I take to finish 'The Seven Husbands of Evelyn Hugo' and 'The Nightingale' combined?",
+      "questionId": "e4e14d04",
+      "question": "How long had I been a member of 'Book Lovers Unite' when I attended the meetup?",
       "questionType": "temporal-reasoning",
       "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "5.5 weeks",
+      "groundTruth": "Two weeks",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 2245
     },
     {
-      "questionId": "58470ed2",
-      "question": "I was going through our previous conversation about The Library of Babel, and I wanted to confirm - what did Borges say about the center and circumference of the Library?",
-      "questionType": "single-session-assistant",
-      "prediction": "Borges notes that the Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.",
+      "questionId": "gpt4_2f91af09",
+      "question": "How many total pieces of writing have I completed since I started writing again three weeks ago, including short stories, poems, and pieces for the writing challenge?",
+      "questionType": "multi-session",
+      "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "According to Borges, 'The Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.'",
-      "f1": 0.8717948717948718,
-      "containsGold": 0
+      "groundTruth": "23",
+      "f1": 0,
+      "containsGold": 0,
+      "promptTokens": 4215
     },
     {
-      "questionId": "08e075c7",
-      "question": "How long have I been using my Fitbit Charge 3?",
-      "questionType": "knowledge-update",
-      "prediction": "2023/06/18 (Sun) 00:48",
+      "questionId": "4fd1909e",
+      "question": "Where did I attend the Imagine Dragons concert?",
+      "questionType": "single-session-user",
+      "prediction": "No information available.",
       "abstention": false,
-      "groundTruth": "9 months",
+      "groundTruth": "Xfinity Center",
       "f1": 0,
-      "containsGold": 0
+      "containsGold": 0,
+      "promptTokens": 1844
     }
   ],
   "retrieval": [
     {
-      "questionId": "gpt4_2f8be40d",
-      "question": "How many weddings have I attended in this year?",
-      "questionType": "multi-session",
+      "questionId": "945e3d21",
+      "question": "How often do I attend yoga classes to help with my anxiety?",
+      "questionType": "knowledge-update",
       "abstention": false,
-      "haystackTurns": 36,
+      "haystackTurns": 24,
       "hitCount": 10,
-      "evidenceCount": 3,
-      "evidenceHit": 2,
-      "answerSessionCount": 3,
-      "answerSessionHit": 3,
+      "evidenceCount": 2,
+      "evidenceHit": 1,
+      "answerSessionCount": 2,
+      "answerSessionHit": 2,
       "randomEvidenceHit": 0.8333333333333334,
-      "randomAnswerSessionHit": 2.9768525875311194
+      "randomAnswerSessionHit": 1.9999326961906043
     },
     {
-      "questionId": "e5ba910e_abs",
-      "question": "What is the total cost of my recently purchased headphones and the iPad?",
-      "questionType": "multi-session",
-      "abstention": true,
+      "questionId": "gpt4_59149c78",
+      "question": "I mentioned that I participated in an art-related event two weeks ago. Where was that event held at?",
+      "questionType": "temporal-reasoning",
+      "abstention": false,
       "haystackTurns": 22,
       "hitCount": 10,
       "evidenceCount": 1,
-      "evidenceHit": 0,
+      "evidenceHit": 1,
       "answerSessionCount": 2,
       "answerSessionHit": 2,
       "randomEvidenceHit": 0.45454545454545453,
       "randomAnswerSessionHit": 1.9998963884412801
     },
     {
-      "questionId": "545bd2b5",
-      "question": "How much screen time have I been averaging on Instagram per day?",
+      "questionId": "726462e0",
+      "question": "What was the discount I got on my first purchase from the new clothing brand?",
       "questionType": "single-session-user",
       "abstention": false,
       "haystackTurns": 12,
@@ -216,22 +231,8 @@
       "randomAnswerSessionHit": 1
     },
     {
-      "questionId": "9d25d4e0",
-      "question": "How many pieces of jewelry did I acquire in the last two months?",
-      "questionType": "multi-session",
-      "abstention": false,
-      "haystackTurns": 36,
-      "hitCount": 10,
-      "evidenceCount": 5,
-      "evidenceHit": 0,
-      "answerSessionCount": 3,
-      "answerSessionHit": 3,
-      "randomEvidenceHit": 1.3888888888888888,
-      "randomAnswerSessionHit": 2.9768525875311194
-    },
-    {
-      "questionId": "gpt4_b5700ca9",
-      "question": "How many days ago did I attend the Maundy Thursday service at the Episcopal Church?",
+      "questionId": "gpt4_468eb063",
+      "question": "How many days ago did I meet Emma?",
       "questionType": "temporal-reasoning",
       "abstention": false,
       "haystackTurns": 12,
@@ -244,9 +245,23 @@
       "randomAnswerSessionHit": 1
     },
     {
-      "questionId": "16c90bf4",
-      "question": "I'm looking back at our previous conversation about the Seco de Cordero recipe from Ancash. You mentioned using a light or medium-bodied beer, but I was wondering if you could remind me what type of beer you specifically recommended?",
-      "questionType": "single-session-assistant",
+      "questionId": "001be529",
+      "question": "How long did I wait for the decision on my asylum application?",
+      "questionType": "single-session-user",
+      "abstention": false,
+      "haystackTurns": 12,
+      "hitCount": 10,
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1,
+      "randomEvidenceHit": 0.8333333333333334,
+      "randomAnswerSessionHit": 1
+    },
+    {
+      "questionId": "577d4d32",
+      "question": "What time do I stop checking work emails and messages?",
+      "questionType": "single-session-user",
       "abstention": false,
       "haystackTurns": 10,
       "hitCount": 10,
@@ -258,18 +273,60 @@
       "randomAnswerSessionHit": 1
     },
     {
-      "questionId": "gpt4_b4a80587",
-      "question": "Which event happened first, the road trip to the coast or the arrival of the new prime lens?",
+      "questionId": "561fabcd",
+      "question": "I was thinking back to our previous conversation about the Radiation Amplified zombie, and I was wondering if you remembered what we finally decided to name it?",
+      "questionType": "single-session-assistant",
+      "abstention": false,
+      "haystackTurns": 17,
+      "hitCount": 10,
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1,
+      "randomEvidenceHit": 0.5882352941176471,
+      "randomAnswerSessionHit": 1
+    },
+    {
+      "questionId": "gpt4_2655b836",
+      "question": "What was the first issue I had with my new car after its first service?",
       "questionType": "temporal-reasoning",
       "abstention": false,
-      "haystackTurns": 24,
+      "haystackTurns": 36,
       "hitCount": 10,
       "evidenceCount": 2,
-      "evidenceHit": 1,
+      "evidenceHit": 2,
+      "answerSessionCount": 3,
+      "answerSessionHit": 3,
+      "randomEvidenceHit": 0.5555555555555556,
+      "randomAnswerSessionHit": 2.9768525875311194
+    },
+    {
+      "questionId": "ba61f0b9",
+      "question": "How many women are on the team led by my former manager Rachel?",
+      "questionType": "knowledge-update",
+      "abstention": false,
+      "haystackTurns": 22,
+      "hitCount": 10,
+      "evidenceCount": 2,
+      "evidenceHit": 2,
       "answerSessionCount": 2,
       "answerSessionHit": 2,
+      "randomEvidenceHit": 0.9090909090909091,
+      "randomAnswerSessionHit": 1.9998963884412801
+    },
+    {
+      "questionId": "c14c00dd",
+      "question": "What brand of shampoo do I currently use?",
+      "questionType": "single-session-user",
+      "abstention": false,
+      "haystackTurns": 12,
+      "hitCount": 10,
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1,
       "randomEvidenceHit": 0.8333333333333334,
-      "randomAnswerSessionHit": 1.9999326961906043
+      "randomAnswerSessionHit": 1
     },
     {
       "questionId": "b759caee",
@@ -286,93 +343,9 @@
       "randomAnswerSessionHit": 1
     },
     {
-      "questionId": "gpt4_65aabe59",
-      "question": "Which device did I set up first, the smart thermostat or the mesh network system?",
-      "questionType": "temporal-reasoning",
-      "abstention": false,
-      "haystackTurns": 24,
-      "hitCount": 10,
-      "evidenceCount": 3,
-      "evidenceHit": 3,
-      "answerSessionCount": 2,
-      "answerSessionHit": 2,
-      "randomEvidenceHit": 1.25,
-      "randomAnswerSessionHit": 1.9999326961906043
-    },
-    {
-      "questionId": "19b5f2b3_abs",
-      "question": "How long was I in Korea for?",
-      "questionType": "single-session-user",
-      "abstention": true,
-      "haystackTurns": 12,
-      "hitCount": 10,
-      "evidenceCount": 0,
-      "evidenceHit": 0,
-      "answerSessionCount": 1,
-      "answerSessionHit": 1,
-      "randomEvidenceHit": 0,
-      "randomAnswerSessionHit": 1
-    },
-    {
-      "questionId": "195a1a1b",
-      "question": "Can you suggest some activities that I can do in the evening?",
-      "questionType": "single-session-preference",
-      "abstention": false,
-      "haystackTurns": 16,
-      "hitCount": 10,
-      "evidenceCount": 1,
-      "evidenceHit": 1,
-      "answerSessionCount": 1,
-      "answerSessionHit": 1,
-      "randomEvidenceHit": 0.625,
-      "randomAnswerSessionHit": 1
-    },
-    {
-      "questionId": "gpt4_e05b82a6",
-      "question": "How many times did I ride rollercoasters across all the events I attended from July to October?",
+      "questionId": "d905b33f",
+      "question": "What percentage discount did I get on the book from my favorite author?",
       "questionType": "multi-session",
-      "abstention": false,
-      "haystackTurns": 46,
-      "hitCount": 10,
-      "evidenceCount": 4,
-      "evidenceHit": 4,
-      "answerSessionCount": 4,
-      "answerSessionHit": 4,
-      "randomEvidenceHit": 0.8695652173913043,
-      "randomAnswerSessionHit": 3.8411394484968886
-    },
-    {
-      "questionId": "b9cfe692",
-      "question": "How long did I take to finish 'The Seven Husbands of Evelyn Hugo' and 'The Nightingale' combined?",
-      "questionType": "temporal-reasoning",
-      "abstention": false,
-      "haystackTurns": 36,
-      "hitCount": 10,
-      "evidenceCount": 2,
-      "evidenceHit": 1,
-      "answerSessionCount": 3,
-      "answerSessionHit": 3,
-      "randomEvidenceHit": 0.5555555555555556,
-      "randomAnswerSessionHit": 2.9768525875311194
-    },
-    {
-      "questionId": "58470ed2",
-      "question": "I was going through our previous conversation about The Library of Babel, and I wanted to confirm - what did Borges say about the center and circumference of the Library?",
-      "questionType": "single-session-assistant",
-      "abstention": false,
-      "haystackTurns": 3,
-      "hitCount": 3,
-      "evidenceCount": 1,
-      "evidenceHit": 1,
-      "answerSessionCount": 1,
-      "answerSessionHit": 1,
-      "randomEvidenceHit": 1,
-      "randomAnswerSessionHit": 1
-    },
-    {
-      "questionId": "08e075c7",
-      "question": "How long have I been using my Fitbit Charge 3?",
-      "questionType": "knowledge-update",
       "abstention": false,
       "haystackTurns": 24,
       "hitCount": 10,
@@ -382,56 +355,91 @@
       "answerSessionHit": 2,
       "randomEvidenceHit": 0.8333333333333334,
       "randomAnswerSessionHit": 1.9999326961906043
+    },
+    {
+      "questionId": "e4e14d04",
+      "question": "How long had I been a member of 'Book Lovers Unite' when I attended the meetup?",
+      "questionType": "temporal-reasoning",
+      "abstention": false,
+      "haystackTurns": 24,
+      "hitCount": 10,
+      "evidenceCount": 2,
+      "evidenceHit": 2,
+      "answerSessionCount": 2,
+      "answerSessionHit": 2,
+      "randomEvidenceHit": 0.8333333333333334,
+      "randomAnswerSessionHit": 1.9999326961906043
+    },
+    {
+      "questionId": "gpt4_2f91af09",
+      "question": "How many total pieces of writing have I completed since I started writing again three weeks ago, including short stories, poems, and pieces for the writing challenge?",
+      "questionType": "multi-session",
+      "abstention": false,
+      "haystackTurns": 34,
+      "hitCount": 10,
+      "evidenceCount": 3,
+      "evidenceHit": 2,
+      "answerSessionCount": 3,
+      "answerSessionHit": 3,
+      "randomEvidenceHit": 0.8823529411764706,
+      "randomAnswerSessionHit": 2.9751803998745046
+    },
+    {
+      "questionId": "4fd1909e",
+      "question": "Where did I attend the Imagine Dragons concert?",
+      "questionType": "single-session-user",
+      "abstention": false,
+      "haystackTurns": 12,
+      "hitCount": 10,
+      "evidenceCount": 1,
+      "evidenceHit": 1,
+      "answerSessionCount": 1,
+      "answerSessionHit": 1,
+      "randomEvidenceHit": 0.8333333333333334,
+      "randomAnswerSessionHit": 1
     }
   ],
   "retrievalSummary": {
-    "questions": 13,
-    "haystackTurnsMean": 21.615384615384617,
-    "haystacksAtOrBelowTopK": 3,
+    "questions": 15,
+    "haystackTurnsMean": 18.333333333333332,
+    "haystacksAtOrBelowTopK": 2,
     "evidenceTurns": {
-      "total": 27,
-      "hit": 19,
-      "randomExpected": 11.855676328502415
+      "total": 22,
+      "hit": 20,
+      "randomExpected": 12.056446821152706
     },
     "answerSessions": {
-      "total": 25,
-      "hit": 25,
-      "randomExpected": 24.771495299662064
+      "total": 24,
+      "hit": 24,
+      "randomExpected": 23.951623852859996
     }
   },
   "aggregate": [
     {
       "questionType": "knowledge-update",
-      "count": 1,
-      "scoredCount": 1,
-      "meanF1": 0,
+      "count": 2,
+      "scoredCount": 2,
+      "meanF1": 0.1111111111111111,
       "meanContainsGold": 0
     },
     {
       "questionType": "multi-session",
-      "count": 3,
-      "scoredCount": 3,
+      "count": 2,
+      "scoredCount": 2,
       "meanF1": 0,
       "meanContainsGold": 0
     },
     {
       "questionType": "single-session-assistant",
-      "count": 3,
-      "scoredCount": 3,
-      "meanF1": 0.2905982905982906,
+      "count": 2,
+      "scoredCount": 2,
+      "meanF1": 0,
       "meanContainsGold": 0
     },
     {
-      "questionType": "single-session-preference",
-      "count": 1,
-      "scoredCount": 0,
-      "meanF1": null,
-      "meanContainsGold": null
-    },
-    {
       "questionType": "single-session-user",
-      "count": 1,
-      "scoredCount": 1,
+      "count": 5,
+      "scoredCount": 5,
       "meanF1": 0,
       "meanContainsGold": 0
     },
@@ -439,57 +447,43 @@
       "questionType": "temporal-reasoning",
       "count": 4,
       "scoredCount": 4,
-      "meanF1": 0.029411764705882356,
+      "meanF1": 0.08333333333333333,
       "meanContainsGold": 0
     },
     {
-      "questionType": "abstention",
-      "count": 2,
-      "scoredCount": 2,
-      "meanF1": 1,
-      "meanContainsGold": 1
-    },
-    {
       "questionType": "ANSWERABLE",
-      "count": 13,
-      "scoredCount": 12,
-      "meanF1": 0.0824534942182001,
+      "count": 15,
+      "scoredCount": 15,
+      "meanF1": 0.03703703703703704,
       "meanContainsGold": 0
     }
   ],
   "alwaysAbstainBaseline": [
     {
       "questionType": "knowledge-update",
-      "count": 1,
-      "scoredCount": 1,
+      "count": 2,
+      "scoredCount": 2,
       "meanF1": 0,
       "meanContainsGold": 0
     },
     {
       "questionType": "multi-session",
-      "count": 3,
-      "scoredCount": 3,
+      "count": 2,
+      "scoredCount": 2,
       "meanF1": 0,
       "meanContainsGold": 0
     },
     {
       "questionType": "single-session-assistant",
-      "count": 3,
-      "scoredCount": 3,
+      "count": 2,
+      "scoredCount": 2,
       "meanF1": 0,
       "meanContainsGold": 0
     },
     {
-      "questionType": "single-session-preference",
-      "count": 1,
-      "scoredCount": 0,
-      "meanF1": null,
-      "meanContainsGold": null
-    },
-    {
       "questionType": "single-session-user",
-      "count": 1,
-      "scoredCount": 1,
+      "count": 5,
+      "scoredCount": 5,
       "meanF1": 0,
       "meanContainsGold": 0
     },
@@ -501,28 +495,24 @@
       "meanContainsGold": 0
     },
     {
-      "questionType": "abstention",
-      "count": 2,
-      "scoredCount": 2,
-      "meanF1": 1,
-      "meanContainsGold": 1
-    },
-    {
       "questionType": "ANSWERABLE",
-      "count": 13,
-      "scoredCount": 12,
+      "count": 15,
+      "scoredCount": 15,
       "meanF1": 0,
       "meanContainsGold": 0
     }
   ],
   "cost": {
-    "totalTokensIn": 43218,
-    "totalTokensOut": 120,
+    "totalTokensIn": 44094,
+    "totalTokensOut": 84,
     "totalCostUsd": 0,
     "calls": 15
   },
-  "wallClockSec": 16.466,
+  "wallClockSec": 18.898,
   "config": {
+    "SPLIT": "oracle",
+    "DATASET_URL": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json",
+    "NUM_CTX": 8192,
     "QA_LIMIT": 15,
     "SEED": 42,
     "TOP_K": 10,
@@ -531,6 +521,7 @@
     "DRY_RUN": false,
     "embedModel": "nomic-embed-text",
     "ollamaBaseUrl": "http://127.0.0.1:11434",
+    "ollamaVersion": "0.34.2",
     "storePerQuestion": "fresh :memory:"
   },
   "scoringNote": "Cheap F1 + contains-gold only; abstention and answerable reported separately; preference (rubric gold) is n/a. Official LongMemEval metric is a GPT-4o yes/no judge - not run (no paid keys)."

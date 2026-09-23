@@ -1,155 +1,119 @@
-# LongMemEval smoke results (draft)
+# LongMemEval results (draft)
 
-Completed 15-question smoke.
 **Not a full benchmark.**
 **Not comparable to published LongMemEval GPT-4o-judge numbers.**
-Artifacts: [`smoke-results.json`](./smoke-results.json) (`llama3.2:1b` reader) and [`smoke-results-gemma4.json`](./smoke-results-gemma4.json) (`gemma4` reader).
+All numbers use cheap metrics (token F1 and whole-word contains-gold), local Ollama models, and $0 of paid API.
 
-Harness revision: #697 fixes (the first draft of this file overstated both retrieval and QA; see "What changed" at the bottom).
+## Headline
 
-## 1) Luna memory surface hooked
+- On the **S split** (~500 turns per question), Luna's retrieval finds 64-75% of the evidence turns in its top 10, against ~2% by chance: retrieval is doing real work.
+- **The production search mode (`hybrid`) is identical to pure vector search here**, question for question, because its BM25 leg is exact-phrase and never matches a natural question.
+- **`hybrid-terms` (bag-of-words BM25 fused with vectors) retrieves more evidence on 13 of 60 questions and less on 2** (sign test p = 0.007), and lifts answerable contains-gold from 10/50 to 16/50 (McNemar p = 0.11, suggestive at this size).
+- A 2026-07-14 synthetic bench shows the opposite on vocabulary-mismatch queries (`hybrid-terms` recall@10 0.42 vs 0.85), which is why production never flipped; see "Production implication".
+
+## 1) Setup
 
 | Step | Path |
 |---|---|
-| write | `ingest.ts` -> `makeRecord` + `MemoryRouter.put` (`@luna/memory`), the same call `memory_save` makes in `packages/memory-tools/src/tools.ts` |
-| read | `run.ts` -> `MemoryRouter.search({ mode: "hybrid" })` (`packages/memory/src/router.ts`), the same call `memory_search` makes |
+| write | `ingest.ts` -> `makeRecord` + `MemoryRouter.put`, the same call `memory_save` makes |
+| read | `run.ts` -> `MemoryRouter.search({ mode })`, the same call `memory_search` makes (production uses `mode: "hybrid"`) |
 | store | a fresh `SqliteVectorBackend.fromPath(":memory:")` + `LunaSqliteBootstrapLive` per question |
-| embed | `makeOllamaEmbedderLayer` (`packages/core/src/embedder/embedder.ts`) |
-| answer | `answerFromContextOllama` (`packages/memory/src/adapters/locomo-eval/answer-model.ts`) |
+| embed | `makeOllamaEmbedderLayer`, `nomic-embed-text` |
+| answer | `answerFromContextOllama` (`locomo-eval/answer-model.ts`), temp 0, `num_ctx` 8192, strict context (overflow stops the run) |
 
-315 episodic turns ingested, one namespace (`longmemeval-eval:<question_id>`) and one fresh store per question.
-Hybrid top-10 search per question.
-Records carry only a role tag and an opaque positional id (`lme_<question>_s<i>_t<j>`).
-No gold label reaches the index: `SqliteVectorBackend` embeds tags into the vector input, and LongMemEval session ids are themselves labels (evidence sessions are named `answer_*`), so evidence and sessions are joined back harness-side by record id.
+Records carry only a role tag and an opaque positional id: no gold label or `answer_*` session id reaches the index.
+Top-10 retrieval per question.
 
-## 2) Subset
+Splits (`LUNA_LME_SPLIT`), the same 500 questions with different haystacks:
 
-- Official file: `longmemeval_oracle.json` from HuggingFace `xiaowu0162/longmemeval-cleaned` (MIT, 500 questions).
-- Oracle haystack = evidence sessions only, so every haystack session is an answer session.
-- **No official 10-20 question sample file exists.**
-- Selection: seeded Fisher-Yates (`LUNA_LME_SEED=42`) then first 15, because the file order is type-clustered (raw first-15 = all temporal-reasoning).
+| split | haystack | mean turns per question (60-question sample) |
+|---|---|---:|
+| `oracle` | evidence sessions only | 22 |
+| `s` | ~50 sessions, mostly distractors | 491 |
 
-| question_id | question_type | abstention |
-|---|---|---|
-| gpt4_2f8be40d | multi-session | |
-| e5ba910e_abs | multi-session | yes |
-| 545bd2b5 | single-session-user | |
-| 9d25d4e0 | multi-session | |
-| gpt4_b5700ca9 | temporal-reasoning | |
-| 16c90bf4 | single-session-assistant | |
-| gpt4_b4a80587 | temporal-reasoning | |
-| b759caee | single-session-assistant | |
-| gpt4_65aabe59 | temporal-reasoning | |
-| 19b5f2b3_abs | single-session-user | yes |
-| 195a1a1b | single-session-preference | |
-| gpt4_e05b82a6 | multi-session | |
-| b9cfe692 | temporal-reasoning | |
-| 58470ed2 | single-session-assistant | |
-| 08e075c7 | knowledge-update | |
+Selection: questions sorted by id, seeded Fisher-Yates (seed 42), first N, so every split picks the same questions.
+The 15-question default is a prefix of the 60-question sample.
+60-question type mix (answerable / abstention): knowledge-update 8/3, multi-session 15/1, single-session-assistant 4/0, single-session-preference 4/0, single-session-user 11/0, temporal-reasoning 12/2.
 
-## 3) Models + cost
+Models: `nomic-embed-text` (embed), `gemma4:latest` 8B and `llama3.2:1b` (answer), local Ollama on an Apple-silicon Mac.
+Answer runs used Ollama 0.34.2; the two retrieval-only runs used 0.34.3 (the app auto-updated mid-batch), recorded in each artifact's `config.ollamaVersion`.
+Temp 0 runs are deterministic: the 15-question oracle runs reproduced exactly across two batches.
 
-| role | model | where | cost |
-|---|---|---|---|
-| embed | `nomic-embed-text` | local Ollama | $0 |
-| answer | `llama3.2:1b` and `gemma4:latest` | local Ollama `/api/chat`, temp 0 | $0 |
-| judge | **not run** | official metric is a GPT-4o yes/no judge; no paid keys | $0 |
+## 2) Retrieval, 60 questions, S split
 
-Wall-clock on an Apple-silicon Mac: 0.3 min (`llama3.2:1b`), 2.9 min (`gemma4`).
-Both runs are deterministic at temp 0: re-running reproduces the same predictions.
+Abstention questions excluded (nothing to find): 54 questions, 104 evidence turns, 100 answer sessions.
+Random = expected hits drawing 10 turns uniformly from the same haystack.
 
-## 4) Retrieval, against chance
-
-Abstention questions are excluded (nothing to find), leaving 13 questions.
-The baseline is the expected score of drawing top-10 turns uniformly at random from the same haystack.
-Haystacks average ~22 turns, and 3 of 13 have 10 or fewer, so top-10 returns everything for them.
-
-| metric (hybrid, top-10) | measured | random top-10 |
+| mode | evidence turns in top-10 | answer sessions in top-10 |
 |---|---:|---:|
-| `has_answer` turns retrieved | 19/27 (70.4%) | 11.9/27 (43.9%) |
-| answer sessions retrieved | 25/25 (100%) | 24.8/25 (99.1%) |
+| random | 2.2/104 (2.1%) | 21.8/100 (21.8%) |
+| `vec` | 67/104 (64.4%) | 90/100 (90.0%) |
+| **`hybrid` (production)** | **67/104 (64.4%)** | **90/100 (90.0%)** |
+| `bm25` | 76/104 (73.1%) | 92/100 (92.0%) |
+| `hybrid-terms` | 78/104 (75.0%) | 97/100 (97.0%) |
 
-- **Turn-level recall beats chance by ~26 points**: retrieval is doing real work.
-- Search returned exactly min(topK, haystack) hits for every question (`hitCount` in the artifact), which is what the random baseline assumes.
-- **Session-level recall is not a signal on this split**: chance alone gets 99%.
+- `hybrid` and `vec` return the same evidence and session hits on every one of the 60 questions.
+- `hybrid-terms` vs `hybrid`, per question: more evidence on 13, less on 2, same on 39 (two-sided sign test p = 0.007).
+- For reference, the oracle split (evidence-only haystack, `hybrid`) gives 75/104 turns (72.1%, random 46.7%) and 97/100 sessions (random 98.8%, so no signal).
 
-Search-mode comparison (`LUNA_LME_SEARCH_MODE`, same 27 evidence turns, `--dry-run`):
+## 3) QA, 60 questions, `gemma4`
 
-| mode | `has_answer` turns |
-|---|---:|
-| `vec` | 19/27 (70.4%) |
-| `hybrid` (production default) | 19/27 (70.4%) |
-| `hybrid-terms` | 19/27 (70.4%) |
-| `bm25` | 21/27 (77.8%) |
+Answerable questions only (54, of which the 4 preference questions are n/a because their gold is a rubric).
+The always-abstain baseline scores 0 on every answerable row and 1.0 on abstention.
 
-`hybrid` is identical to `vec` here: its BM25 leg is exact-phrase (`sqlite-vector.ts` `rankByBm25(..., "phrase")`), and no question appears verbatim in its haystack, so the lexical leg never fires.
-Pure `bm25` leading is suggestive only: 27 evidence turns is far too few to rank modes.
+| question_type | n | oracle F1 / CG | S `hybrid` F1 / CG | S `hybrid-terms` F1 / CG |
+|---|---:|---:|---:|---:|
+| knowledge-update | 8 | 0.238 / 0.125 | 0.321 / 0.250 | 0.271 / 0.250 |
+| multi-session | 15 | 0.116 / 0.067 | 0.049 / 0.000 | 0.293 / 0.333 |
+| single-session-assistant | 4 | 0.700 / 0.500 | 0.450 / 0.250 | 0.450 / 0.250 |
+| single-session-user | 11 | 0.755 / 0.727 | 0.524 / 0.545 | 0.639 / 0.636 |
+| temporal-reasoning | 12 | 0.194 / 0.083 | 0.074 / 0.083 | 0.237 / 0.083 |
+| abstention | 6 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| **ANSWERABLE (50 scored)** | **54** | **0.341 / 0.260** | **0.235 / 0.200** | **0.365 / 0.320** |
 
-## 5) QA (cheap metrics only)
+- Moving from the oracle haystack to S costs `hybrid` 3 correct answers (13 -> 10 of 50): that is the price of having to find the evidence.
+- `hybrid-terms` on S beats `hybrid` on S by 6 answers (16 vs 10; 8 questions only it gets, 2 only `hybrid` gets; McNemar exact p = 0.11).
+- It even edges past `hybrid` on the oracle haystack (16 vs 13), because the oracle run also uses the phrase-BM25 `hybrid`, which is vector-only in practice.
+- Nearly all of the gain is multi-session (0 -> 5 of 15): questions that need several turns, where exact vocabulary overlap helps pull each one in.
+- The reader still falls back to "No information available." often (29-37 of 60), so reading, not only retrieval, limits the score.
+- Largest prompt: 7,122 tokens against `num_ctx` 8192; no run hit the overflow guard.
 
-Official LongMemEval QA metric = GPT-4o yes/no judge (`src/evaluation/evaluate_qa.py`), **not run**.
-We report token-overlap F1 (same helper as LoCoMo) and contains-gold (normalized gold answer appears in the prediction as a whole-word phrase).
-Abstention (`_abs`) questions are reported on their own row, never blended into the answerable score.
-`single-session-preference` gold is a grading rubric, so both metrics are n/a there.
-The baseline is a reader that always replies `No information available.`, which is the answer prompt's own fallback.
+## 4) 15-question default smoke (oracle)
 
-`llama3.2:1b` reader:
+The default command (`LUNA_LME_QA_LIMIT` 15, oracle, `hybrid`), committed as `smoke-results.json` / `smoke-results-gemma4.json`.
+All 15 are answerable.
 
-| question_type | count | mean F1 | contains-gold | always-abstain F1 | always-abstain contains-gold |
-|---|---:|---:|---:|---:|---:|
-| knowledge-update | 1 | 0.000 | 0.000 | 0.000 | 0.000 |
-| multi-session | 3 | 0.000 | 0.000 | 0.000 | 0.000 |
-| single-session-assistant | 3 | 0.291 | 0.000 | 0.000 | 0.000 |
-| single-session-preference | 1 (0 scored) | n/a | n/a | n/a | n/a |
-| single-session-user | 1 | 0.000 | 0.000 | 0.000 | 0.000 |
-| temporal-reasoning | 4 | 0.029 | 0.000 | 0.000 | 0.000 |
-| abstention | 2 | 1.000 | 1.000 | 1.000 | 1.000 |
-| **ANSWERABLE** | **13 (12 scored)** | **0.082** | **0.000** | 0.000 | 0.000 |
+| reader | evidence turns (random) | answerable F1 | answerable contains-gold |
+|---|---:|---:|---:|
+| `llama3.2:1b` | 20/22 (12.1) | 0.037 | 0/15 |
+| `gemma4` | 20/22 (12.1) | 0.427 | 6/15 |
 
-`gemma4` reader:
+The 1B reader is at the floor; `gemma4` is the reader used for everything above.
 
-| question_type | count | mean F1 | contains-gold | always-abstain F1 | always-abstain contains-gold |
-|---|---:|---:|---:|---:|---:|
-| knowledge-update | 1 | 1.000 | 1.000 | 0.000 | 0.000 |
-| multi-session | 3 | 0.222 | 0.000 | 0.000 | 0.000 |
-| single-session-assistant | 3 | 0.640 | 0.333 | 0.000 | 0.000 |
-| single-session-preference | 1 (0 scored) | n/a | n/a | n/a | n/a |
-| single-session-user | 1 | 0.000 | 0.000 | 0.000 | 0.000 |
-| temporal-reasoning | 4 | 0.700 | 0.750 | 0.000 | 0.000 |
-| abstention | 2 | 1.000 | 1.000 | 1.000 | 1.000 |
-| **ANSWERABLE** | **13 (12 scored)** | **0.532** | **0.417** | 0.000 | 0.000 |
+## 5) Production implication (not changed here)
 
-Honest read:
+`memory_search` (`packages/memory-tools/src/tools.ts`) and per-turn recall (`turn-memory.ts`) call `mode: "hybrid"`.
+On real conversational memory that is vector-only, and `hybrid-terms` retrieves significantly more evidence.
+But the synthetic bench (`bench/baseline-2026-07-14.json`, 230 queries) shows `hybrid-terms` regressing badly on its vocabulary-mismatch slice (recall@10 0.42 vs 0.85) while tying or winning elsewhere.
+The two benches disagree about which failure matters more, so flipping the default is a product decision, tracked separately.
 
-- **The 1B reader is at the floor**: answerable contains-gold 0/12, F1 0.082, and 12/15 replies are the fallback phrase.
-  Its 2/2 abstention score is the always-abstain baseline, not judgement.
-- **A stronger local reader (`gemma4`) lifts answerable F1 from 0.082 to 0.532 and contains-gold from 0/12 to 5/12** on identical retrieval, so the reader was the main bottleneck.
-- `gemma4` still falls back on questions whose evidence *was* fully retrieved (`545bd2b5`, `16c90bf4`), so reading loses more than retrieval on this split.
-- Removing the tag noise from the embedding input (section 6) moved 1 evidence turn into the top-10 and changed which excerpts the reader saw, which shifted `gemma4` from 0.382 to 0.532; with 12 scored questions, treat that swing as noise-sized.
-- Contains-gold is strict: `"10"` vs gold `"10 times"` and a correct Borges paraphrase vs a gold that starts "According to Borges, ..." both score 0 (F1 still credits them).
-- Contains-gold still passes an "A or B?" answer that names both options; only a judge can grade that.
+## 6) Known limits
 
-Do **not** quote any number here as "Luna's LongMemEval score."
-It is a 15-question oracle-haystack smoke with cheap metrics.
+- 60 questions is enough to separate retrieval modes, not to rank QA precisely: one answer is 2 points of contains-gold.
+- Contains-gold is strict (a correct "10" misses gold "10 times"), and ~11% of golds carry extra prose it can never match; F1 gives partial credit.
+- The M split (~500 sessions) is not runnable: its 2.7GB file exceeds the JS max string length.
+- The official GPT-4o judge was not run.
 
-## 6) What changed from the first draft of this file (#697)
+## 7) Artifacts
 
-The first draft reported overall F1 0.196 / contains-gold 0.133 and concluded "hybrid retrieval on the oracle haystack is fine".
-Both conclusions were unsupported:
+| file | split | n | mode | reader |
+|---|---|---:|---|---|
+| `smoke-results.json` | oracle | 15 | hybrid | llama3.2:1b |
+| `smoke-results-gemma4.json` | oracle | 15 | hybrid | gemma4 |
+| `results-oracle-n60-gemma4.json` | oracle | 60 | hybrid | gemma4 |
+| `results-s-n60-gemma4-hybrid.json` | s | 60 | hybrid | gemma4 |
+| `results-s-n60-gemma4-hybrid-terms.json` | s | 60 | hybrid-terms | gemma4 |
+| `results-s-n60-bm25-retrieval.json` | s | 60 | bm25 | retrieval only |
+| `results-s-n60-vec-retrieval.json` | s | 60 | vec | retrieval only |
 
-- **Contains-gold 0.133 was exactly the always-abstain baseline** (2/15 = the two `_abs` items); answerable contains-gold was 0/13.
-- **Session-level 100% was chance** (99.1% expected at random).
-- **`has_answer` was a record tag**, and tags are embedded into the vector input.
-  Measured effect on this slice: none (19/28 with and without the tag, old harness), but it was a live leak for any other slice.
-- **The `session:<id>` tag was a label too**: LongMemEval names evidence sessions `answer_*` (the official `run_retrieval.py` finds evidence by that substring).
-  On oracle every session is `answer_*`, so nothing leaked here, but on `longmemeval_s` only evidence sessions are; the tag is gone and sessions are joined harness-side.
-- **A missing answer model scored an all-zero file with exit 0.** It now exits 2 and writes nothing.
-- `containsGold` matched substrings (`"12 hours"` contained `"2 hours"`), and markdown-escaped answers (`@jessica\_poole\_jewellery`) scored 0; both fixed with regression tests.
-
-## 7) Open follow-ups
-
-- `answerFromContextOllama` sets no `num_ctx`; prompts average ~3.1k tokens, so a model with a small default context may silently truncate.
-  It is shared with LoCoMo, so the fix belongs in its own change.
-- `answerFromContextOllama` has no request timeout, so a hung daemon hangs the run; same shared-code caveat.
-- `locomo-eval/run.ts` still sends embeddings and answers to different URLs when only `OLLAMA_HOST` is set (the bug fixed here).
-- The next informative run is `longmemeval_s` (~40 sessions per question), where retrieval is no longer near-trivial; set `LUNA_LME_DATASET_URL` (the cache is keyed by file name).
+Reproduce any row with `LUNA_LME_SPLIT`, `LUNA_LME_QA_LIMIT`, `LUNA_LME_SEARCH_MODE` and `LUNA_LME_ANSWER_MODEL` as listed (see `README.md`).
