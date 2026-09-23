@@ -443,11 +443,27 @@ fn build_card_window(
     // the requested y, then drift back a beat later — observed live). Any
     // position-sensitive reader of the frame before the drift (the boot
     // snap settle) sees the intermediate spot, so re-assert the requested
-    // top-left now.
+    // top-left now — SYNCHRONOUSLY through AppKit, since tao's set_position
+    // is queued on the runloop and would still land after the settle.
     if let Some((px, py)) = position {
-        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-            px, py,
-        )));
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_app_kit::NSWindow;
+            let _ = with_appkit_main_thread(window.clone(), move |w| {
+                let ptr = w.ns_window().map_err(|e| e.to_string())?;
+                let ns: &NSWindow = unsafe { &*ptr.cast() };
+                unsafe {
+                    set_frame_top_left_ns(ns, px, py);
+                }
+                Ok(())
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window.set_position(tauri::Position::Logical(
+                tauri::LogicalPosition::new(px, py),
+            ));
+        }
     }
     finalize_native_window_chrome(&window);
     Ok(window)
@@ -2581,6 +2597,30 @@ fn open_snap_top_left(app: &tauri::AppHandle, w: f64, h: f64) -> Option<(f64, f6
     Some((r.x, r.y))
 }
 
+/// Apply a top-left logical position to `win_ns` synchronously through
+/// AppKit, bypassing tao's `set_position` — that call is queued on the
+/// runloop, so any caller that moves a window and immediately reads or
+/// attaches against its frame would act on the PRE-move geometry: a
+/// settle's corrective move would land after the attach and tow the new
+/// child by the delta (a seam off flush), and the boot re-assert would
+/// land after the reattach pass read a constrained frame. Cocoa's y axis
+/// grows UP from the primary screen's bottom edge, so the top-left point
+/// converts as `primaryHeight - y`. Main thread only.
+#[cfg(target_os = "macos")]
+unsafe fn set_frame_top_left_ns(win_ns: &objc2_app_kit::NSWindow, x: f64, y: f64) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSScreen;
+    use objc2_core_foundation::CGPoint;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let Some(primary) = NSScreen::screens(mtm).firstObject() else {
+        return;
+    };
+    let height = primary.frame().size.height;
+    win_ns.setFrameTopLeftPoint(CGPoint::new(x, height - y));
+}
+
 #[cfg(target_os = "macos")]
 unsafe fn ns_has_ancestor(
     win: &objc2_app_kit::NSWindow,
@@ -2735,10 +2775,13 @@ fn settle_snap(win: &tauri::WebviewWindow) {
             } else {
                 // Move into the flush position only when it differs — an
                 // already-flush release still attaches (geometry IS the truth).
+                // Synchronous AppKit move: tao's set_position is queued and
+                // would land AFTER the attach below — the new child would
+                // then tow by the corrective delta and end a seam off flush.
                 if (r.x - w.x).abs() >= 0.5 || (r.y - w.y).abs() >= 0.5 {
-                    let _ = win.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(r.x, r.y),
-                    ));
+                    unsafe {
+                        set_frame_top_left_ns(win_ns, r.x, r.y);
+                    }
                 }
                 let Some(p) = app.get_webview_window(&others[i].0) else {
                     return;
@@ -2951,9 +2994,12 @@ pub(crate) fn reflush_snap_children(win: &tauri::WebviewWindow) {
         };
         let r = reflush_edge(c, parent_rect);
         if (r.x - c.x).abs() >= 0.5 || (r.y - c.y).abs() >= 0.5 {
-            let _ = child.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
-                r.x, r.y,
-            )));
+            if let Ok(ptr) = child.ns_window() {
+                let ns: &NSWindow = unsafe { &*ptr.cast() };
+                unsafe {
+                    set_frame_top_left_ns(ns, r.x, r.y);
+                }
+            }
         }
     }
 }
