@@ -115,6 +115,27 @@ Held-out test, run once:
 1. Safety: LongMemEval S questions 61-260 (fresh), evidence@5 vs `hybrid`, for each of 3 Sonnet and 3 Haiku keyword samples: it must not be significantly worse (two-sided sign test, losses > wins with p < 0.05 fails).
 2. Efficacy replication: memory-suite with the 3 HAIKU keyword samples (not used for selection): vocab-mismatch recall@5 must beat `hybrid` with more wins than losses on every sample, and no other slice may lose more than 2 net queries.
 
+## Held-out result (2026-09-23, run once, recorded before any further change)
+
+LongMemEval S questions 61-260 (185 answerable, 351 evidence turns), evidence@5:
+
+| config | evidence@5 | vs `hybrid` (more / fewer), p |
+|---|---:|---:|
+| `hybrid` | 146/351 (41.6%) | - |
+| `hybrid-terms` (reference) | 199/351 (56.7%) | 54 / 3, p < 0.0001 |
+| locked, Sonnet keywords #0 / #1 / #2 | 39.0% / 44.4% / 41.9% | 8/15 p = 0.21; 19/12 p = 0.28; 9/8 p = 1.0 |
+| locked, Haiku keywords #0 / #1 / #2 | 40.5% / 40.7% / 40.7% | 0/4 p = 0.13; 4/6 p = 0.75; 1/4 p = 0.38 |
+
+memory-suite, Haiku keywords (efficacy replication), vocab-mismatch recall@5 vs `hybrid` 0.683: #0 0.667 (0/1), #1 0.733 (3/0), #2 0.700 (1/0).
+
+Outcome against the locked rules:
+1. Safety: PASS. No keyword sample is significantly worse than `hybrid` on held-out LongMemEval (neutral, one Sonnet sample leaning worse).
+2. Efficacy replication: FAIL. Haiku sample #0 has more losses than wins on vocab-mismatch.
+Verdict: agent-keyword expansion alone is promising (large with Sonnet keywords on the tuning set, small with Haiku) but NOT proven; it does not ship on this evidence.
+
+The held-out set strongly confirms the other finding: bag-of-words BM25 (`hybrid-terms`) finds far more evidence on conversational memory (+15.1 points, 54 vs 3), and 63 of the 64 extra evidence turns sit at vector ranks 11-50, i.e. inside production's own candidate pool but ranked too low.
+That makes a relevance judge over a wider pool the next hypothesis (see `rr=` in `src/search-config.ts`).
+
 ## Rollout PR (separate, after results)
 
 - `LUNA_MEMORY_SEARCH_MODE` validated at startup (unknown value = loud failure), default unchanged.
