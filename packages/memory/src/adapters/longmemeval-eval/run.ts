@@ -31,9 +31,12 @@
  *   LUNA_LME_QA_LIMIT          question count (default: 15)
  *   LUNA_LME_SEED              shuffle seed (default: 42; `order` = file order)
  *   LUNA_LME_TOPK              memory_search topK (default: 10)
- *   LUNA_LME_SEARCH_MODE       vec | hybrid | bm25 | hybrid-terms (default:
- *                              hybrid, what memory_search uses; note hybrid's
- *                              BM25 leg is exact-phrase, see RESULTS.md)
+ *   LUNA_LME_SEARCH_MODE       a search-config label (src/search-config.ts):
+ *                              vec | hybrid | bm25 | hybrid-terms |
+ *                              hybrid-weighted[:w=..][:e=..][:s=..][:kw=<model>#<n>]
+ *                              (default: hybrid, what memory_search uses; its
+ *                              BM25 leg is exact-phrase, see RESULTS.md).
+ *                              kw= reads bench/expansion/longmemeval-<model>.json
  *   LUNA_LME_ANSWER_MODEL      Ollama chat model (default: llama3.2:1b)
  *   LUNA_LME_DATASET_URL       override the split's JSON URL (cache is keyed by file name)
  *   LUNA_LME_NUM_CTX           answer-model num_ctx (default: 8192). Pinned
@@ -56,11 +59,7 @@
  *   5 memory backend failure (ingest or search). NB: locomo-eval uses 5 for
  *     its time cap; the two harnesses' codes are independent.
  */
-import { Effect, Layer, Stream } from "effect"
-import { Clock, ObservabilityService, makeOllamaEmbedderLayer } from "@luna/core"
-import { SqliteVectorBackend } from "../../backends/sqlite-vector.js"
-import { LunaSqliteBootstrapLive } from "../../backends/vectorlite-bootstrap.js"
-import { MemoryLayer } from "../../layer.js"
+import { Effect, Stream } from "effect"
 import { MemoryRouterTag } from "../../router.js"
 import {
   answerFromContextOllama,
@@ -68,6 +67,8 @@ import {
   type CostTracker,
 } from "../locomo-eval/answer-model.js"
 import { randomRetrievalBaseline } from "./baselines.js"
+import { describeError, hasErrorTag, loadExpansionSidecars, makeQuestionLayer } from "./harness.js"
+import { expansionFor, parseSearchConfig, type ExpansionSidecar, type SearchConfig } from "../../search-config.js"
 import {
   fetchDataset,
   flattenTurns,
@@ -95,9 +96,6 @@ const here = dirname(fileURLToPath(import.meta.url))
 const OUT_DIR = resolve(here, ".out")
 
 const DRY_RUN = process.argv.includes("--dry-run")
-
-const SEARCH_MODES = ["vec", "hybrid", "bm25", "hybrid-terms"] as const
-type SearchMode = (typeof SEARCH_MODES)[number]
 
 function configError(message: string): never {
   console.error(`[longmemeval-eval] invalid config: ${message}`)
@@ -127,11 +125,16 @@ const TOP_K = parseIntEnv("LUNA_LME_TOPK", 10, 1)
 const SEED_RAW = process.env["LUNA_LME_SEED"]
 const SEED: number | null =
   SEED_RAW === "none" || SEED_RAW === "order" ? null : parseIntEnv("LUNA_LME_SEED", 42, 0)
-const SEARCH_MODE_RAW = process.env["LUNA_LME_SEARCH_MODE"] ?? "hybrid"
-if (!(SEARCH_MODES as ReadonlyArray<string>).includes(SEARCH_MODE_RAW)) {
-  configError(`LUNA_LME_SEARCH_MODE="${SEARCH_MODE_RAW}" must be one of ${SEARCH_MODES.join(", ")}`)
-}
-const SEARCH_MODE = SEARCH_MODE_RAW as SearchMode
+// A search-config label (src/search-config.ts), e.g. "hybrid" or
+// "hybrid-weighted:w=0.25:s=extended:kw=sonnet#0".
+const SEARCH_CONFIG: SearchConfig = (() => {
+  try {
+    return parseSearchConfig(process.env["LUNA_LME_SEARCH_MODE"]?.trim() || "hybrid")
+  } catch (e) {
+    return configError(`LUNA_LME_SEARCH_MODE: ${e instanceof Error ? e.message : String(e)}`)
+  }
+})()
+const SEARCH_MODE = SEARCH_CONFIG.label
 const SPLIT_RAW = process.env["LUNA_LME_SPLIT"]?.trim() || "oracle"
 if (!Object.hasOwn(SPLIT_URLS, SPLIT_RAW)) {
   configError(`LUNA_LME_SPLIT="${SPLIT_RAW}" must be one of ${Object.keys(SPLIT_URLS).join(", ")}`)
@@ -157,41 +160,6 @@ class AnswerModelError extends Error {
   }
 }
 
-/** Does `e` (or anything on its `cause` chain) carry this Effect error tag? */
-function hasErrorTag(e: unknown, tag: string, depth = 0): boolean {
-  if (depth > 8 || e === null || typeof e !== "object") return false
-  if ((e as { _tag?: unknown })._tag === tag) return true
-  return hasErrorTag((e as { cause?: unknown }).cause, tag, depth + 1)
-}
-
-function describeError(e: unknown, depth = 0): string {
-  if (depth > 8 || e === null || e === undefined) return ""
-  const tag = typeof e === "object" && "_tag" in e ? String((e as { _tag: unknown })._tag) : ""
-  const message = e instanceof Error ? e.message : String(e)
-  const self = tag && (message === "" || message === tag) ? tag : tag ? `${tag}: ${message}` : message
-  const cause = typeof e === "object" ? describeError((e as { cause?: unknown }).cause, depth + 1) : ""
-  return `${self}${cause ? ` <- ${cause}` : ""}`
-}
-
-/** A fresh in-memory store per question: no shared index, no order effects. */
-function makeQuestionLayer() {
-  const supportLayer = Layer.mergeAll(
-    ObservabilityService.Default.pipe(Layer.provide(Clock.Default)),
-    makeOllamaEmbedderLayer({ model: EMBED_MODEL, baseUrl: OLLAMA_BASE_URL }),
-    Clock.Default,
-    LunaSqliteBootstrapLive,
-  )
-  return Layer.unwrap(
-    Effect.gen(function* () {
-      const backend = yield* SqliteVectorBackend
-      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
-    }),
-  ).pipe(
-    Layer.provideMerge(SqliteVectorBackend.fromPath(":memory:")),
-    Layer.provideMerge(supportLayer),
-  )
-}
-
 function textFromRecord(content: unknown): string {
   return content !== null && typeof content === "object" && "text" in content
     ? String((content as { text: unknown }).text)
@@ -207,18 +175,25 @@ interface QuestionOutcome {
   readonly scored: ScoredRun | null
 }
 
-function runQuestion(instance: LmeInstance, tracker: CostTracker) {
+function runQuestion(
+  instance: LmeInstance,
+  tracker: CostTracker,
+  sidecars: ReadonlyMap<string, ExpansionSidecar>,
+) {
   return Effect.gen(function* () {
     const router = yield* MemoryRouterTag
     const turns = flattenTurns(instance)
     const ingested = yield* ingestInstance(router, turns)
+    const expansionTerms = expansionFor(SEARCH_CONFIG, instance.question_id, sidecars)
 
     const hits = yield* Stream.runCollect(
       router.search({
         queryText: instance.question,
         topK: TOP_K,
         namespace: namespaceFor(instance.question_id),
-        mode: SEARCH_MODE,
+        mode: SEARCH_CONFIG.mode,
+        ...(SEARCH_CONFIG.fusion !== undefined ? { fusion: SEARCH_CONFIG.fusion } : {}),
+        ...(expansionTerms !== undefined ? { expansionTerms } : {}),
       }),
     ).pipe(Effect.map((h) => Array.from(h)))
 
@@ -346,6 +321,12 @@ async function main(): Promise<void> {
   )
   console.log(`# topK=${TOP_K} · search=${SEARCH_MODE} · embedder=${EMBED_MODEL} · ollama=${OLLAMA_BASE_URL}`)
 
+  let sidecars: ReadonlyMap<string, ExpansionSidecar>
+  try {
+    sidecars = loadExpansionSidecars([SEARCH_CONFIG])
+  } catch (e) {
+    configError(`expansion keywords: ${e instanceof Error ? e.message : String(e)}`)
+  }
   const tracker: CostTracker = newCostTracker()
   const scored: ScoredRun[] = []
   const retrieval: RetrievalRecord[] = []
@@ -356,7 +337,7 @@ async function main(): Promise<void> {
     let outcome: QuestionOutcome
     try {
       outcome = await Effect.runPromise(
-        Effect.scoped(runQuestion(instance, tracker)).pipe(Effect.provide(makeQuestionLayer())),
+        Effect.scoped(runQuestion(instance, tracker, sidecars)).pipe(Effect.provide(makeQuestionLayer(EMBED_MODEL, OLLAMA_BASE_URL))),
       )
     } catch (e) {
       if (e instanceof AnswerModelError) blocked(e.message + ".")

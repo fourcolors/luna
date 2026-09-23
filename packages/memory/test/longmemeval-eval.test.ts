@@ -5,7 +5,7 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import type { MemoryRecord, MemoryRouter } from "@luna/memory"
-import { probAnyDrawn, randomRetrievalBaseline } from "../src/adapters/longmemeval-eval/baselines.js"
+import { probAnyDrawn, randomRetrievalBaseline, signTestP } from "../src/adapters/longmemeval-eval/baselines.js"
 import {
   flattenTurns,
   isAbstentionId,
@@ -139,6 +139,14 @@ describe("longmemeval-eval ingest", () => {
 })
 
 describe("longmemeval-eval baselines", () => {
+  it("signTestP: exact two-sided sign test (ties excluded)", () => {
+    expect(signTestP(13, 2)).toBeCloseTo(0.00739, 4)
+    expect(signTestP(8, 2)).toBeCloseTo(0.1094, 4)
+    expect(signTestP(2, 8)).toBeCloseTo(signTestP(8, 2), 12)
+    expect(signTestP(5, 5)).toBe(1)
+    expect(signTestP(0, 0)).toBe(1)
+  })
+
   it("probAnyDrawn matches the closed form and its edge cases", () => {
     // 1 - C(8,2)/C(10,2) = 1 - 28/45
     expect(probAnyDrawn(10, 2, 2)).toBeCloseTo(1 - 28 / 45, 10)
