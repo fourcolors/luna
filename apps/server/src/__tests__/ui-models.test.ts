@@ -179,7 +179,7 @@ describe("buildAvailableModels", () => {
       { id: "claude-fable-5-1",  label: "Fable 5.1 (1M context, xhigh reasoning)", efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
       { id: "claude-mythos-5",   label: "Mythos 5 (1M context, first-party only)", efforts: [] },
       { id: "claude-opus-5",     label: "Opus 5 (1M context, xhigh reasoning)",    efforts: ALL_LEVELS_PLUS_ULTRACODE, defaultEffort: "high" },
-      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — most capable",          efforts: ALL_LEVELS_PLUS_ULTRACODE },
+      { id: "claude-opus-4-8",   label: "Claude Opus 4.8 — prior gen",             efforts: ALL_LEVELS_PLUS_ULTRACODE },
       { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — prior gen",           efforts: THROUGH_MAX },
       { id: "claude-haiku-4-5",  label: "Claude Haiku 4.5 — fastest",              efforts: [] },
     ])

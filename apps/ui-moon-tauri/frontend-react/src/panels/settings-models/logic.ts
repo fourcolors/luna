@@ -17,10 +17,10 @@
  * poke the DOM from transport callbacks" rule store.ts itself follows.
  *
  * Role defaults (v1):
- *   advisor      -> claude-opus-4-8   (most capable)
+ *   advisor      -> claude-opus-5-5   (most capable)
  *   daily-driver -> claude-opus-5-5   (recommended default)
- *   wake         -> claude-sonnet-4-6 (cheapest capable)
- *   dream        -> claude-haiku-4-5  (cheapest)
+ *   wake         -> claude-sonnet-5   (latest sonnet)
+ *   dream        -> claude-haiku-4-5  (cheapest; latest haiku — no 5.x yet)
  *
  * OpenAI / Google are present-but-gated provider slots: shown with a
  * "validated when key + gateway present" notice; this port doesn't filter
@@ -43,9 +43,9 @@ export const ROLE_LABELS: Record<Role, string> = {
 // These two tables MUST agree: the server one decides what actually runs, this
 // one decides what the settings panel shows as the role's default.
 export const DEFAULT_ROLE_MODEL: Record<Role, string> = {
-  advisor: "claude-opus-4-8",
+  advisor: "claude-opus-5-5",
   "daily-driver": "claude-opus-5-5",
-  wake: "claude-sonnet-4-6",
+  wake: "claude-sonnet-5",
   dream: "claude-haiku-4-5",
 }
 
@@ -75,7 +75,7 @@ export const ANTHROPIC_MODELS: readonly ModelOption[] = [
   { id: "claude-fable-5-1", label: "Claude Fable 5.1 - 1M context, xhigh reasoning" },
   { id: "claude-mythos-5", label: "Claude Mythos 5 - 1M context, first-party only" },
   { id: "claude-opus-5", label: "Claude Opus 5 - 1M context, xhigh reasoning" },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8 - most capable" },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8 - prior gen" },
   { id: "claude-opus-4-7", label: "Claude Opus 4.7 - prior gen" },
   { id: "claude-opus-4-6", label: "Claude Opus 4.6 - prior gen" },
   { id: "claude-opus-4-5", label: "Claude Opus 4.5 - prior gen" },
