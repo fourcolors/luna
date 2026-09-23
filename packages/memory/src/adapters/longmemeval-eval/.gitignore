@@ -1,4 +1,4 @@
-# Official LongMemEval JSON is MIT but large — never vendor it.
+# Official LongMemEval JSON is MIT but large - never vendor it.
 .cache/
 # Per-run dumps. The committed smoke artifact lives next to RESULTS.md.
 .out/

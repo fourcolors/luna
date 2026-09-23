@@ -1,16 +1,21 @@
 /**
- * LongMemEval harness unit tests — pure functions only.
+ * LongMemEval harness unit tests - pure functions plus a fake router.
  * No network, no Ollama. Live path is run.ts + RESULTS.md.
  */
+import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
+import type { MemoryRecord, MemoryRouter } from "@luna/memory"
+import { probAnyDrawn, randomRetrievalBaseline } from "../src/adapters/longmemeval-eval/baselines.js"
 import {
   flattenTurns,
   isAbstentionId,
   seededShuffle,
   selectSubset,
 } from "../src/adapters/longmemeval-eval/dataset.js"
-import { namespaceFor } from "../src/adapters/longmemeval-eval/ingest.js"
+import { ingestInstance, namespaceFor } from "../src/adapters/longmemeval-eval/ingest.js"
+import { resolveOllamaBaseUrl } from "../src/adapters/longmemeval-eval/ollama.js"
 import {
+  ALWAYS_ABSTAIN_PREDICTION,
   aggregateByType,
   containsGold,
   isLmeAbstained,
@@ -65,6 +70,7 @@ describe("longmemeval-eval dataset helpers", () => {
     expect(turns[0]).toMatchObject({
       questionId: "q-1",
       sessionId: "sess-b",
+      sessionIdx: 0,
       sessionDate: "2023/05/01",
       role: "user",
       text: "I got a dog named Buddy",
@@ -79,11 +85,103 @@ describe("longmemeval-eval dataset helpers", () => {
   })
 })
 
+describe("longmemeval-eval ingest", () => {
+  function fakeRouter(fail = false) {
+    const puts: MemoryRecord[] = []
+    const router = {
+      put: (rec: MemoryRecord) =>
+        fail ? Effect.fail(new Error("disk full")) : Effect.sync(() => void puts.push(rec)),
+    } as unknown as MemoryRouter
+    return { router, puts }
+  }
+
+  it("never tags gold labels: tags are embedded into the vector input", async () => {
+    // LongMemEval names evidence sessions `answer_*`, so the session id is a label too.
+    const inst = sample({ haystack_session_ids: ["answer_x_1", "noans_y_2"], answer_session_ids: ["answer_x_1"] })
+    const { router, puts } = fakeRouter()
+    const n = await Effect.runPromise(ingestInstance(router, flattenTurns(inst)))
+    expect(n).toBe(3)
+    for (const rec of puts) {
+      expect(rec.tags).toEqual([expect.stringMatching(/^(user|assistant)$/)])
+      expect(rec.id).not.toMatch(/answer|noans/)
+      expect(JSON.stringify(rec.content)).not.toMatch(/answer_x_1|noans_y_2/)
+    }
+    expect(puts.map((r) => r.id)).toEqual(["lme_q-1_s0_t0", "lme_q-1_s0_t1", "lme_q-1_s1_t0"])
+  })
+
+  it("fails the ingest when a put fails instead of scoring a partial haystack", async () => {
+    const { router } = fakeRouter(true)
+    await expect(Effect.runPromise(ingestInstance(router, flattenTurns(sample())))).rejects.toThrow()
+  })
+})
+
+describe("longmemeval-eval baselines", () => {
+  it("probAnyDrawn matches the closed form and its edge cases", () => {
+    // 1 - C(8,2)/C(10,2) = 1 - 28/45
+    expect(probAnyDrawn(10, 2, 2)).toBeCloseTo(1 - 28 / 45, 10)
+    expect(probAnyDrawn(10, 1, 10)).toBe(1)
+    expect(probAnyDrawn(5, 2, 10)).toBe(1)
+    expect(probAnyDrawn(10, 0, 3)).toBe(0)
+  })
+
+  it("random retrieval is total recall when topK covers the haystack", () => {
+    const turns = flattenTurns(sample())
+    const b = randomRetrievalBaseline(turns, ["sess-b"], 10)
+    expect(b.evidenceHit).toBe(1)
+    expect(b.answerSessionHit).toBe(1)
+  })
+
+  it("random retrieval scales with topK / haystack size", () => {
+    const turns = flattenTurns(sample())
+    const b = randomRetrievalBaseline(turns, ["sess-a"], 1)
+    expect(b.evidenceHit).toBeCloseTo(1 / 3, 10)
+    expect(b.answerSessionHit).toBeCloseTo(1 / 3, 10)
+  })
+})
+
+describe("longmemeval-eval ollama base url", () => {
+  it("prefers LUNA_OLLAMA_BASE_URL, then OLLAMA_HOST, then loopback", () => {
+    expect(resolveOllamaBaseUrl({})).toBe("http://127.0.0.1:11434")
+    expect(resolveOllamaBaseUrl({ LUNA_OLLAMA_BASE_URL: "http://box:9999/", OLLAMA_HOST: "x" })).toBe(
+      "http://box:9999",
+    )
+  })
+
+  it("applies Ollama's OLLAMA_HOST rules (bare host, default port, bind-all)", () => {
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "0.0.0.0" })).toBe("http://127.0.0.1:11434")
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "0.0.0.0:8080" })).toBe("http://127.0.0.1:8080")
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "gpu-box" })).toBe("http://gpu-box:11434")
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "https://ollama.example.com" })).toBe(
+      "https://ollama.example.com",
+    )
+  })
+
+  it("handles quoting, IPv6, empty values, and garbage", () => {
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "'127.0.0.1:11434'" })).toBe("http://127.0.0.1:11434")
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "::1" })).toBe("http://[::1]:11434")
+    expect(resolveOllamaBaseUrl({ OLLAMA_HOST: "[::]:9000" })).toBe("http://127.0.0.1:9000")
+    expect(resolveOllamaBaseUrl({ LUNA_OLLAMA_BASE_URL: "", OLLAMA_HOST: "gpu-box" })).toBe(
+      "http://gpu-box:11434",
+    )
+    expect(() => resolveOllamaBaseUrl({ OLLAMA_HOST: "host:99999" })).toThrow(/cannot build/)
+  })
+})
+
 describe("longmemeval-eval scoring", () => {
-  it("containsGold: exact and token-containment", () => {
+  it("containsGold: whole-word phrase match", () => {
     expect(containsGold("The dog is Buddy", "Buddy")).toBe(true)
     expect(containsGold("buddy the beagle", "Buddy")).toBe(true)
     expect(containsGold("I have a cat", "Buddy")).toBe(false)
+    expect(containsGold("It took about 5.5 weeks.", "5.5 weeks")).toBe(true)
+  })
+
+  it("containsGold: no substring or token-bag false positives", () => {
+    expect(containsGold("12 hours", "2 hours")).toBe(false)
+    expect(containsGold("19 months", "9 months")).toBe(false)
+    expect(containsGold("13 pieces", "3")).toBe(false)
+    expect(containsGold("in 2023", "3")).toBe(false)
+    expect(containsGold("Tomorrow", "Tom")).toBe(false)
+    expect(containsGold("5 weeks and 5 days", "5.5 weeks")).toBe(false)
   })
 
   it("non-abstention: F1 + contains-gold against the gold answer", () => {
@@ -93,21 +191,72 @@ describe("longmemeval-eval scoring", () => {
     expect(scored.abstention).toBe(false)
   })
 
-  it("abstention IDs score 1 only when the model abstains", () => {
-    const inst = sample({ question_id: "q_abs", answer: "there is no such event" })
-    expect(scoreQA(inst, "No information available.").containsGold).toBe(1)
-    expect(scoreQA(inst, "Buddy").containsGold).toBe(0)
-    expect(isLmeAbstained("This is unanswerable from the excerpts.")).toBe(true)
+  it("integer gold answers score like strings", () => {
+    const scored = scoreQA(sample({ answer: 3 }), "You have 3 pieces.")
+    expect(scored.groundTruth).toBe("3")
+    expect(scored.containsGold).toBe(1)
   })
 
-  it("aggregateByType includes OVERALL and per-type means", () => {
+  it("escaped punctuation and backslashes never break a match", () => {
+    expect(scoreQA(sample({ answer: "50%" }), "About 50\\%.").containsGold).toBe(1)
+    expect(scoreQA(sample({ answer: "Sarah's dog" }), "Sarah\\'s dog").containsGold).toBe(1)
+    expect(containsGold("path a\\b", "a b")).toBe(true)
+  })
+
+  it("markdown-escaped predictions score like plain ones", () => {
+    const inst = sample({ answer: "@jessica_poole_jewellery" })
+    const scored = scoreQA(inst, "@jessica\\_poole\\_jewellery")
+    expect(scored.prediction).toBe("@jessica\\_poole\\_jewellery")
+    expect(scored.f1).toBe(1)
+    expect(scored.containsGold).toBe(1)
+  })
+
+  it("preference questions are n/a: gold is a rubric, not an answer", () => {
+    const scored = scoreQA(
+      sample({ question_type: "single-session-preference", answer: "The user would prefer..." }),
+      "Try yoga.",
+    )
+    expect(scored.f1).toBeNull()
+    expect(scored.containsGold).toBeNull()
+  })
+
+  it("abstention IDs score 1 only when the model abstains", () => {
+    const inst = sample({ question_id: "q_abs", answer: "there is no such event" })
+    expect(scoreQA(inst, ALWAYS_ABSTAIN_PREDICTION).containsGold).toBe(1)
+    expect(scoreQA(inst, "Buddy").containsGold).toBe(0)
+    expect(isLmeAbstained("This is unanswerable from the excerpts.")).toBe(true)
+    expect(isLmeAbstained("I don\u2019t know.")).toBe(true)
+  })
+
+  it("aggregateByType keeps abstention out of per-type and ANSWERABLE rows", () => {
     const rows = aggregateByType([
       scoreQA(sample({ question_id: "a", question_type: "multi-session" }), "Buddy"),
       scoreQA(sample({ question_id: "b", question_type: "multi-session" }), "wrong"),
-      scoreQA(sample({ question_id: "c", question_type: "knowledge-update" }), "Buddy"),
+      scoreQA(sample({ question_id: "c_abs", question_type: "multi-session" }), ALWAYS_ABSTAIN_PREDICTION),
+      scoreQA(sample({ question_id: "d", question_type: "single-session-preference" }), "x"),
     ])
-    const overall = rows.find((r) => r.questionType === "OVERALL")
-    expect(overall?.count).toBe(3)
-    expect(rows.find((r) => r.questionType === "multi-session")?.count).toBe(2)
+    expect(rows.map((r) => r.questionType)).toEqual([
+      "multi-session",
+      "single-session-preference",
+      "abstention",
+      "ANSWERABLE",
+    ])
+    expect(rows.find((r) => r.questionType === "multi-session")).toMatchObject({ count: 2, meanF1: 0.5 })
+    expect(rows.find((r) => r.questionType === "single-session-preference")).toMatchObject({
+      count: 1,
+      scoredCount: 0,
+      meanF1: null,
+    })
+    expect(rows.find((r) => r.questionType === "abstention")).toMatchObject({ count: 1, meanContainsGold: 1 })
+    expect(rows.find((r) => r.questionType === "ANSWERABLE")).toMatchObject({ count: 3, scoredCount: 2, meanF1: 0.5 })
+  })
+
+  it("an always-abstain reader earns nothing on answerable questions", () => {
+    const rows = aggregateByType([
+      scoreQA(sample({ question_id: "a" }), ALWAYS_ABSTAIN_PREDICTION),
+      scoreQA(sample({ question_id: "b_abs" }), ALWAYS_ABSTAIN_PREDICTION),
+    ])
+    expect(rows.find((r) => r.questionType === "ANSWERABLE")?.meanContainsGold).toBe(0)
+    expect(rows.find((r) => r.questionType === "abstention")?.meanContainsGold).toBe(1)
   })
 })

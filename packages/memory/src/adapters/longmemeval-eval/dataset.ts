@@ -8,14 +8,14 @@
  * Never vendor the 15MB+ JSON into git. `fetchDataset()` caches it under
  * this adapter's gitignored `.cache/` directory.
  *
- * Default file is `longmemeval_oracle.json` — the official "oracle
+ * Default file is `longmemeval_oracle.json` - the official "oracle
  * retrieval" split (only evidence sessions in the haystack). That is the
- * smallest official haystack, not a 10–20 question sample. This smoke
- * then takes the first N instances in file order (default 15). There is
- * no official 10–20 question sample file.
+ * smallest official haystack, not a 10–20 question sample, and there is
+ * no official 10–20 question sample file. `selectSubset` picks N instances
+ * via a seeded shuffle (default seed 42) because the file is type-clustered.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
+import { basename, dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { FlatTurn, LmeInstance } from "./types.js"
 
@@ -24,25 +24,34 @@ const DEFAULT_DATASET_URL =
 
 const here = dirname(fileURLToPath(import.meta.url))
 export const CACHE_DIR = resolve(here, ".cache")
-const CACHE_PATH = resolve(CACHE_DIR, "longmemeval_oracle.json")
 
 export function isAbstentionId(questionId: string): boolean {
   return questionId.includes("_abs")
 }
 
+export interface LoadedDataset {
+  /** File name of the split, e.g. `longmemeval_oracle.json`. */
+  readonly file: string
+  readonly instances: ReadonlyArray<LmeInstance>
+}
+
 /**
- * Download (if not cached) and parse the official oracle JSON. Returns all
- * 500 instances. Subsetting happens in `selectSubset`.
+ * Download (if not cached) and parse an official LongMemEval JSON (oracle by
+ * default). The cache is keyed by file name, so overriding the URL with
+ * another split never reuses or mislabels the oracle cache. Subsetting
+ * happens in `selectSubset`.
  */
 export async function fetchDataset(
-  url: string = process.env["LUNA_LME_DATASET_URL"] ?? DEFAULT_DATASET_URL,
-): Promise<ReadonlyArray<LmeInstance>> {
+  url: string = process.env["LUNA_LME_DATASET_URL"] || DEFAULT_DATASET_URL,
+): Promise<LoadedDataset> {
+  const file = basename(new URL(url).pathname)
+  const CACHE_PATH = resolve(CACHE_DIR, file)
   if (!existsSync(CACHE_PATH)) {
     mkdirSync(CACHE_DIR, { recursive: true })
     const res = await fetch(url)
     if (!res.ok) {
       throw new Error(
-        `longmemeval-eval: failed to fetch dataset from ${url} — HTTP ${res.status}`,
+        `longmemeval-eval: failed to fetch dataset from ${url} - HTTP ${res.status}`,
       )
     }
     const body = await res.text()
@@ -53,14 +62,14 @@ export async function fetchDataset(
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error(`longmemeval-eval: parsed dataset at ${CACHE_PATH} is empty or malformed`)
   }
-  return parsed as ReadonlyArray<LmeInstance>
+  return { file, instances: parsed as ReadonlyArray<LmeInstance> }
 }
 
 /**
  * Deterministic subset. The official oracle file is grouped by
  * `question_type` (first ~N are all temporal-reasoning), so a raw
  * file-order slice is a one-category smoke. Default is a seeded
- * Fisher–Yates shuffle (seed 42) then first `limit` — still
+ * Fisher–Yates shuffle (seed 42) then first `limit` - still
  * non-cherry-picked, just not type-clustered. Set `seed` to null to
  * take file order instead.
  */
@@ -108,6 +117,7 @@ export function flattenTurns(instance: LmeInstance): ReadonlyArray<FlatTurn> {
       out.push({
         questionId: instance.question_id,
         sessionId,
+        sessionIdx: s,
         sessionDate,
         turnIdx: t,
         role: typeof turn.role === "string" ? turn.role : "unknown",

@@ -65,11 +65,11 @@
       "questionId": "gpt4_b5700ca9",
       "question": "How many days ago did I attend the Maundy Thursday service at the Episcopal Church?",
       "questionType": "temporal-reasoning",
-      "prediction": "No information available.",
+      "prediction": "4 days",
       "abstention": false,
       "groundTruth": "4 days.",
-      "f1": 0,
-      "containsGold": 0
+      "f1": 1,
+      "containsGold": 1
     },
     {
       "questionId": "16c90bf4",
@@ -85,31 +85,31 @@
       "questionId": "gpt4_b4a80587",
       "question": "Which event happened first, the road trip to the coast or the arrival of the new prime lens?",
       "questionType": "temporal-reasoning",
-      "prediction": "The road trip to the coast happened first, on May 30, 2023.",
+      "prediction": "No information available.",
       "abstention": false,
       "groundTruth": "The arrival of the new prime lens",
-      "f1": 0.11764705882352942,
+      "f1": 0,
       "containsGold": 0
     },
     {
       "questionId": "b759caee",
       "question": "I was looking back at our previous conversation about buying unique engagement rings directly from designers. Can you remind me of the Instagram handle of the UK-based designer who works with unusual gemstones?",
       "questionType": "single-session-assistant",
-      "prediction": "No information available.",
+      "prediction": "@jessica\\_poole\\_jewellery",
       "abstention": false,
       "groundTruth": "@jessica_poole_jewellery",
-      "f1": 0,
-      "containsGold": 0
+      "f1": 1,
+      "containsGold": 1
     },
     {
       "questionId": "gpt4_65aabe59",
       "question": "Which device did I set up first, the smart thermostat or the mesh network system?",
       "questionType": "temporal-reasoning",
-      "prediction": "No information available.",
+      "prediction": "The smart thermostat",
       "abstention": false,
       "groundTruth": "Smart thermostat",
-      "f1": 0,
-      "containsGold": 0
+      "f1": 0.8,
+      "containsGold": 1
     },
     {
       "questionId": "19b5f2b3_abs",
@@ -135,41 +135,41 @@
       "questionId": "gpt4_e05b82a6",
       "question": "How many times did I ride rollercoasters across all the events I attended from July to October?",
       "questionType": "multi-session",
-      "prediction": "No information available.",
+      "prediction": "10",
       "abstention": false,
       "groundTruth": "10 times",
-      "f1": 0,
+      "f1": 0.6666666666666666,
       "containsGold": 0
     },
     {
       "questionId": "b9cfe692",
       "question": "How long did I take to finish 'The Seven Husbands of Evelyn Hugo' and 'The Nightingale' combined?",
       "questionType": "temporal-reasoning",
-      "prediction": "No information available.",
+      "prediction": "5.5 weeks",
       "abstention": false,
       "groundTruth": "5.5 weeks",
-      "f1": 0,
-      "containsGold": 0
+      "f1": 1,
+      "containsGold": 1
     },
     {
       "questionId": "58470ed2",
       "question": "I was going through our previous conversation about The Library of Babel, and I wanted to confirm - what did Borges say about the center and circumference of the Library?",
       "questionType": "single-session-assistant",
-      "prediction": "Borges notes that the Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.",
+      "prediction": "The Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.",
       "abstention": false,
       "groundTruth": "According to Borges, 'The Library is a sphere whose exact center is any one of its hexagons and whose circumference is inaccessible.'",
-      "f1": 0.8717948717948718,
+      "f1": 0.9189189189189189,
       "containsGold": 0
     },
     {
       "questionId": "08e075c7",
       "question": "How long have I been using my Fitbit Charge 3?",
       "questionType": "knowledge-update",
-      "prediction": "2023/06/18 (Sun) 00:48",
+      "prediction": "9 months",
       "abstention": false,
       "groundTruth": "9 months",
-      "f1": 0,
-      "containsGold": 0
+      "f1": 1,
+      "containsGold": 1
     }
   ],
   "retrieval": [
@@ -404,22 +404,22 @@
       "questionType": "knowledge-update",
       "count": 1,
       "scoredCount": 1,
-      "meanF1": 0,
-      "meanContainsGold": 0
+      "meanF1": 1,
+      "meanContainsGold": 1
     },
     {
       "questionType": "multi-session",
       "count": 3,
       "scoredCount": 3,
-      "meanF1": 0,
+      "meanF1": 0.2222222222222222,
       "meanContainsGold": 0
     },
     {
       "questionType": "single-session-assistant",
       "count": 3,
       "scoredCount": 3,
-      "meanF1": 0.2905982905982906,
-      "meanContainsGold": 0
+      "meanF1": 0.6396396396396397,
+      "meanContainsGold": 0.3333333333333333
     },
     {
       "questionType": "single-session-preference",
@@ -439,8 +439,8 @@
       "questionType": "temporal-reasoning",
       "count": 4,
       "scoredCount": 4,
-      "meanF1": 0.029411764705882356,
-      "meanContainsGold": 0
+      "meanF1": 0.7,
+      "meanContainsGold": 0.75
     },
     {
       "questionType": "abstention",
@@ -453,8 +453,8 @@
       "questionType": "ANSWERABLE",
       "count": 13,
       "scoredCount": 12,
-      "meanF1": 0.0824534942182001,
-      "meanContainsGold": 0
+      "meanF1": 0.5321321321321322,
+      "meanContainsGold": 0.4166666666666667
     }
   ],
   "alwaysAbstainBaseline": [
@@ -516,18 +516,18 @@
     }
   ],
   "cost": {
-    "totalTokensIn": 43218,
-    "totalTokensOut": 120,
+    "totalTokensIn": 45652,
+    "totalTokensOut": 7645,
     "totalCostUsd": 0,
     "calls": 15
   },
-  "wallClockSec": 16.466,
+  "wallClockSec": 174.839,
   "config": {
     "QA_LIMIT": 15,
     "SEED": 42,
     "TOP_K": 10,
     "SEARCH_MODE": "hybrid",
-    "ANSWER_MODEL": "llama3.2:1b",
+    "ANSWER_MODEL": "gemma4:latest",
     "DRY_RUN": false,
     "embedModel": "nomic-embed-text",
     "ollamaBaseUrl": "http://127.0.0.1:11434",

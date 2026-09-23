@@ -1,9 +1,9 @@
 # LongMemEval memory smoke (draft / thin spike)
 
-Evaluates Luna's own long-term memory (`packages/memory` — SQLite +
+Evaluates Luna's own long-term memory (`packages/memory` - SQLite +
 Vectorlite, hybrid BM25+vector, Ollama embeddings) against a **15-question
 slice** of [LongMemEval](https://github.com/xiaowu0162/LongMemEval)
-(ICLR 2025). Not a full benchmark. Draft only — do not merge as a
+(ICLR 2025). Not a full benchmark. Draft only - do not merge as a
 leaderboard claim.
 
 Mirrors `../locomo-eval/`. Dataset is fetched and cached, never vendored.
@@ -20,7 +20,7 @@ Mirrors `../locomo-eval/`. Dataset is fetched and cached, never vendored.
   only). There is **no official 10–20 question sample file**. The oracle
   JSON is grouped by `question_type` (a raw first-15 is all
   temporal-reasoning). This smoke takes **15 questions after a seeded
-  Fisher–Yates shuffle (`LUNA_LME_SEED=42`)** — still not cherry-picked.
+  Fisher–Yates shuffle (`LUNA_LME_SEED=42`)** - still not cherry-picked.
   Set `LUNA_LME_SEED=order` for file order. Exact IDs are printed at run
   time and recorded in `RESULTS.md`.
 
@@ -28,28 +28,30 @@ Mirrors `../locomo-eval/`. Dataset is fetched and cached, never vendored.
 
 | Step | Module | Same as production? |
 |---|---|---|
-| write | `ingest.ts` → `makeRecord` + `MemoryRouter.put` (`@luna/memory`) | yes — `memory_save` in `packages/memory-tools/src/tools.ts` |
-| read | `run.ts` → `MemoryRouter.search({ mode: "hybrid" })` (`packages/memory/src/router.ts`) | yes — `memory_search` in `packages/memory-tools/src/tools.ts` |
-| store | `SqliteVectorBackend.fromPath(":memory:")` + `LunaSqliteBootstrapLive` | yes — same backend the chat-server uses |
+| write | `ingest.ts` → `makeRecord` + `MemoryRouter.put` (`@luna/memory`) | yes - `memory_save` in `packages/memory-tools/src/tools.ts` |
+| read | `run.ts` → `MemoryRouter.search({ mode: "hybrid" })` (`packages/memory/src/router.ts`) | yes - `memory_search` in `packages/memory-tools/src/tools.ts` |
+| store | `SqliteVectorBackend.fromPath(":memory:")` + `LunaSqliteBootstrapLive` | yes - same backend the chat-server uses |
 | embed | `makeOllamaEmbedderLayer` (`@luna/core`) | yes |
 | answer | `answerFromContextOllama` (`locomo-eval/answer-model.ts`) | eval-only; prompt uses retrieved excerpts only |
 
-Direct TypeScript API, not MCP — same rationale as LoCoMo.
+Direct TypeScript API, not MCP - same rationale as LoCoMo.
 
 ## What this measures
 
-Luna is **pure retrieval**: one episodic `MemoryRecord` per raw user/assistant
-turn. We do **not** ingest paper-side summaries or expansion keys.
+Luna is **pure retrieval**: one episodic `MemoryRecord` per raw user/assistant turn.
+We do **not** ingest paper-side summaries or expansion keys.
+Each question gets a fresh in-memory store, and records never carry gold labels or session ids (tags are embedded into the vector input, and evidence sessions are named `answer_*`).
 
-Official LongMemEval QA metric is a **GPT-4o yes/no judge**
-(`src/evaluation/evaluate_qa.py`). This smoke does **not** call it (no paid
-keys). We report cheap token-overlap **F1** and **contains-gold**, plus
-turn-level / session-level retrieval evidence coverage (`has_answer` turns
-and `answer_session_ids`).
+Official LongMemEval QA metric is a **GPT-4o yes/no judge** (`src/evaluation/evaluate_qa.py`).
+This smoke does **not** call it (no paid keys).
+We report cheap token-overlap **F1** and whole-word **contains-gold**, with abstention (`_abs`) questions on their own row and preference questions (rubric gold) as n/a.
+Every number is printed beside its chance baseline: random top-K retrieval for recall, and an always-abstain reader for QA.
+On the oracle split those baselines are high (session-level recall is ~99% by chance), so a number that does not beat its baseline means nothing.
 
 ## Running
 
-Needs a local Ollama daemon. No Anthropic / OpenAI / Fable fallback.
+Needs a local Ollama daemon with the embed model and (unless `--dry-run`) the answer model pulled.
+Both are checked before any work; no Anthropic / OpenAI / Fable fallback.
 
 ```sh
 # Retrieval-only
@@ -65,18 +67,20 @@ LUNA_EMBEDDER=ollama LUNA_OLLAMA_EMBED_MODEL=nomic-embed-text \
 bun run --filter '@luna/memory' eval:longmemeval
 ```
 
-Env vars: see `run.ts` module docstring. `LUNA_LME_QA_LIMIT` (default 15),
-`LUNA_LME_SEED` (default 42; `order` = file order), `LUNA_LME_TOPK`
-(default 10), `LUNA_LME_ANSWER_MODEL`, `LUNA_OLLAMA_BASE_URL`.
+Env vars: see the `run.ts` module docstring.
+`LUNA_LME_QA_LIMIT` (default 15), `LUNA_LME_SEED` (default 42; `order` = file order), `LUNA_LME_TOPK` (default 10), `LUNA_LME_SEARCH_MODE` (default `hybrid`), `LUNA_LME_ANSWER_MODEL`, `LUNA_OLLAMA_EMBED_MODEL`, and `LUNA_OLLAMA_BASE_URL` (falls back to `OLLAMA_HOST`; one URL serves both embed and answer).
 
-Exit 2 = Ollama / embedder blocker (honest stop, no invented scores).
+Exit codes: 2 = Ollama blocker (daemon down, model not pulled, answer call failed), 3 = dataset load, 4 = invalid config, 5 = memory backend failure.
+Every non-zero exit writes **no** results file: no invented scores.
 
 ## Results
 
-See `RESULTS.md` + committed `smoke-results.json`.
+See `RESULTS.md` + committed `smoke-results.json` / `smoke-results-gemma4.json`.
 
-Completed smoke (seed 42, 15 Qs, local Ollama `nomic-embed-text` +
-`llama3.2:1b`, $0, 3.6 min): overall F1 **0.196**, contains-gold **0.133**,
-turn-level evidence **67.9%**, session-level evidence **100%**. Retrieval
-is fine on the oracle haystack; the 1B reader is the bottleneck. Official
-GPT-4o judge was not run.
+Seed 42, 15 Qs, local Ollama `nomic-embed-text`, $0:
+
+- Retrieval (hybrid top-10): `has_answer` turns 70.4% vs 43.9% at random; answer sessions 100% vs 99.1% at random (no signal).
+- Answerable QA, `llama3.2:1b`: F1 0.082, contains-gold 0/12 (always-abstain baseline: 0 / 0).
+- Answerable QA, `gemma4`: F1 0.532, contains-gold 5/12.
+
+Official GPT-4o judge was not run.
