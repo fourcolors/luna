@@ -124,6 +124,22 @@ pub(crate) fn expand_out_of_moon(app: &tauri::AppHandle) {
     }
 }
 
+/// Tuck the orb away when a dock window is on screen. The surfaces are
+/// mutually exclusive (module doc): any path that reveals a widget WITHOUT
+/// going through expand — `open_widget`, `open_artifact_widget`, the boot
+/// layout restore — otherwise leaves orb and widgets up together, and Moon
+/// reads as two apps. Idempotent: a hidden orb hides again as a no-op.
+/// Callers: `windows::reveal_dock_window` (existing windows) and
+/// `windows::build_card_window` (fresh spawns) — the two choke points every
+/// widget reveal funnels through.
+pub(crate) fn conceal_orb_for_docks(app: &tauri::AppHandle) {
+    if let Some(moon) = app.get_webview_window("main") {
+        if moon.is_visible().unwrap_or(false) {
+            let _ = moon.hide();
+        }
+    }
+}
+
 /// Which revealed widget should take focus after an expand — the main chat
 /// line when it is among them (the surface the user almost always wants),
 /// otherwise any revealed widget. `None` only when nothing became visible

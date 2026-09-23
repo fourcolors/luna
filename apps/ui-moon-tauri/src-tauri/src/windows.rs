@@ -431,7 +431,25 @@ fn build_card_window(
     }
     let window = builder.build().map_err(|e| e.to_string())?;
     finalize_native_window_chrome(&window);
+    // Every dock window funnels through here at creation — fresh spawns,
+    // the boot layout restore, expand fallbacks — so the orb/widget
+    // mutual-exclusion rule lives here once rather than per call site.
+    crate::lifecycle::conceal_orb_for_docks(app);
     Ok(window)
+}
+
+/// Reveal an already-open dock window: deminiaturize, order in, optionally
+/// focus — and tuck the orb away (the surfaces are mutually exclusive,
+/// lifecycle.rs). The single choke point for every "show an existing
+/// widget" path: on macOS NEITHER show() NOR set_focus() deminiaturizes an
+/// OS-minimized window, so unminimize runs first (a no-op otherwise).
+pub(crate) fn reveal_dock_window(win: &tauri::WebviewWindow, focus: bool) {
+    let _ = win.unminimize();
+    let _ = win.show();
+    if focus {
+        let _ = win.set_focus();
+    }
+    crate::lifecycle::conceal_orb_for_docks(win.app_handle());
 }
 
 /// spawn_panel with an explicit label + url (non-singleton instances).
@@ -582,13 +600,9 @@ pub(crate) async fn open_widget(
         // (hub fresh-thread, server widget-open frames, the wizard's "Start
         // chatting", the expand fallback) left it stranded as a Dock/shelf
         // tile: alive in the AX tree, never composited. Same rule as
-        // expand_out_of_moon and redock_thread: unminimize first (a no-op on
-        // non-minimized windows).
-        let _ = win.unminimize();
-        let _ = win.show();
-        if should_focus {
-            let _ = win.set_focus();
-        }
+        // expand_out_of_moon and redock_thread: unminimize first — handled
+        // inside the single reveal choke point.
+        reveal_dock_window(&win, should_focus);
         return Ok(label);
     }
     let win = spawn_panel_at(&app, desc, &label, &url, x, y, None, None)?;
@@ -615,13 +629,10 @@ pub(crate) async fn open_artifact_widget(
     height: Option<f64>,
 ) -> Result<String, String> {
     let label = widget_label(&artifact_id);
-    // Already open → focus, don't spawn a duplicate. Unminimize first: on
-    // macOS neither show() nor set_focus() deminiaturizes an OS-minimized
-    // window (see the same rule in open_widget above).
+    // Already open → focus, don't spawn a duplicate (reveal also tucks the
+    // orb away — see the same rule in open_widget above).
     if let Some(win) = app.get_webview_window(&label) {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
+        reveal_dock_window(&win, true);
         return Ok(label);
     }
     // A dedicated, self-contained page (NOT index.html) — keeps the widget
