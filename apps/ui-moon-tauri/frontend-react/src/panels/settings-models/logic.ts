@@ -21,6 +21,7 @@
  *   daily-driver -> claude-opus-5-5   (recommended default)
  *   wake         -> claude-sonnet-5   (latest sonnet)
  *   dream        -> claude-haiku-4-5  (cheapest; latest haiku — no 5.x yet)
+ *   classifier   -> claude-haiku-4-5  (cheap structured-output routing)
  *
  * OpenAI / Google are present-but-gated provider slots: shown with a
  * "validated when key + gateway present" notice; this port doesn't filter
@@ -29,7 +30,7 @@
  */
 import type { ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
 
-export const ROLES = ["advisor", "daily-driver", "wake", "dream"] as const
+export const ROLES = ["advisor", "daily-driver", "wake", "dream", "classifier"] as const
 export type Role = (typeof ROLES)[number]
 
 export const ROLE_LABELS: Record<Role, string> = {
@@ -37,6 +38,7 @@ export const ROLE_LABELS: Record<Role, string> = {
   "daily-driver": "Daily Driver (chat & tasks)",
   wake: "Wake (morning brief)",
   dream: "Dream (nightly synthesis)",
+  classifier: "Classifier (message routing & general work)",
 }
 
 // Mirror of DEFAULT_ROLE_MODELS in packages/core/src/provider-settings/resolver.ts.
@@ -47,6 +49,7 @@ export const DEFAULT_ROLE_MODEL: Record<Role, string> = {
   "daily-driver": "claude-opus-5-5",
   wake: "claude-sonnet-5",
   dream: "claude-haiku-4-5",
+  classifier: "claude-haiku-4-5",
 }
 
 export interface ProviderDef {

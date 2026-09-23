@@ -207,6 +207,7 @@ describe("resolveRoleModel", () => {
     expect(resolveRoleModel("daily-driver", null)).toBe("claude-opus-5-5")
     expect(resolveRoleModel("wake", null)).toBe("claude-sonnet-5")
     expect(resolveRoleModel("dream", null)).toBe("claude-haiku-4-5")
+    expect(resolveRoleModel("classifier", null)).toBe("claude-haiku-4-5")
   })
 
   it("returns default when store has no binding for the role", () => {
@@ -314,6 +315,23 @@ describe("validateAndPrepare", () => {
       const err = e as ProviderSettingsValidationError
       expect(err.findings.length).toBeGreaterThan(0)
     }
+  })
+
+  it("rejects classifier bindings to providers without structured output", () => {
+    // The classifier fills a structured type — same JSON-consumer gate as
+    // wake/dream. A structuredOutput="none" provider (openai via gateway)
+    // must fail write-time validation.
+    const payload: ProviderSettingsPayload = {
+      version: 1,
+      providers: [{ kind: "openai", enabled: true }],
+      roleBindings: [
+        {
+          role: "classifier",
+          preferenceList: [{ provider: "openai", model: "gpt-4o" }],
+        },
+      ],
+    }
+    expect(() => validateAndPrepare(payload, {})).toThrow(ProviderSettingsValidationError)
   })
 
   it("ProviderSettingsValidationError carries findings array", () => {

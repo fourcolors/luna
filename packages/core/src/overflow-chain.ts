@@ -46,7 +46,7 @@ const EMPTY_CONFIG: OverflowConfig = { chains: {} }
 
 /** Lanes whose output is parsed as JSON — a step that can't emit structured
  * output in one of these lanes is a config-time FINDING. Exact-match membership. */
-const JSON_CONSUMER_LANES = new Set(["wake", "dream", "reasoner"])
+const JSON_CONSUMER_LANES = new Set(["wake", "dream", "reasoner", "classifier"])
 
 /**
  * Read the overflow config from `LUNA_OVERFLOW_CHAINS`.
@@ -130,8 +130,9 @@ export function resolveChain(
 
 /**
  * Static validation: flag steps that can't satisfy their lane's needs. For each
- * lane named in {@link JSON_CONSUMER_LANES} (wake/dream/reasoner — they parse
- * the model output as JSON), any step whose resolved provider profile reports
+ * lane named in {@link JSON_CONSUMER_LANES} (wake/dream/reasoner/classifier —
+ * they parse the model output as JSON), any step whose resolved provider
+ * profile reports
  * `capabilities.structuredOutput === "none"` is a FINDING (it can't reliably
  * emit JSON). Returns one human-readable string per finding; empty array = clean.
  */

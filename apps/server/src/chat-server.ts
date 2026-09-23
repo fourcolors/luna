@@ -1676,14 +1676,16 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
         process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(overflowConfig)
       }
 
-      // Wire reasoner-lane model SELECTION: wake/dream resolve their model from
-      // LUNA_WAKE_MODEL / LUNA_DREAM_MODEL (brokered-turn resolveReasonerModel).
+      // Wire reasoner-lane model SELECTION: wake/dream/classifier resolve their
+      // model from LUNA_WAKE_MODEL / LUNA_DREAM_MODEL / LUNA_CLASSIFIER_MODEL
+      // (brokered-turn resolveReasonerModel).
       // Set them from the operator's role binding so the chosen model is actually
       // requested — and its failover chain (keyed by that model) fires. Only
       // override when the store has an explicit binding (never clobber operator env).
       for (const [role, varName] of [
         ["wake", "LUNA_WAKE_MODEL"],
         ["dream", "LUNA_DREAM_MODEL"],
+        ["classifier", "LUNA_CLASSIFIER_MODEL"],
       ] as const) {
         const hasBinding = (storeConfig.roleBindings ?? []).some(
           (b) => b.role === role && (b.preferenceList?.[0]?.model ?? "") !== "",
@@ -4595,7 +4597,7 @@ const buildServerLayer = (
                 const KNOWN_KINDS = new Set([
                   "anthropic", "openai", "google", "ollama-cloud", "ollama-local",
                 ])
-                const KNOWN_ROLES = new Set(["advisor", "daily-driver", "wake", "dream"])
+                const KNOWN_ROLES = new Set(["advisor", "daily-driver", "wake", "dream", "classifier"])
                 for (const p of input.providers) {
                   if (!KNOWN_KINDS.has(p.kind)) {
                     return { ok: false, message: `Unknown provider kind: ${String(p.kind)}` }
