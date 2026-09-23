@@ -89,3 +89,47 @@ server accepts the `application/pdf` frame, persists the `document` block, and
 the turn fails only at the Anthropic API with
 `401 OAuth access token is invalid` — a distinct, legible signal that is NOT
 an attachment rejection.
+
+## Launching the real Tauri app (not just the Vite frontend)
+
+`bun run --cwd apps/ui-moon-tauri dev` does a static `build:frontend` then launches
+`target/debug/luna-moon-ui` properly activated. Do NOT run the bare binary
+directly after building — the windows can come up non-composited / shelved by
+Stage Manager (contents never paint, Stage-Manager-style stray thumbnails).
+Always launch through the tauri dev wrapper; relaunch after any Rust edit
+(there is no hot reload).
+
+The app degrades gracefully with no chat server ("Connection Error" banner) —
+window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
+
+## Opening windows via the app's own UI
+
+- Moon orb click → `expand_from_moon` → `panel-chat` (the "Luna" card).
+- `cmd+K` inside a window → launcher panel; click a row (Enter selects the
+  highlighted index-0 row, not your filter) → `open_widget {kind}`; the
+  launcher auto-closes.
+- Drag surfaces: `.title-bar` (all dock windows) and `.chat-header`. The
+  chat's `.chat-header` area can select text — grab the `.title-bar` strip
+  (the top ~26px, where the window name sits) for reliable drags.
+
+## Real-drag gotchas for the snap system
+
+- Settles are driven by a persistent LeftMouseUp watcher + a per-window
+  `Moved` mark (`note_dock_moved`), NOT by any title-bar pointerdown — so ANY
+  grab spot (even the native-zone strip ~4px below the top edge) settles on
+  release. To verify a settle ran, use a temporary `eprintln!` in
+  `settle_snap` / `take_moved_labels` ([SNAPDBG] tags) and grep the dev log.
+- The watcher settles EVERY moved window on each mouse-up, and a settle that
+  moves a frame re-marks it — so one drop can visibly re-dock OTHER windows
+  (including flipping parent/child direction). Convergence, not a bug — but
+  expect the "settled" set to sometimes contain windows you didn't drag.
+- Launcher row clicks occasionally miss the row hit-area; pressing Enter on
+  the filtered row reliably invokes open_widget.
+- Geometry ground truth: `~/.luna/layout.json` stores each panel's logical
+  rect — use it to assert flushness exactly (child.y == parent.bottom).
+- Coordinate scale on the Devin box: 1 tool px = 1.5625 logical pt, so
+  SNAP_GAP (20pt) ≈ 12.8 tool px. Drops must clear ~13 tool px of gap.
+- Resize grips are thin JS hit strips (`.resize-s` = 8px straddling the
+  bottom edge; `.resize-se` corner bracket). Native `startResizeDragging`
+  is unimplemented on macOS — the JS loop owns resizing; grabs on the edge
+  strips fire `Resized` events which drive `reflush_snap_children`.

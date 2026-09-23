@@ -27,6 +27,7 @@ afterEach(() => {
   document.body.innerHTML = ''
   document.documentElement.removeAttribute('data-anchor')
   delete (window as any).LunaDock
+  delete (window as any).__TAURI__
   vi.restoreAllMocks()
 })
 
@@ -48,9 +49,9 @@ describe('Moon independent native windows', () => {
     document.body.innerHTML =
       '<div class="widget-shell"><div class="title-bar" id="title-bar"><span>Title</span></div></div>'
     const win = { label: 'panel-chat-floater', startDragging: vi.fn().mockResolvedValue(undefined) }
-    let resolveInvoke: (v?: unknown) => void
+    const resolvers: Array<(v?: unknown) => void> = []
     const invoke = vi.fn().mockImplementation(
-      () => new Promise((r) => { resolveInvoke = r }),
+      () => new Promise((r) => { resolvers.push(r) }),
     )
     ;(window as any).__TAURI__ = { core: { invoke } }
     loadVendorInto(window, 'moon-dock.js')
@@ -74,7 +75,7 @@ describe('Moon independent native windows', () => {
     })
     // Must not start native drag until monitors are armed.
     expect(win.startDragging).not.toHaveBeenCalled()
-    resolveInvoke!(undefined)
+    resolvers.forEach((r) => r(undefined))
     await Promise.resolve()
     await Promise.resolve()
     expect(win.startDragging).toHaveBeenCalledTimes(1)
@@ -87,11 +88,14 @@ describe('Moon independent native windows', () => {
     expect(win.startDragging).not.toHaveBeenCalled()
   })
 
-  it('does not enumerate, move, link, or weld sibling windows', () => {
+  it('keeps snap and cluster motion on the native side only', () => {
     const source = fs.readFileSync(
       path.resolve(__dirname, '../frontend/vendor/moon-dock.js'),
       'utf8',
     )
-    expect(source).not.toMatch(/dock_move_cluster|dock-link|dock-geometry-changed|begin_cluster_drag|snapOnRelease|data-weld/)
+    // WinAmp snapping settles natively (the Moved-event watcher in
+    // windows.rs); the page itself never enumerates, moves, links, or welds
+    // sibling windows, and the old JS snap/cluster engines stay removed.
+    expect(source).not.toMatch(/dock_move_cluster|dock-link|dock-geometry-changed|begin_cluster_drag|begin_snap_drag|snapOnRelease|data-weld|deck-snap/)
   })
 })

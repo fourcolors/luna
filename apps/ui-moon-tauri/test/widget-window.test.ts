@@ -29,7 +29,7 @@ describe('widget.html native window contract', () => {
     expect(html).toContain('LunaDock.wire({ win: W, label: label })')
   })
 
-  it('does not load the magnetic snap engine', () => {
+  it('does not load the removed JS snap engine (snap is native-side now)', () => {
     expect(html).not.toContain('vendor/deck-snap.js')
   })
 

@@ -1,11 +1,12 @@
 # Moon window behavior
 
-Moon panels and artifact cards are independent native macOS windows.
+Moon panels and artifact cards are independent native macOS windows that snap
+together WinAmp-style.
 
 **Related:** thread sidebar pull-out / redock (Chrome-tab model) lives in
 `docs/chrome-tab-interaction.md`. That file is the rulebook for Attached vs
-Detached thread drags. This file remains the law for **OS window** drag and
-resize only.
+Detached thread drags. This file remains the law for **OS window** drag,
+resize, and snapping.
 
 ## Title bar
 
@@ -34,18 +35,63 @@ resize only.
 
 ## Dragging
 
-`frontend/vendor/moon-dock.js` is now a small compatibility-named module that
-hands title-bar pointer gestures directly to `WebviewWindow.startDragging()`.
-AppKit owns the complete gesture.
+`frontend/vendor/moon-dock.js` hands title-bar pointer gestures to
+`WebviewWindow.startDragging()`; AppKit owns the complete gesture.
 
-Moon deliberately has no magnetic edge snap, snap-on-open, overlap correction,
-weld graph, release watcher, or multi-window cluster towing. A window stays
-where the user puts it. Saved system-panel positions continue to restore from
-`~/.luna/layout.json` and are clamped on-screen when displays change.
+The snap settle does NOT rely on per-gesture arming: a large share of real
+title-bar presses are swallowed by the transparent NSWindow title-bar zone
+before the webview ever sees `pointerdown`, so an arm-IPC can miss the
+gesture while the window still drags natively. Instead the settle keys on
+GEOMETRY — every `Moved` event marks the window, and a persistent native
+watcher (`windows::install_snap_watcher`) settles every marked window on
+the next left mouse-up: `windows::settle_snap` snaps it flush to the
+nearest qualifying edge (within `SNAP_GAP`, or shallow overlap within
+`SNAP_OVERLAP`) and attaches it as an AppKit child — or detaches it when
+released out of range. A press that never moves anything settles nothing.
 
-One deliberate exception: the moon orb (window `main`) and any window being
-revealed by boot restore, expand-from-moon, or collapse-to-moon is clamped
-back onto a currently visible display first
+`begin_redock_drag` (pinned chat floaters only) is still armed per-gesture
+from JS before `startDragging` — its hit-probe must be live DURING the
+drag, so unlike the mouse-up settle it cannot be re-derived from Moved
+events.
+
+JavaScript never moves windows mid-gesture, never enumerates siblings, and
+never runs a `setPosition` loop — the snap settle is one native move at
+mouse-up.
+
+## Snapping (WinAmp model)
+
+Dock windows (`panel-*`, `widget-*`; never the `main` orb) snap flush to each
+other's edges:
+
+- **Snap-on-open:** a fresh widget or panel with no explicit position is
+  placed flush on the chat's edge (`windows::open_snap_top_left`), cascading
+  past already-snapped siblings so a run of opens stacks instead of piling.
+  Edges are tried right / below / left / above; the first whose cascaded
+  rect fits the anchor's monitor wins. The chat itself and the transient
+  launcher never snap-on-open.
+- **Snap-on-release:** dropping a window within `SNAP_GAP` of a neighbor's
+  edge settles it flush and attaches it; releasing out of range detaches.
+  Coverage is total — the Moved-event watcher catches drags the webview
+  never saw start.
+- **Cluster towing:** attachment is the real AppKit parent/child
+  (`NSWindow.addChildWindow`/`removeChildWindow`). Moving a window tows its
+  snapped children natively in the same gesture — atomic, zero IPC. A
+  middle-of-stack grab tows the tail; a leaf grab peels off alone. Cycles
+  are refused by walking the candidate parent's ancestor chain.
+- **Resize re-flush:** AppKit children follow position, never size — a
+  parent's `Resized` event re-flushes each snapped child against its
+  nearest parent edge (`windows::reflush_snap_children`) so stacks never
+  open a seam.
+
+The snap graph is emergent geometry, never stored: a window is attached to
+whichever dock window it is flush against (edge gap `<= SNAP_FLUSH` with
+real perpendicular overlap). `layout.json` stores plain positions only; boot
+restore re-derives attachments (`windows::reattach_flushed_windows`), so a
+saved stack tows again with no schema change.
+
+One deliberate exception unchanged: the moon orb (window `main`) and any
+window being revealed by boot restore, expand-from-moon, or collapse-to-moon
+is clamped back onto a currently visible display first
 (`windows::ensure_window_on_visible_display`). The orb and the widgets are
 mutually exclusive surfaces, so an orb stranded off-screen by a
 display-topology change would leave the user with nothing clickable at all —
@@ -86,14 +132,18 @@ Two further guards against external state (live incident, Aug 2026):
 ## Resize
 
 Borderless card resizing still uses `begin_native_resize` because tao's native
-resize-drag API is not implemented on macOS. This path changes only the active
-window and persists its final layout; it does not inspect or move siblings.
+resize-drag API is not implemented on macOS. The active window's own frame
+changes; its snapped children are re-flushed by the `Resized` arm so a stack
+tracks a live resize instead of opening a seam.
 
 ## Tests
 
 - `test/moon-native-titlebar.test.ts` prevents runtime traffic-light IPC from
   returning.
 - `test/moon-dock.test.ts` verifies direct native dragging and guards against
-  reintroducing snap, weld, and cluster commands.
-- `test/widget-window.test.ts` verifies widget pages do not load the old snap
-  engine.
+  reintroducing JS-side snap/cluster machinery (snap lives on the native
+  side only — the Moved-event watcher needs no arming IPC).
+- `test/widget-window.test.ts` verifies widget pages do not load the old
+  `deck-snap.js` engine.
+- `windows::tests` cover the pure snap geometry: edge candidates, flush
+  detection, cheapest-target choice, open-time cascade, and resize re-flush.
