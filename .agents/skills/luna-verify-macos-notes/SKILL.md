@@ -114,17 +114,25 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
 
 ## Real-drag gotchas for the snap system
 
-- Settles are driven by a persistent LeftMouseUp watcher + a per-window
-  `Moved` mark (`note_dock_moved`), NOT by any title-bar pointerdown — so ANY
-  grab spot (even the native-zone strip ~4px below the top edge) settles on
-  release. To verify a settle ran, use a temporary `eprintln!` in
-  `settle_snap` / `take_moved_labels` ([SNAPDBG] tags) and grep the dev log.
-- `note_dock_moved` only marks while the left button is HELD
-  (`LEFT_BUTTON_DOWN`, set by the watcher's Down monitors) — boot restores,
-  settle re-moves, and resize re-flushes never mark, so the first post-boot
-  gesture settles only what it actually dragged. Children TOWED mid-drag
-  still mark (their Moved fires during the parent's drag), so a release can
-  visibly re-dock towed siblings — convergence, not a bug.
+- Settles are snapshot-driven (db0f72e2): dock frames snapshot on
+  LeftMouseDown; on LeftMouseUp every window whose x/y changed gets
+  `snap_to_flush_edge` + ONE `apply_attachment_plan` (planner builds a BFS
+  spanning tree per flush-adjacency component, chat = hub root). The diff
+  compares x/y ONLY — a pure resize doesn't count as "changed"; children
+  track resizes via the Resized-arm `reflush_snap_children` instead.
+- Built-in `[snap]` eprintln lines in dev-server stdout replace manual
+  instrumentation. Caveats: attach successes are SILENT (only
+  `attach {label} -> {pl}: window gone` logs on failure), and `detach
+  {label}` is logged as a no-op whenever the plan wants a parent for a
+  window that isn't attached yet — a "detach" line before an attach is
+  normal, not a reversal.
+- `apply_attachment_plan` needs the main thread (MainThreadMarker) — any
+  call site that runs off-main logs "apply_attachment_plan off main thread
+  — skipped" and silently no-ops. Async command contexts (open_widget etc.)
+  are off-main; the Up-monitor settle and boot reattach run on-main.
+- Miniaturizing a parent shelves its whole child stack into one Dock tile;
+  deminiaturizing restores all, attachments intact. cmd+H hides everything
+  incl. the orb; unhide restores the stack.
 - Boot settle (`reattach_flushed_windows` settles every dock window on
   launch): a window restored inside the snap zone goes flush and attaches;
   parked windows stay put and stay detached.
