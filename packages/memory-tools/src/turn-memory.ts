@@ -15,7 +15,8 @@ import {
   logRerankFailureOnce,
   RECALL_RERANK_MIN_USEFUL_MS,
   RECALL_RERANK_SAFETY_MARGIN_MS,
-  rerankFlagEnabled,
+  rerankLaneEnabled,
+  resolveRerankMaxCandidates,
   resolveOuterRecallBudgetMs,
   resolveRecallRerankTimeoutMs,
   resolveRerankThreshold,
@@ -245,7 +246,7 @@ function rerankHits(
           Effect.as(packRecallContext(hits, args.options)),
         )
       }
-      const threshold = resolveRerankThreshold()
+      const threshold = resolveRerankThreshold(process.env, args.reranker.defaults?.threshold)
       const startMs = Date.now()
       const byId = new Map(hits.map((h) => [h.record.id, h] as const))
       const { kept, droppedCount } = applyRerank(
@@ -272,11 +273,13 @@ export function recallForTurn(input: {
   readonly scope: MemoryScopeQuery
   readonly options?: RecallContextOptions
   /**
-   * Behind LUNA_RECALL_RERANK=1 (separate flag from memory_search's
-   * LUNA_MEMORY_RERANK - DEFAULT OFF; per-turn recall's latency budget is
-   * unproven independent of the MCP tool path). When both the flag is set
-   * AND a reranker is passed, over-fetches and reranks before packing;
-   * otherwise behavior is byte-identical to before. The caller (chat-service)
+   * Reranks when a reranker is passed AND the lane is on: LUNA_RECALL_RERANK=1
+   * (separate flag from memory_search's LUNA_MEMORY_RERANK), or unset with an
+   * engine that is on by default (LUNA_RERANK_ENGINE=jev, ~0.2 s per call,
+   * well inside the 2.5 s recall budget); "0" always turns it off. It then
+   * over-fetches (20, or the engine's depth) and reranks before packing;
+   * with the default cross-encoder and the flag unset, behavior is
+   * byte-identical to before. The caller (chat-service)
    * already wraps the whole recallMemory() call in its own recall timeout -
    * this function adds no timeout of its own, it just degrades to un-reranked
    * packing on any rerank failure so a slow/failed rerank never blows the
@@ -292,7 +295,7 @@ export function recallForTurn(input: {
   // remains of the outer recall window after retrieval spends its share.
   const recallStartedAtMs = Date.now()
   const rerankRequested =
-    input.reranker !== undefined && rerankFlagEnabled("LUNA_RECALL_RERANK")
+    input.reranker !== undefined && rerankLaneEnabled("LUNA_RECALL_RERANK", input.reranker.defaults?.enabled)
   // MemoryRouter already over-fetches scoped searches by 4x before its
   // post-ranking scope filter. Ask it for only 2x packing headroom here
   // (non-active filtering + de-duplication), otherwise the two
@@ -300,8 +303,11 @@ export function recallForTurn(input: {
   // When rerank is active, floor the pool at RECALL_RERANK_OVERFETCH_TOP_K
   // (the pool size the bench's recall lift was measured against).
   const baseTopK = Math.max(options.maxHits * 2, 10)
+  // The rerank depth (LUNA_RERANK_MAX_CANDIDATES, else the engine's own - Jev
+  // 40) can raise the pool; the cross-encoder declares none, so its recall
+  // pool stays at the historical 20.
   const topK = rerankRequested
-    ? Math.max(baseTopK, RECALL_RERANK_OVERFETCH_TOP_K)
+    ? Math.max(baseTopK, RECALL_RERANK_OVERFETCH_TOP_K, resolveRerankMaxCandidates(process.env, input.reranker!.defaults?.maxCandidates ?? 0))
     : baseTopK
   return Stream.runCollect(
     input.router.search({

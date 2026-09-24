@@ -214,6 +214,41 @@ describe("turn memory", () => {
       expect(packed?.hits.length).toBeGreaterThan(0)
     })
 
+    it("an engine that is on by default reranks without the flag; LUNA_RECALL_RERANK=0 turns it off", async () => {
+      let calls = 0
+      const engine: MemoryRerankerApi = {
+        rerank: (args) => {
+          calls++
+          return Effect.succeed(args.candidates.map((c) => ({ id: c.id, llmScore: c.id === "good" ? 90 : 5 })))
+        },
+        defaults: { enabled: true },
+      }
+      const scope = { observerId: OPERATOR_MEMORY_SCOPE.observerId, subjectId: OPERATOR_MEMORY_SCOPE.subjectId }
+      const packed = await Effect.runPromise(recallForTurn({ router: seededRouter(), query: "favorite coffee", scope, reranker: engine }))
+      expect(calls).toBe(1)
+      expect(packed?.hits.map((h) => h.id)).toEqual(["good"])
+      process.env["LUNA_RECALL_RERANK"] = "0"
+      await Effect.runPromise(recallForTurn({ router: seededRouter(), query: "favorite coffee", scope, reranker: engine }))
+      expect(calls).toBe(1)
+    })
+
+    it("the engine's depth raises the recall pool (Jev: 40); an engine without one keeps the historical 20", async () => {
+      const topKs: number[] = []
+      const backend = makeFakeVectorBackend((args) => {
+        topKs.push(args.topK ?? -1)
+        return Stream.empty
+      })
+      const router = makeRouter([{ pattern: "*", backend }])
+      const scope = { observerId: OPERATOR_MEMORY_SCOPE.observerId, subjectId: OPERATOR_MEMORY_SCOPE.subjectId }
+      const deep: MemoryRerankerApi = { rerank: () => Effect.succeed([]), defaults: { enabled: true, maxCandidates: 40 } }
+      const plain: MemoryRerankerApi = { rerank: () => Effect.succeed([]) }
+      await Effect.runPromise(recallForTurn({ router, query: "q", scope, reranker: deep }))
+      process.env["LUNA_RECALL_RERANK"] = "1"
+      await Effect.runPromise(recallForTurn({ router, query: "q", scope, reranker: plain }))
+      // The scoped router over-fetches 4x (see the bounded over-fetch test above).
+      expect(topKs).toEqual([160, 80])
+    })
+
     it("flag ON: reranks and packs only the surviving hit", async () => {
       process.env["LUNA_RECALL_RERANK"] = "1"
       process.env["LUNA_RERANK_THRESHOLD"] = "75"

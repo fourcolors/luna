@@ -26,6 +26,12 @@ export {
   type ProbeResult,
 } from "./cross-encoder-reranker.js"
 export {
+  JevRerankerLayer,
+  DEFAULT_JEV_TIMEOUT_MS,
+  JEV_DEFAULT_MAX_CANDIDATES,
+  type JevRerankerOptions,
+} from "./jev-reranker.js"
+export {
   WakeReasonerDefault,
   buildWakePrompt,
   parseDigest as parseWakeDigest,

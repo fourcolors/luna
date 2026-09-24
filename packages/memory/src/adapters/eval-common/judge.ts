@@ -38,9 +38,10 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Options, Query, SDKMessage, WarmQuery } from "@anthropic-ai/claude-agent-sdk"
+import { JEV_CRITERIA, JEV_MAX_MEMORY_CHARS, JEV_MODEL, JEV_URL, jevRerankRequest, parseJevRerankAnswers } from "@luna/core"
 
-/** Per-candidate text cap: keeps every (query, doc) pair inside the CE's 4096-token batch. */
-export const MAX_DOC_CHARS = 2000
+/** Per-candidate text cap for every judge (the same cap Jev's shared request applies): keeps every (query, doc) pair inside the CE's 4096-token batch. */
+export const MAX_DOC_CHARS = JEV_MAX_MEMORY_CHARS
 
 export const JUDGE_NAMES = ["ce", "jev", "jevpair", "haiku"] as const
 export type JudgeName = (typeof JUDGE_NAMES)[number]
@@ -144,12 +145,7 @@ export function crossEncoderJudge(baseUrl: string, timeoutMs = 60_000): Judge {
   }
 }
 
-export const JEV_URL = "https://api.typesafe.ai/v1/systemone"
-
-const JEV_CRITERIA = {
-  true: "The memory states facts that answer, match, or directly bear on what the query asks about or describes.",
-  false: "The memory is about something else, or only shares words or a topic with the query.",
-}
+export { JEV_URL }
 
 /** POST one Jev request; returns each requested Noul answer in `ids` order, plus the served model id. */
 async function jevRequest(
@@ -187,30 +183,27 @@ const servedModels = () => {
   return { add: (m: string | undefined) => void (m !== undefined && seen.add(m)), list: () => [...seen].join(",") || "unknown" }
 }
 
-export function jevJudge(apiKey: string, model = "jev-latest", timeoutMs = 60_000): Judge {
+export function jevJudge(apiKey: string, model = JEV_MODEL, timeoutMs = 60_000): Judge {
   const served = servedModels()
   return {
     name: "jev",
     describe: () => ({ judge: "jev", model, servedModel: served.list() }),
     score: async (query, candidates) => {
       if (candidates.length === 0) return { scores: [], attempts: 0, waitMs: 0 }
-      const ids = candidates.map((_, i) => `c${i}`)
-      const questions = Object.fromEntries(
-        candidates.map((text, i) => [
-          ids[i]!,
-          {
-            type: "noul",
-            instructions: {
-              task: "Is the `memory` relevant to the search `query` (in state): does it contain what the query asks about or describes?",
-              memory: cap(text),
-            },
-            criteria: JEV_CRITERIA,
-          },
-        ]),
+      // The production reranker's request (@luna/core jevRerankRequest), so eval and production cannot drift.
+      const { res, attempts } = await postWithRetry(
+        JEV_URL,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify(jevRerankRequest(query, candidates, model)),
+        },
+        timeoutMs,
       )
-      const r = await jevRequest(apiKey, { model, state: { query }, questions }, ids, timeoutMs)
-      served.add(r.servedModel)
-      return { scores: r.nouls, attempts: r.attempts, waitMs: 0 }
+      if (!res.ok) throw new Error(`jev HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
+      const parsed = parseJevRerankAnswers(await res.json(), candidates.length)
+      served.add(parsed.servedModel)
+      return { scores: parsed.probabilities, attempts, waitMs: 0 }
     },
   }
 }
@@ -248,7 +241,7 @@ export function makeRateLimiter(
 
 export function jevPairJudge(
   apiKey: string,
-  model = "jev-latest",
+  model = JEV_MODEL,
   timeoutMs = 60_000,
   acquire: () => Promise<void> = makeRateLimiter(1000, 60_000),
 ): Judge {
@@ -459,7 +452,7 @@ export function makeJudges(
     if (!key) throw new Error(`rr=${name} needs TYPESAFE_API_KEY`)
     return key
   }
-  const jevModel = env["LUNA_JEV_MODEL"]?.trim() || "jev-latest"
+  const jevModel = env["LUNA_JEV_MODEL"]?.trim() || JEV_MODEL
   for (const name of new Set(names)) {
     if (name === "ce") out.set(name, crossEncoderJudge(env["LUNA_RERANK_CE_URL"]?.trim() || "http://127.0.0.1:8181"))
     else if (name === "jev") out.set(name, jevJudge(typesafeKey(name), jevModel))

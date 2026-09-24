@@ -1,5 +1,14 @@
 # Memory rerank bench
 
+## Choosing the rerank engine (production)
+
+`LUNA_RERANK_ENGINE` selects the MemoryReranker Luna's server binds:
+
+- `cross-encoder` (default): the local Qwen3-Reranker sidecar below. Reranking stays opt-in per lane (`LUNA_MEMORY_RERANK=1` for the `memory_search` tool, `LUNA_RECALL_RERANK=1` for per-turn recall), 8 candidates for `memory_search`.
+- `jev`: TypeSafe Jev (`packages/adapter-sdk/src/jev-reranker.ts`), the best judge measured (LongMemEval S held-out, evidence in the top 5 at depth 40: 85.5% vs 76.2% for the cross-encoder and 44.0% with no judge; results in `results/2026-09-23-search-tuning/`). Needs your own `TYPESAFE_API_KEY` in the environment or Luna's vault (never commit it). Every rerank sends the query and the candidate memories' text (each capped at 2,000 characters) to `api.typesafe.ai`. Configuring it is the opt-in: both lanes rerank unless their flag is `0`, at depth 40 (`LUNA_RERANK_MAX_CANDIDATES` overrides), pinned to `jev-1.13.0` (`LUNA_JEV_MODEL` overrides).
+
+`LUNA_RERANK_THRESHOLD` (0-100) overrides the engine's injection threshold for both lanes.
+
 (For the hot-tier bulletin eval - the cross-thread digest probes - see
 [BULLETIN.md](./BULLETIN.md) and `bench:bulletin`. This file covers the
 cold-tier reranking work.)
@@ -84,9 +93,11 @@ live DB), with the batch size correctly configured:
   Metal GPU it was ~1.2s for 20 candidates; on the production box (luna-server,
   AMD Radeon Pro Vega 20 via Vulkan) it is ~0.6s PER CANDIDATE (CPU-only was
   15-26s and contends with the chat-server, so GPU is required). This is why
-  `memory_search` reranks only `LUNA_RERANK_MAX_CANDIDATES` (default 8 -> ~5s)
-  rather than the full pool, and why `LUNA_RECALL_RERANK` (per-turn) stays off
-  by default - reranking is for the explicit `memory_search` tool.
+  `memory_search` reranks only `LUNA_RERANK_MAX_CANDIDATES` (default 8 -> ~5s
+  for this engine) rather than the full pool, and why `LUNA_RECALL_RERANK`
+  (per-turn) stays off by default for this engine - with the cross-encoder,
+  reranking is for the explicit `memory_search` tool. (`LUNA_RERANK_ENGINE=jev`
+  is ~0.2 s at depth 40 and reranks both; see the top of this file.)
 
 ### Cap sweep (LUNA_BENCH_CAP_SWEEP=1)
 

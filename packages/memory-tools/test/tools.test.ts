@@ -696,6 +696,43 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     expect(hits.length).toBe(3)
   })
 
+  it("an engine that is on by default (LUNA_RERANK_ENGINE=jev) reranks without the flag, at its own depth and threshold", async () => {
+    await seedRecords(
+      Array.from({ length: 6 }, (_, i) => ({ id: `e${i}`, text: `record number ${i} about coffee` })),
+    )
+    let sentIds: ReadonlyArray<string> = []
+    const engine: MemoryRerankerApi = {
+      rerank: (args) => {
+        sentIds = args.candidates.map((c) => c.id)
+        return Effect.succeed(args.candidates.map((c, i) => ({ id: c.id, llmScore: i === 0 ? 20 : 90 })))
+      },
+      defaults: { enabled: true, maxCandidates: 4, threshold: 30 },
+    }
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: engine })
+    const hits = parseTextResult<ReadonlyArray<{ id: string; llmScore?: number }>>(
+      await searchTool.handler(searchArgs({ query: "coffee", limit: 6 }), undefined),
+    )
+    expect(sentIds.length).toBe(4) // the engine's depth, not the historical 8
+    expect(hits.length).toBe(3) // the one candidate scored 20 falls under the engine's threshold of 30
+    expect(hits.every((h) => h.llmScore === 90)).toBe(true)
+  })
+
+  it("an engine that is on by default is still turned off by LUNA_MEMORY_RERANK=0", async () => {
+    await seedRecords([{ id: "m1", text: "operator likes espresso" }])
+    let called = false
+    const engine: MemoryRerankerApi = {
+      rerank: () => {
+        called = true
+        return Effect.succeed([])
+      },
+      defaults: { enabled: true },
+    }
+    process.env["LUNA_MEMORY_RERANK"] = "0"
+    const [, searchTool] = makeMemoryTools(router, undefined, { reranker: engine })
+    await searchTool.handler(searchArgs({ query: "espresso" }), undefined)
+    expect(called).toBe(false)
+  })
+
   it("flag ON: unscored candidates (reranker returned nothing for them) survive ungated at the tail", async () => {
     await seedRecords([
       { id: "scored-low", text: "irrelevant record" },

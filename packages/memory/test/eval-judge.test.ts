@@ -5,6 +5,7 @@
  */
 import { Effect, Stream } from "effect"
 import { afterEach, describe, expect, it } from "vitest"
+import { JEV_MODEL } from "@luna/core"
 import type { Options, WarmQuery } from "@anthropic-ai/claude-agent-sdk"
 import {
   crossEncoderJudge,
@@ -75,7 +76,8 @@ describe("judges", () => {
     expect(Object.keys(req?.body["questions"])).toEqual(["c0", "c1"])
     expect(req?.body["questions"].c1.type).toBe("noul")
     expect(req?.body["questions"].c1.instructions.memory).toBe("dog Buddy")
-    expect(jev.describe()).toMatchObject({ model: "jev-latest", servedModel: "jev-1.13.0" })
+    expect(jev.describe()).toMatchObject({ model: JEV_MODEL, servedModel: "jev-1.13.0" })
+    expect(req?.body["model"]).toBe(JEV_MODEL) // the pinned version the held-out numbers came from
     stubFetch(async () => new Response(JSON.stringify({ answers: { c0: { type: "noul", noul: 0.2 } } })))
     await expect(jev.score("q", ["a", "b"])).rejects.toThrow(/c1/)
   })

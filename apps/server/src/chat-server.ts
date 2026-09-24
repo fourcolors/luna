@@ -328,6 +328,7 @@ import {
   JobRunToolsProviderTag,
   ChatThreadPosterTag,
   CrossEncoderRerankerLayer,
+  JevRerankerLayer,
   BulletinWriterDefault,
   loadAgents,
 } from "@luna/adapter-sdk"
@@ -383,6 +384,7 @@ import {
   MemoryToolsLayer,
   MemoryToolsService,
   recallForTurn,
+  rerankLaneEnabled,
   resolveDbPath,
   selectEmbedderLayer,
 } from "@luna/memory-tools"
@@ -764,8 +766,10 @@ const BELIEF_REFRESH_INTERVAL_MS = 30_000
  *   BELIEF_REFRESH_INTERVAL_MS = 30 s). Pass a small value in smoke tests.
  * @param memoryRerankerL - optional MemoryReranker layer (Phase 3 production
  *   reranker, PR #332 bench). When provided, BOTH memory_search
- *   (LUNA_MEMORY_RERANK=1) and per-turn recall (LUNA_RECALL_RERANK=1) CAN
- *   rerank - each still gated independently at call time. Composed directly
+ *   (LUNA_MEMORY_RERANK) and per-turn recall (LUNA_RECALL_RERANK) CAN
+ *   rerank - each gated independently at call time by its flag ("1" on,
+ *   "0" off) or, unset, by the engine's own default (off for the
+ *   cross-encoder, on for LUNA_RERANK_ENGINE=jev). Composed directly
  *   onto both (a) MemoryToolsLayer() below and (b) this function's own
  *   Effect.gen, so `Effect.serviceOption(MemoryReranker)` resolves in both
  *   places. Default undefined: byte-identical to before this param existed -
@@ -997,9 +1001,10 @@ export const ThreadToolsProviderLayer = (
       // same lifetime as `mem` above. Effect.serviceOption -> R=never, so
       // this stays undefined (byte-identical to before) unless the caller
       // passed a `memoryRerankerL` that got composed onto THIS layer's own
-      // pipe below (see the function's closing `.pipe(...)`). Actually
-      // reranking recall is a SEPARATE gate (LUNA_RECALL_RERANK=1) from
-      // memory_search's (LUNA_MEMORY_RERANK=1) - see recallForTurn below.
+      // pipe below (see the function's closing `.pipe(...)`). Whether recall
+      // actually reranks is a SEPARATE gate (LUNA_RECALL_RERANK, or the
+      // engine's own default - on for LUNA_RERANK_ENGINE=jev) from
+      // memory_search's (LUNA_MEMORY_RERANK) - see recallForTurn below.
       const recallRerankerOpt = yield* Effect.serviceOption(MemoryReranker)
       const recallReranker = Option.getOrUndefined(recallRerankerOpt)
       const memObs = yield* ObservabilityService
@@ -1009,8 +1014,8 @@ export const ThreadToolsProviderLayer = (
         // Reflect the actual runtime gate (flag AND service), not mere layer
         // construction - "available" when the flag is off misread as enabled.
         `recallRerank=${
-          process.env["LUNA_RECALL_RERANK"]?.trim() === "1" && recallReranker !== undefined
-            ? "on"
+          recallReranker !== undefined && rerankLaneEnabled("LUNA_RECALL_RERANK", recallReranker.defaults?.enabled)
+            ? `on (${recallReranker.engine ?? "reranker"})`
             : "off"
         }`,
       )
@@ -2157,6 +2162,8 @@ const buildRoutedOpAccountLayers = (
 
 export const buildBaseLayer = (
   opAccountLayers: ReadonlyArray<RoutedOpAccountLayer>,
+  /** The server's secret resolver (vault / Keychain / env by mode); absent in tests, where env alone is read. */
+  resolveEnvSecret?: (name: string) => Promise<Redacted.Redacted<string> | undefined>,
 ): Layer.Layer<
   | UIService
   | ObservabilityService
@@ -2465,11 +2472,34 @@ export const buildBaseLayer = (
     Layer.provide(clockL),
   )
 
-  // The deterministic, dependency-free cross-encoder is the only
-  // MemoryReranker engine. ACTUAL reranking stays gated per-request by
-  // LUNA_MEMORY_RERANK=1 / LUNA_RECALL_RERANK=1 (both DEFAULT OFF) inside
-  // memory-tools.
-  const memoryRerankerL = CrossEncoderRerankerLayer()
+  // MemoryReranker engine, LUNA_RERANK_ENGINE:
+  //   cross-encoder (default) - the local, dependency-free llama-server
+  //     sidecar; reranking stays opt-in per lane (LUNA_MEMORY_RERANK=1 /
+  //     LUNA_RECALL_RERANK=1), depth 8.
+  //   jev - TypeSafe Jev with the operator's own TYPESAFE_API_KEY (env or
+  //     vault, never the repo); sends memory text to api.typesafe.ai.
+  //     Configuring it is the opt-in: both lanes rerank at depth 40 unless
+  //     their flag is "0". Best measured judge (packages/adapter-sdk/src/
+  //     jev-reranker.ts has the evidence).
+  const rerankEngine = process.env["LUNA_RERANK_ENGINE"]?.trim() || "cross-encoder"
+  if (rerankEngine !== "cross-encoder" && rerankEngine !== "jev") {
+    console.warn(`[chat-server] unknown LUNA_RERANK_ENGINE="${rerankEngine}" (cross-encoder | jev); using cross-encoder`)
+  }
+  const memoryRerankerL =
+    rerankEngine === "jev"
+      ? Layer.unwrap(
+          Effect.promise(async () => {
+            // Like every server secret: a key saved through the Vault lives in Keychain / the Luna
+            // vault, not process.env, so read it through the resolver (never logged: Redacted).
+            const secret = resolveEnvSecret ? await resolveEnvSecret("TYPESAFE_API_KEY") : undefined
+            const apiKey = secret !== undefined ? Redacted.value(secret).trim() : process.env["TYPESAFE_API_KEY"]?.trim()
+            if (!apiKey) {
+              console.warn("[chat-server] LUNA_RERANK_ENGINE=jev but no TYPESAFE_API_KEY (vault or env): reranking will fail and fall back to retrieval order")
+            }
+            return JevRerankerLayer({ apiKey: apiKey ?? "" })
+          }),
+        )
+      : CrossEncoderRerankerLayer()
   // Hot-tier bulletin (BULLETIN.md): a plain mutable holder read
   // synchronously by decorate() (same doctrine as the beliefs holder), a
   // digest file next to luna.db for warm restarts, and a refresh loop that
@@ -5108,7 +5138,7 @@ export const bootstrap = async (): Promise<void> => {
     opAccounts: opAccountLayers,
     lunaVaultRead,
   })
-  const baseLayer = buildBaseLayer(opAccountLayers)
+  const baseLayer = buildBaseLayer(opAccountLayers, resolveEnvSecret)
   const serverLayer = buildServerLayer(baseLayer)
   // baseLayer is merged in directly (not just as buildServerLayer's internal
   // dependency) so its own LunaSqliteBootstrap requirement must be satisfied

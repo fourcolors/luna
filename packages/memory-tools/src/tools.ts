@@ -37,12 +37,16 @@
  *     surface is intentionally unchanged so the blast radius stays small.
  *   - Tools live in @luna/memory-tools (not @luna/tools) so the @luna/tools
  *     package stays a domain-free Runtime helper.
- *   - memory_search reranking (Phase 3, PR #332 bench): when
- *     LUNA_MEMORY_RERANK=1 AND a MemoryReranker was passed to
- *     makeMemoryTools, search over-fetches to at least 20 candidates,
- *     reranks them, and gates via applyRerank (score>=LUNA_RERANK_THRESHOLD,
- *     default 40) before slicing to `limit`. DEFAULT OFF - with no reranker
- *     passed and/or the flag unset, behavior is byte-identical to before.
+ *   - memory_search reranking (Phase 3, PR #332 bench): when a
+ *     MemoryReranker was passed to makeMemoryTools AND the lane is on
+ *     (LUNA_MEMORY_RERANK=1, or unset with an engine that is on by default -
+ *     LUNA_RERANK_ENGINE=jev; "0" always turns it off), search over-fetches
+ *     to at least 20 candidates (or the engine's depth), reranks the top
+ *     LUNA_RERANK_MAX_CANDIDATES (default: the engine's depth, 8 for the
+ *     cross-encoder, 40 for Jev), and gates via applyRerank
+ *     (score >= LUNA_RERANK_THRESHOLD, default: the engine's, else 40)
+ *     before slicing to `limit`. With the default cross-encoder and the flag
+ *     unset, behavior is byte-identical to before.
  *     A rerank failure (timeout/parse/SDK error) falls back to the
  *     un-reranked hybrid order; it never fails the tool call.
  */
@@ -66,7 +70,7 @@ import {
 import {
   emitRerankObservability,
   logRerankFailureOnce,
-  rerankFlagEnabled,
+  rerankLaneEnabled,
   resolveRerankMaxCandidates,
   resolveRerankThreshold,
 } from "./rerank-support.js"
@@ -174,7 +178,7 @@ function extractText(content: unknown): string {
 
 /**
  * Build the wire DTO for one search hit. `llmScore` is present only when
- * memory_search reranked this result (LUNA_MEMORY_RERANK=1 + a reranker was
+ * memory_search reranked this result (the lane on + a reranker was
  * provided) - absent on the default, un-reranked path, so the DTO shape is
  * byte-identical to before when rerank isn't in play.
  */
@@ -270,7 +274,8 @@ export const makeMemoryTools = (
         const namespace = args.namespace ?? DEFAULT_NAMESPACE
         const kindFilter = args.kind
         const rerankRequested =
-          reranker !== undefined && rerankFlagEnabled("LUNA_MEMORY_RERANK")
+          reranker !== undefined && rerankLaneEnabled("LUNA_MEMORY_RERANK", reranker.defaults?.enabled)
+        const rerankDepth = resolveRerankMaxCandidates(process.env, reranker?.defaults?.maxCandidates)
         // Over-fetch when a kind filter is set so the post-filter still has
         // enough candidates to return `limit` matches (4× with a floor of
         // 20 - a heuristic good enough for the local store sizes we see in
@@ -279,7 +284,7 @@ export const makeMemoryTools = (
         const kindOverfetch =
           kindFilter !== undefined ? Math.max(limit * 4, 20) : limit
         const fetchTopK = rerankRequested
-          ? Math.max(kindOverfetch, RERANK_OVERFETCH_TOP_K)
+          ? Math.max(kindOverfetch, RERANK_OVERFETCH_TOP_K, rerankDepth)
           : kindOverfetch
         const hits = yield* Stream.runCollect(
           router.search({
@@ -323,7 +328,7 @@ export const makeMemoryTools = (
         // reranked output; the gate is applied over the reranked pool ONLY, so
         // a negative query whose pool scores low returns few/no results rather
         // than backfilling ungated candidates from beyond the cap.
-        const rerankPool = filtered.slice(0, resolveRerankMaxCandidates())
+        const rerankPool = filtered.slice(0, rerankDepth)
         // catchAllDefect + either: DEFECTS in SDK/broker plumbing degrade to
         // un-reranked results (memory_search must never fail because
         // reranking failed), while genuine fiber INTERRUPTS still propagate
@@ -357,7 +362,7 @@ export const makeMemoryTools = (
           return filtered.slice(0, limit).map((h) => toSearchHitDTO(h))
         }
 
-        const threshold = resolveRerankThreshold()
+        const threshold = resolveRerankThreshold(process.env, reranker!.defaults?.threshold)
         const byId = new Map(filtered.map((h) => [h.record.id, h] as const))
         const { kept, droppedCount } = applyRerank(
           rerankPool.map((h) => ({ id: h.record.id })),
