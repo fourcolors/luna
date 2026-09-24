@@ -22,15 +22,83 @@ import type { ObservabilityApi, RerankError } from "@luna/core"
  * but flagged it meetsGoal:false - it rejects only 75% of the synthetic
  * adversarial junk - which is exactly why the real-data calibration, not
  * the synthetic one, is the authority for this default.
- * Overridable via LUNA_RERANK_THRESHOLD. */
+ * Overridable via LUNA_RERANK_CE_THRESHOLD (or the legacy LUNA_RERANK_THRESHOLD,
+ * see rerankTuningEnv). */
 export const DEFAULT_RERANK_THRESHOLD = 40
+
+/**
+ * Env var prefix for each engine's own tuning knobs. "cross-encoder" uses CE
+ * to match its existing LUNA_RERANK_CE_* variables.
+ */
+const ENGINE_ENV_PREFIX: Readonly<Record<string, string>> = {
+  "cross-encoder": "CE",
+  jev: "JEV",
+}
+
+const engineEnvPrefix = (engine: string): string =>
+  ENGINE_ENV_PREFIX[engine] ?? engine.toUpperCase().replace(/[^A-Z0-9]+/g, "_")
+
+/** The engine-scoped tuning variable name, e.g. LUNA_RERANK_JEV_THRESHOLD. */
+export function rerankTuningVarName(knob: "THRESHOLD" | "MAX_CANDIDATES", engine: string): string {
+  return `LUNA_RERANK_${engineEnvPrefix(engine)}_${knob}`
+}
+
+const warnedIgnoredLegacy = new Set<string>()
+
+/**
+ * Raw value of a rerank tuning knob for `engine`.
+ *
+ * Each engine's threshold and depth are calibrated for that engine's score
+ * scale and latency (the cross-encoder: 40 / 8; Jev: 0 / 40), so a value
+ * tuned for one engine is wrong for another. Lookup order:
+ *
+ * 1. The engine-scoped variable (LUNA_RERANK_CE_THRESHOLD,
+ *    LUNA_RERANK_JEV_MAX_CANDIDATES, ...). Always wins.
+ * 2. The legacy unscoped variable (LUNA_RERANK_THRESHOLD /
+ *    LUNA_RERANK_MAX_CANDIDATES). These predate engine selection and were
+ *    tuned for the cross-encoder, so they apply ONLY to the cross-encoder (or
+ *    an unnamed engine, as in tests). For any other engine they are ignored,
+ *    with a one-time warning. Before this rule, an operator who tuned the
+ *    cross-encoder and then switched to Jev in the Models tab silently ran
+ *    Jev at depth 8 with a threshold of 40, which dropped most memories.
+ */
+export function rerankTuningEnv(
+  knob: "THRESHOLD" | "MAX_CANDIDATES",
+  env: Record<string, string | undefined>,
+  engine: string | undefined,
+): string | undefined {
+  const legacyName = `LUNA_RERANK_${knob}`
+  const legacy = env[legacyName]?.trim() || undefined
+  if (engine === undefined) return legacy
+  const scoped = env[rerankTuningVarName(knob, engine)]?.trim() || undefined
+  if (scoped !== undefined) return scoped
+  if (engine === "cross-encoder") return legacy
+  if (legacy !== undefined) {
+    const key = `${legacyName}\u0000${engine}`
+    if (!warnedIgnoredLegacy.has(key)) {
+      warnedIgnoredLegacy.add(key)
+      console.warn(
+        `[luna/memory] ${legacyName}=${legacy} is ignored for the ${engine} reranker: it is cross-encoder tuning. ` +
+          `Using ${engine}'s own default. To override it for ${engine}, set ${rerankTuningVarName(knob, engine)}.`,
+      )
+    }
+  }
+  return undefined
+}
+
+/** Exposed for tests that need a clean slate between cases. */
+export function resetRerankTuningWarnState(): void {
+  warnedIgnoredLegacy.clear()
+}
 
 export function resolveRerankThreshold(
   env: Record<string, string | undefined> = process.env,
   /** The engine's own calibrated threshold (MemoryRerankerApi.defaults.threshold). */
   engineDefault: number = DEFAULT_RERANK_THRESHOLD,
+  /** MemoryRerankerApi.engine; scopes which env override applies (see rerankTuningEnv). */
+  engine?: string,
 ): number {
-  const raw = env["LUNA_RERANK_THRESHOLD"]?.trim()
+  const raw = rerankTuningEnv("THRESHOLD", env, engine)
   if (raw === undefined || raw === "") return engineDefault
   const n = Number(raw)
   return Number.isFinite(n) && n >= 0 && n <= 100 ? n : engineDefault
@@ -58,8 +126,10 @@ export function resolveRerankMaxCandidates(
   env: Record<string, string | undefined> = process.env,
   /** The engine's own latency-validated depth (MemoryRerankerApi.defaults.maxCandidates). */
   engineDefault: number = DEFAULT_RERANK_MAX_CANDIDATES,
+  /** MemoryRerankerApi.engine; scopes which env override applies (see rerankTuningEnv). */
+  engine?: string,
 ): number {
-  const raw = env["LUNA_RERANK_MAX_CANDIDATES"]?.trim()
+  const raw = rerankTuningEnv("MAX_CANDIDATES", env, engine)
   const n = raw ? Number(raw) : engineDefault
   return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : engineDefault
 }

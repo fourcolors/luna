@@ -42,9 +42,11 @@
  *     (LUNA_MEMORY_RERANK=1, or unset with an engine that is on by default -
  *     LUNA_RERANK_ENGINE=jev; "0" always turns it off), search over-fetches
  *     to at least 20 candidates (or the engine's depth), reranks the top
- *     LUNA_RERANK_MAX_CANDIDATES (default: the engine's depth, 8 for the
- *     cross-encoder, 40 for Jev), and gates via applyRerank
- *     (score >= LUNA_RERANK_THRESHOLD, default: the engine's, else 40)
+ *     LUNA_RERANK_<ENGINE>_MAX_CANDIDATES (default: the engine's depth, 8
+ *     for the cross-encoder, 40 for Jev), and gates via applyRerank
+ *     (score >= LUNA_RERANK_<ENGINE>_THRESHOLD, default: the engine's,
+ *     else 40). <ENGINE> is CE or JEV; the legacy unscoped variables apply
+ *     to the cross-encoder only (rerank-support.ts rerankTuningEnv)
  *     before slicing to `limit`. With the default cross-encoder and the flag
  *     unset, behavior is byte-identical to before.
  *     A rerank failure (timeout/parse/SDK error) falls back to the
@@ -275,7 +277,7 @@ export const makeMemoryTools = (
         const kindFilter = args.kind
         const rerankRequested =
           reranker !== undefined && rerankLaneEnabled("LUNA_MEMORY_RERANK", reranker.defaults?.enabled)
-        const rerankDepth = resolveRerankMaxCandidates(process.env, reranker?.defaults?.maxCandidates)
+        const rerankDepth = resolveRerankMaxCandidates(process.env, reranker?.defaults?.maxCandidates, reranker?.engine)
         // Over-fetch when a kind filter is set so the post-filter still has
         // enough candidates to return `limit` matches (4× with a floor of
         // 20 - a heuristic good enough for the local store sizes we see in
@@ -362,7 +364,7 @@ export const makeMemoryTools = (
           return filtered.slice(0, limit).map((h) => toSearchHitDTO(h))
         }
 
-        const threshold = resolveRerankThreshold(process.env, reranker!.defaults?.threshold)
+        const threshold = resolveRerankThreshold(process.env, reranker!.defaults?.threshold, reranker!.engine)
         const byId = new Map(filtered.map((h) => [h.record.id, h] as const))
         const { kept, droppedCount } = applyRerank(
           rerankPool.map((h) => ({ id: h.record.id })),
