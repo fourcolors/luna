@@ -27,6 +27,10 @@
  *                                           60/200 = held-out
  *   LUNA_LME_SEED                           default 42
  *   LUNA_LME_FRESH=1                        ignore (and delete) this run's checkpoint
+ *   LUNA_LME_DUMP_TOP=1                     also save each config's top-10 records (id, text,
+ *                                           timestamp) and the question, date and gold answer,
+ *                                           for the answer stage (bench/lme-qa-answer.ts in
+ *                                           @luna/memory-tools); large, not for committing
  *
  * Checkpoint: each finished question is appended to .out/checkpoint-<id>.jsonl,
  * where <id> hashes everything that defines the run (split, questions, seed,
@@ -40,7 +44,7 @@ import { MemoryRouterTag } from "../../router.js"
 import { expansionFor, parseSearchConfigs, type ExpansionSidecar, type SearchConfig } from "../../search-config.js"
 import { fetchOllamaVersion, probeModel, resolveOllamaBaseUrl } from "../eval-common/ollama.js"
 import { makeJudges, warmUpJudges, type Judge, type JudgeName } from "../eval-common/judge.js"
-import { judgeLatency, searchWithConfig, type JudgeTiming } from "../eval-common/search.js"
+import { judgeLatency, recordText, searchWithConfig, type JudgeTiming } from "../eval-common/search.js"
 import { signTestP } from "./baselines.js"
 import { fetchDataset, flattenTurns, isAbstentionId, selectSubset, SPLIT_URLS, type LmeSplit } from "./dataset.js"
 import { describeError, hasErrorTag, loadExpansionSidecars, makeQuestionLayer } from "./harness.js"
@@ -52,6 +56,7 @@ import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const OUT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), ".out")
+const DUMP_TOP = process.env["LUNA_LME_DUMP_TOP"] === "1"
 const DIAG_VEC_DEPTH = 50
 
 function fail(code: number, message: string): never {
@@ -97,6 +102,8 @@ interface ConfigHits {
   readonly top10: ReadonlyArray<string>
   /** The rr= judge call's timing and attempts; absent without rr=. */
   readonly judge?: JudgeTiming
+  /** LUNA_LME_DUMP_TOP=1 only: the top-10 records in rank order. */
+  readonly top?: ReadonlyArray<{ readonly id: string; readonly text: string; readonly updatedAt: number }>
 }
 
 interface QuestionResult {
@@ -111,6 +118,8 @@ interface QuestionResult {
   readonly evidenceVecRank: Readonly<Record<string, number | null>>
   /** Each judge's served model id(s) as of this question (a resumed run can span model updates). */
   readonly servedModels?: Readonly<Record<string, string>>
+  /** LUNA_LME_DUMP_TOP=1 only: what the answer stage needs. */
+  readonly qa?: { readonly question: string; readonly questionDate: string; readonly answer: string }
 }
 
 function runQuestion(
@@ -143,12 +152,13 @@ function runQuestion(
           onJudgeCall: (t) => (judge = t),
         },
         judges,
-      ).pipe(Effect.map((hits) => hits.map((h) => h.record.id)))
+      )
     }
 
     const perConfig: Record<string, ConfigHits> = {}
     for (const config of CONFIGS) {
-      const top10 = yield* search(config)
+      const hits10 = yield* search(config)
+      const top10 = hits10.map((h) => h.record.id)
       const top5 = top10.slice(0, 5)
       const sessions5 = new Set(top5.flatMap((id) => turnById.get(id)?.sessionId ?? []))
       perConfig[config.label] = {
@@ -157,6 +167,7 @@ function runQuestion(
         sess5: [...answerSessions].filter((s) => sessions5.has(s)).length,
         top10,
         ...(judge !== undefined ? { judge } : {}),
+        ...(DUMP_TOP ? { top: hits10.map((h) => ({ id: h.record.id, text: recordText(h.record), updatedAt: h.record.updatedAt })) } : {}),
       }
     }
     const vecDeep = Array.from(
@@ -177,6 +188,7 @@ function runQuestion(
       answerSessionCount: answerSessions.size,
       perConfig,
       evidenceVecRank,
+      ...(DUMP_TOP ? { qa: { question: instance.question, questionDate: instance.question_date, answer: String(instance.answer) } } : {}),
     } satisfies QuestionResult
   })
 }
@@ -234,7 +246,7 @@ async function main(): Promise<void> {
     fail(2, `BLOCKED: judge warm-up failed: ${describeError(e)}.`)
   }
   const runId = createHash("sha256")
-    .update(JSON.stringify({ split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label) }))
+    .update(JSON.stringify({ split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label), dumpTop: DUMP_TOP }))
     .digest("hex")
     .slice(0, 16)
   mkdirSync(OUT_DIR, { recursive: true })
