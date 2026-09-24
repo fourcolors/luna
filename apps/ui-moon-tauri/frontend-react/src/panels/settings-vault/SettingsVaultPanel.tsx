@@ -133,6 +133,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
   const state = useMoonSelector(local, (s) => s)
 
   const wsClientRef = useRef<LunaWsClient | null>(null)
+  const presetNoteRef = useRef(false)
 
   useEffect(() => {
     if (!ctx.connectWs || !window.LunaWS) return
@@ -177,10 +178,18 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
    *  thing left is pasting the value. Disarms a manual var override if one is
    *  armed, so the env var can't accidentally stay customized. */
   function applyPreset(preset: (typeof KEY_PRESETS)[number]): void {
+    const changingDestination = state.kind !== "env-secret" || state.name !== preset.varName || state.varOverride
+    // A secret already pasted for another destination must not follow the
+    // selected preset. Keep a manually edited note, but remove an old preset's
+    // generated note when the new preset has no note of its own.
+    if (changingDestination) local.dispatch({ type: "value-input-changed", value: "" })
     local.dispatch({ type: "kind-changed", value: "env-secret" })
     if (state.varOverride) local.dispatch({ type: "var-override-toggled" })
     local.dispatch({ type: "name-changed", value: preset.varName })
-    if (preset.note) local.dispatch({ type: "desc-input-changed", value: preset.note })
+    if (preset.note || presetNoteRef.current) {
+      local.dispatch({ type: "desc-input-changed", value: preset.note ?? "" })
+    }
+    presetNoteRef.current = !!preset.note
   }
 
   function submitAdd(): void {
@@ -494,7 +503,10 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
                   isOptional
                   placeholder="What this key is for"
                   value={state.descInput}
-                  onChange={(value) => local.dispatch({ type: "desc-input-changed", value })}
+                  onChange={(value) => {
+                    presetNoteRef.current = false
+                    local.dispatch({ type: "desc-input-changed", value })
+                  }}
                   data-testid="vault-desc-input"
                 />
 

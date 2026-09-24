@@ -339,6 +339,50 @@ describe('SettingsVaultPanel (React port of panels/settings-vault.js)', () => {
     expect(sent[0]).toMatchObject({ type: 'vault-put', varName: 'MY_KEY' })
   })
 
+  it('switching key presets clears the previous secret and generated note, but keeps a typed note', () => {
+    const { ctx, fireFrame, sent } = makeCtx()
+    renderPanel(ctx)
+    act(() => fireFrame({ type: 'hello', capabilities: { vault: true } }))
+
+    act(() => byTestId<HTMLButtonElement>('vault-preset-TYPESAFE_API_KEY').click())
+    expect(byTestId<HTMLInputElement>('vault-name-input').value).toBe('TYPESAFE_API_KEY')
+    expect(byTestId<HTMLInputElement>('vault-desc-input').value).toBe('Jev memory reranker')
+    typeInto(byTestId('vault-value-input'), 'typesafe-secret')
+    typeInto(byTestId('vault-name-input'), 'Custom display name')
+
+    act(() => byTestId<HTMLButtonElement>('vault-preset-OPENAI_API_KEY').click())
+    expect(byTestId<HTMLInputElement>('vault-value-input').value).toBe('')
+    expect(byTestId<HTMLInputElement>('vault-desc-input').value).toBe('')
+    expect(byTestId('vault-var-preview').textContent).toBe('OPENAI_API_KEY')
+    act(() => byTestId<HTMLButtonElement>('vault-add-btn').click())
+    expect(sent).toHaveLength(0)
+    expect(byTestId('vault-status-line').textContent).toBe('Paste the secret value first.')
+
+    typeInto(byTestId('vault-desc-input'), 'my account')
+    act(() => byTestId<HTMLButtonElement>('vault-preset-ANTHROPIC_API_KEY').click())
+    expect(byTestId<HTMLInputElement>('vault-desc-input').value).toBe('my account')
+    typeInto(byTestId('vault-value-input'), 'anthropic-secret')
+    act(() => byTestId<HTMLButtonElement>('vault-add-btn').click())
+    expect(sent[0]).toMatchObject({
+      type: 'vault-put', name: 'ANTHROPIC_API_KEY', varName: 'ANTHROPIC_API_KEY',
+      description: 'my account', value: 'anthropic-secret',
+    })
+  })
+
+  it('switching from a service-account token to an API-key preset wipes the token', () => {
+    const { ctx, fireFrame, sent } = makeCtx()
+    renderPanel(ctx)
+    act(() => fireFrame({ type: 'hello', capabilities: { vault: true } }))
+    act(() => byTestId<HTMLButtonElement>('vault-kind-op-token').click())
+    typeInto(byTestId('vault-value-input'), 'ops_service_token')
+
+    act(() => byTestId<HTMLButtonElement>('vault-preset-TYPESAFE_API_KEY').click())
+    expect(byTestId<HTMLInputElement>('vault-value-input').value).toBe('')
+    expect(byTestId('vault-var-preview').textContent).toBe('TYPESAFE_API_KEY')
+    act(() => byTestId<HTMLButtonElement>('vault-add-btn').click())
+    expect(sent).toHaveLength(0)
+  })
+
   it('op-token kind: label field + restart note, label defaults to primary, no varName on the frame', () => {
     const { ctx, fireFrame, sent } = makeCtx()
     renderPanel(ctx)
