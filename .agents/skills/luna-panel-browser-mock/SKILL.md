@@ -78,6 +78,15 @@ runs unmodified.
   back to a default). A second mock port can then send a different hello
   (e.g. `capabilities:{}` to exercise the vault panel's legacy op-token form)
   — same panel-mock.html, just a different URL in a second tab.
+- Even better for persona-per-field matrixes: carry the persona in the WS
+  PATH — `server.upgrade(req, { data: { variant } })` on e.g.
+  `/routing/auto-jev` then `ws.data.variant` in `open()`. Deterministic per
+  page load and dodges the `isDirty` guard entirely (no mid-run pushes needed
+  to switch personas — just point the URL at another path and reload).
+- After acking `model-routing-save`, ALSO push a fresh `model-routing-list`
+  reflecting the save — the real server sends one after every successful
+  save (wire doc), and the panel's post-save state (dirty cleared, pending
+  notes, refreshed drafts) only settles correctly when it arrives.
 - Missing `@fontsource/*` packages make Vite fail `src/fonts/moon-fonts.css`
   (postcss ENOENT). `bun install` fixes it; if node_modules predates the
   bundled-fonts commit, run it before verifying panels visually.
