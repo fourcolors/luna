@@ -73,6 +73,37 @@ runs unmodified.
   Chrome tab to show the captured outbound frame in the recording.
 - Port gotcha: `lsof -nP -iTCP:<port> -sTCP:LISTEN` first — 9876 was already
   bound by `devin-rem` here; pick a verified-free port.
+- Multiple server personas without rewriting the stub: have `load_connection`
+  read the WS URL from a `?mockws=ws://127.0.0.1:<port>/` query param (falling
+  back to a default). A second mock port can then send a different hello
+  (e.g. `capabilities:{}` to exercise the vault panel's legacy op-token form)
+  — same panel-mock.html, just a different URL in a second tab.
+- Missing `@fontsource/*` packages make Vite fail `src/fonts/moon-fonts.css`
+  (postcss ENOENT). `bun install` fixes it; if node_modules predates the
+  bundled-fonts commit, run it before verifying panels visually.
+- An iOS Simulator may sit on this desktop and throw dialogs over the Chrome
+  window mid-recording. Hide it: `osascript -e 'tell application "System
+  Events" to set visible of process "Simulator" to false'`; dismiss its
+  in-sim dialogs first if clicks are being swallowed.
+
+## chat.html works too (chat-mock.html)
+
+The same stub technique works on `chat.html` (copy → `chat-mock.html`, stub
+first in `<head>`). Its boot path: `loadConnectionAndConnect` invokes
+`migrate_legacy_connection` + `load_connection` (answer the second with your
+mock URL — 'mock' is a fine literal token, it just can't be `legacy` or an
+`env:`/`file:`/`op://` ref, which PoolEngine refuses to dial) →
+`MoonSession.resolveBootRoute` rejects via the stub → legacy fallback →
+`LunaWsAdapter` (PoolEngine) dials. The ONLY frame the adapter waits on is
+the server `hello` — send it on `open` and `acquire()` resolves →
+`isConnected()` true → `syncThread()` sends `list-threads`/`subscribe`
+(just log them). Every inbound frame then reaches `MoonFrames.dispatch` —
+so server-initiated flows like `secret-request` (secure-box) or
+`suggested-action-set` can be triggered with an HTTP `/push-*` endpoint on
+the mock that broadcasts to open sockets mid-run. Verify outbound frames
+(`secret-result`, `user-message`) in the `/state` log; ack `secret-result`
+with `secret-status{requestId, ok:true}` to watch the panel's
+"Saving…" → "Saved." → auto-hide path.
 - Astryx `Selector` is a combobox: click the trigger → a popover listbox opens
   (options are plain click targets by their label text; checkmark = current
   value). The panel's `data-testid` lands on the field wrapper, not the trigger.
