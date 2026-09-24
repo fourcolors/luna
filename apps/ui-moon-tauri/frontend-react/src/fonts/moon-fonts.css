@@ -1,0 +1,24 @@
+/*
+ * moon-fonts.css - Moon's web fonts, bundled with the app.
+ *
+ * These used to load from fonts.googleapis.com. A stylesheet link in <head>
+ * blocks parsing and first paint until it arrives, so on a stalled network
+ * every Moon window (the Cmd+K launcher, panels, chat) came up blank until
+ * the request finished - and the cache purge after each app update made the
+ * first open after an update always hit the network. Bundled, the fonts load
+ * from the app itself and never wait on the internet.
+ *
+ * Same families, weights, font-display: swap and unicode-range subsets as the
+ * Google Fonts request, so text renders the same. Outfit is only used by the
+ * hub headings (index.html); @font-face costs nothing until a page uses it.
+ */
+@import "@fontsource/albert-sans/400.css";
+@import "@fontsource/albert-sans/500.css";
+@import "@fontsource/albert-sans/600.css";
+@import "@fontsource/albert-sans/700.css";
+@import "@fontsource/caveat/500.css";
+@import "@fontsource/caveat/600.css";
+@import "@fontsource/caveat/700.css";
+@import "@fontsource/outfit/400.css";
+@import "@fontsource/outfit/600.css";
+@import "@fontsource/outfit/800.css";

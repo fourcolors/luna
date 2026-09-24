@@ -18,10 +18,9 @@
   <script src="/vendor/moon-resize.js"></script>
   <!-- Chrome-tab Attached/Detached session (docs/chrome-tab-interaction.md). -->
   <script src="/vendor/thread-drag-session.js"></script>
-  <!-- Watercolor font families: Albert Sans (body) + Caveat (handwritten accents). -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Albert+Sans:wght@400;500;600;700&family=Caveat:wght@500;600;700&display=swap" rel="stylesheet">
+  <!-- Watercolor font families: Albert Sans (body) + Caveat (handwritten accents),
+       bundled with the app (see src/fonts/moon-fonts.css). -->
+  <link rel="stylesheet" href="/src/fonts/moon-fonts.css">
   <!-- Palette TOKENS (3 watercolor palettes × light/dark). Load BEFORE moon-theme.css
        so token definitions are ready when the chrome layer references them. -->
   <link rel="stylesheet" href="/vendor/moon-palette.css">
