@@ -37,71 +37,89 @@ import {
   readChatHtml,
 } from "./helpers/chat-harness"
 
+type TauriWindowStub = {
+  label: string
+  listen: ReturnType<typeof vi.fn>
+  [k: string]: unknown
+}
+
+/** Boot the real chat page with Tauri stubbed. One stable window object:
+ * getCurrentWindow must return THE instance the boot wired, or its listen()
+ * calls are unreachable from a test. */
+function bootChatWindow(label: string): { invoke: ReturnType<typeof vi.fn>; tauriWindow: TauriWindowStub } {
+  const html = readChatHtml()
+  mountChatDomFromHtml(html)
+  const invoke = vi.fn().mockResolvedValue("panel-chat-floater")
+  const tauriWindow: TauriWindowStub = {
+    label,
+    listen: vi.fn(async () => () => {}),
+    onMoved: vi.fn(async () => () => {}),
+    isMinimized: vi.fn(async () => false),
+    scaleFactor: vi.fn(async () => 1),
+    outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
+    outerSize: vi.fn(async () => ({ width: 560, height: 520 })),
+    setPosition: vi.fn(async () => {}),
+  }
+  ;(window as any).__TAURI__ = {
+    core: { invoke },
+    window: {
+      getCurrentWindow: () => tauriWindow,
+      Window: { getByLabel: vi.fn(async () => null) },
+    },
+    event: { listen: vi.fn(async () => () => {}) },
+  }
+  for (const f of [
+    "moon-protocol.js",
+    "moon-ws.js",
+    "moon-markdown.js",
+    "moon-dock.js",
+    "thread-drag-session.js",
+  ]) {
+    loadVendorInto(window, f)
+  }
+  ;(window as any).LunaTransport = LunaTransport
+  localStorage.clear()
+  vi.stubGlobal(
+    "WebSocket",
+    class {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+      readyState = 0
+      url: string
+      constructor(u: string) {
+        this.url = u
+      }
+      send() {}
+      close() {}
+      addEventListener() {}
+      removeEventListener() {}
+    },
+  )
+  evalChatInlineScriptWithBridge()
+  return { invoke, tauriWindow }
+}
+
+function teardownChatWindow(): void {
+  document.body.innerHTML = ""
+  for (const k of ["__TAURI__", "__MoonInternals", "LunaChatHost", "LunaTransport", "ChatState", "ChatLoop", "ViewMode"]) {
+    delete (window as any)[k]
+  }
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+}
+
 describe("thread row drag-out (S17 detach path)", () => {
   const M = () => (window as any).__MoonInternals
   let invoke: ReturnType<typeof vi.fn>
+  let tauriWindow: TauriWindowStub
 
   beforeEach(() => {
-    const html = readChatHtml()
-    mountChatDomFromHtml(html)
-    invoke = vi.fn().mockResolvedValue("panel-chat-floater")
-    ;(window as any).__TAURI__ = {
-      core: { invoke },
-      window: {
-        getCurrentWindow: () => ({
-          label: "panel-chat-owner",
-          listen: vi.fn(async () => () => {}),
-          onMoved: vi.fn(async () => () => {}),
-          isMinimized: vi.fn(async () => false),
-          scaleFactor: vi.fn(async () => 1),
-          outerPosition: vi.fn(async () => ({ x: 0, y: 0 })),
-          outerSize: vi.fn(async () => ({ width: 560, height: 520 })),
-          setPosition: vi.fn(async () => {}),
-        }),
-        Window: { getByLabel: vi.fn(async () => null) },
-      },
-      event: { listen: vi.fn(async () => () => {}) },
-    }
-    for (const f of [
-      "moon-protocol.js",
-      "moon-ws.js",
-      "moon-markdown.js",
-      "moon-dock.js",
-      "thread-drag-session.js",
-    ]) {
-      loadVendorInto(window, f)
-    }
-    ;(window as any).LunaTransport = LunaTransport
-    localStorage.clear()
-    vi.stubGlobal(
-      "WebSocket",
-      class {
-        static CONNECTING = 0
-        static OPEN = 1
-        static CLOSING = 2
-        static CLOSED = 3
-        readyState = 0
-        url: string
-        constructor(u: string) {
-          this.url = u
-        }
-        send() {}
-        close() {}
-        addEventListener() {}
-        removeEventListener() {}
-      },
-    )
-    evalChatInlineScriptWithBridge()
+    ;({ invoke, tauriWindow } = bootChatWindow("panel-chat-owner"))
   })
 
-  afterEach(() => {
-    document.body.innerHTML = ""
-    for (const k of ["__TAURI__", "__MoonInternals", "LunaChatHost", "LunaTransport", "ChatState", "ChatLoop", "ViewMode"]) {
-      delete (window as any)[k]
-    }
-    vi.restoreAllMocks()
-    vi.unstubAllGlobals()
-  })
+  afterEach(teardownChatWindow)
 
   /** Paint one row and hand back the element the gesture runs on. */
   const paintRow = (id = "thr-drag") => {
@@ -255,5 +273,315 @@ describe("thread row drag-out (S17 detach path)", () => {
       expect(invoke.mock.calls.some((c) => c[0] === "open_widget"), "a tap must not spawn a window").toBe(false)
       onRow.mockRestore()
     })
+
+    it("ignores a second pointer's events mid-gesture", async () => {
+      const row = paintRow()
+      const sessions = vi.spyOn((window as any).LunaThreadDrag, "createSession")
+      down(row, 100, 100) // pointerId 7 owns the session (see down/move/up)
+      move(row, 140, 105)
+      expect(M().State.threadDragActive).toBe(true)
+      // A second finger's pointerdown must not hijack the live session - it
+      // used to rebuild session/pid wholesale and hand the drag to finger 2.
+      row.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, button: 0, pointerId: 9,
+          clientX: 500, clientY: 400, screenX: 500, screenY: 400,
+        }),
+      )
+      expect(
+        sessions.mock.calls.length,
+        "a second pointerdown while a gesture is live opens no new session",
+      ).toBe(1)
+      row.dispatchEvent(
+        new PointerEvent("pointerup", {
+          bubbles: true, cancelable: true, pointerId: 9,
+          clientX: 140, clientY: 105, screenX: 140, screenY: 105,
+        }),
+      )
+      expect(
+        M().State.threadDragActive,
+        "pointerId 9 must not settle pointerId 7's gesture",
+      ).toBe(true)
+      up(row, 140, 105) // the owning pointer ends it
+      await Promise.resolve()
+      expect(M().State.threadDragActive).toBeFalsy()
+    })
+
+    it("does not start a second drag from another row while one is active", async () => {
+      paintRow()
+      const m = M()
+      m.State.threads.push({ id: "thr-other", title: "Other", lastMessagePreview: "", lastActiveAt: Date.now() })
+      m.ThreadDrawerEngine.render()
+      const first = document.querySelector('.thread-row[data-thread-id="thr-drag"]') as HTMLElement
+      const second = document.querySelector('.thread-row[data-thread-id="thr-other"]') as HTMLElement
+      const sessions = vi.spyOn((window as any).LunaThreadDrag, "createSession")
+      down(first, 100, 100)
+      second.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, button: 0, pointerId: 9,
+          clientX: 110, clientY: 150, screenX: 110, screenY: 150,
+        }),
+      )
+      expect(sessions).toHaveBeenCalledTimes(1)
+      expect(m.State.threadDragActive).toBe(true)
+      up(first, 100, 100)
+      expect(m.State.threadDragActive).toBe(false)
+    })
+
+    it("a macOS context click (press, contextmenu, no release) ends the gesture", () => {
+      const row = paintRow()
+      row.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, button: 0, ctrlKey: true, pointerId: 1,
+          clientX: 100, clientY: 100, screenX: 100, screenY: 100,
+        }),
+      )
+      expect(M().State.threadDragActive).toBe(true)
+      // WKWebView turns Ctrl+click into a context click and never delivers the
+      // release: no pointerup, pointercancel or lostpointercapture follows.
+      row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, ctrlKey: true }))
+      expect(M().State.threadDragActive, "a context click must not leave the window mid-drag").toBeFalsy()
+    })
+
+    it("a press from the same pointer retires a gesture whose release never arrived", async () => {
+      paintRow()
+      const m = M()
+      m.State.threads.push({ id: "thr-other", title: "Other", lastMessagePreview: "", lastActiveAt: Date.now() })
+      m.ThreadDrawerEngine.render()
+      const first = document.querySelector('.thread-row[data-thread-id="thr-drag"]') as HTMLElement
+      const second = document.querySelector('.thread-row[data-thread-id="thr-other"]') as HTMLElement
+      const onRow = vi.spyOn(m.ThreadDrawerEngine, "onRowClick").mockImplementation(() => {})
+      down(first, 100, 100) // pointerId 7; its release is lost
+      // A thread that arrives meanwhile waits for the drag to end to paint.
+      m.State.threads.push({ id: "thr-new", title: "New", lastMessagePreview: "", lastActiveAt: Date.now() })
+      m.ThreadDrawerEngine.render()
+      expect(document.querySelector('.thread-row[data-thread-id="thr-new"]')).toBeNull()
+      // One mouse cannot press twice without releasing, so a new press from
+      // the same pointer proves the old release was lost.
+      down(second, 110, 150)
+      // Retiring the stale gesture must not repaint mid-press: a rebuilt list
+      // would detach the row this press landed on, and its release would miss.
+      expect(second.isConnected, "the pressed row must survive the retirement").toBe(true)
+      up(second, 110, 150)
+      await Promise.resolve()
+      expect(onRow, "the new press must work, not be refused forever").toHaveBeenCalledWith("thr-other")
+      expect(m.State.threadDragActive).toBe(false)
+      expect(
+        document.querySelector('.thread-row[data-thread-id="thr-new"]'),
+        "the deferred paint must run once the list recovers",
+      ).toBeTruthy()
+    })
+
+    it("lets the native probe own the preview once the pullout is armed", async () => {
+      const row = paintRow()
+      down(row, 100, 100)
+      move(row, 140, 105)
+      move(row, 600, 300)
+      move(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        invoke.mock.calls.some((c) => c[0] === "begin_native_pullout_drag"),
+        "the floater resolved and the OS pullout armed",
+      ).toBe(true)
+      // Cursor back over the strip: 'reenter_attached'. With the pullout
+      // armed, Rust's redock-preview emits own the insert gap - a second
+      // writer here fights Rust's insert index on every sample. Two samples at
+      // one index, because the sticky-insert rule ignores a single sample.
+      move(row, 120, 300)
+      move(row, 120, 300)
+      expect(
+        M().State.redockPreview,
+        "armed pullout: owner preview must come from Rust emits, not JS",
+      ).toBeNull()
+    })
+
+    it("drops the drag ghost when the floater spawn fails", async () => {
+      const row = paintRow()
+      // open_widget rejects - no OS window ever comes up to take the ghost over.
+      invoke.mockImplementation((cmd: string) =>
+        cmd === "open_widget"
+          ? Promise.reject(new Error("no window"))
+          : Promise.resolve("panel-chat-floater"),
+      )
+      down(row, 100, 100)
+      move(row, 140, 105)
+      move(row, 600, 300)
+      move(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      up(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        document.querySelector(".thread-drag-ghost"),
+        "a failed spawn must not strand the ghost element on screen",
+      ).toBeNull()
+      // The keep_floater retry also fails: the id must un-float AND re-paint -
+      // without a render after clearFloatedAway the row stays excluded by the
+      // last floated-away paint and silently vanishes from the strip.
+      const rowBack = document.querySelector(
+        '.thread-row[data-thread-id="thr-drag"]',
+      ) as HTMLElement | null
+      expect(rowBack, "a failed spawn must hand the row back to the strip").toBeTruthy()
+      expect(rowBack?.classList.contains("floated-away")).toBe(false)
+    })
+
+    it("adopts at the live preview's index, not the session's own math", async () => {
+      // The displayed gap near a header/bottom comes from Rust's probe over
+      // the LIST band; the session's pointerUp maps clientY over the WHOLE
+      // drawer rect. The adopt index must be the gap the user saw.
+      const m = M()
+      m.State.threads = [
+        { id: "thr-drag", title: "Draggable", lastMessagePreview: "hi", lastActiveAt: Date.now() },
+        { id: "thr-b", title: "B", lastMessagePreview: "", lastActiveAt: Date.now() },
+        { id: "thr-c", title: "C", lastMessagePreview: "", lastActiveAt: Date.now() },
+        { id: "thr-d", title: "D", lastMessagePreview: "", lastActiveAt: Date.now() },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.render()
+      const row = document.querySelector(
+        '.thread-row[data-thread-id="thr-drag"]',
+      ) as HTMLElement
+      const drawer = document.getElementById("thread-drawer") as HTMLElement
+      drawer.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 240, bottom: 600, width: 240, height: 600, x: 0, y: 0 }) as DOMRect
+      const adopt = vi.spyOn(m.ThreadDrawerEngine, "adoptAtIndex")
+      down(row, 100, 100)
+      move(row, 140, 105)
+      move(row, 600, 300)
+      move(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        invoke.mock.calls.some((c) => c[0] === "begin_native_pullout_drag"),
+        "the floater resolved and the OS pullout armed",
+      ).toBe(true)
+      // Rust's redock-preview emit: probe over the list band says index 1.
+      m.ThreadDrawerEngine.applyRedockPreview({
+        threadId: "thr-drag",
+        title: "Draggable",
+        yRatio: 0.34,
+        over: true,
+      })
+      expect(m.State.redockPreview?.insertIndex).toBe(1)
+      // Re-enter and release at the BOTTOM of the drawer: the session's own
+      // stripRect math lands ~index 3; the displayed gap said 1.
+      move(row, 120, 590)
+      up(row, 120, 590)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        adopt.mock.calls.some((c) => c[0] === "thr-drag" && c[1] === 1),
+        "adoption must land where the displayed gap was, not where stripRect() puts it",
+      ).toBe(true)
+    })
+
+    it("adopts at the shown gap even when Rust retires the preview before pointerup", async () => {
+      // Rust's release monitor emits redock-preview {active:false} before
+      // AppKit hands the release to the webview, so pointerup can find no
+      // live preview. applyRedockPreview kept the index it showed.
+      const m = M()
+      m.State.threads = [
+        { id: "thr-drag", title: "Draggable", lastMessagePreview: "hi", lastActiveAt: Date.now() },
+        { id: "thr-b", title: "B", lastMessagePreview: "", lastActiveAt: Date.now() },
+        { id: "thr-c", title: "C", lastMessagePreview: "", lastActiveAt: Date.now() },
+        { id: "thr-d", title: "D", lastMessagePreview: "", lastActiveAt: Date.now() },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.render()
+      const row = document.querySelector('.thread-row[data-thread-id="thr-drag"]') as HTMLElement
+      const drawer = document.getElementById("thread-drawer") as HTMLElement
+      drawer.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 240, bottom: 600, width: 240, height: 600, x: 0, y: 0 }) as DOMRect
+      const adopt = vi.spyOn(m.ThreadDrawerEngine, "adoptAtIndex")
+      down(row, 100, 100)
+      move(row, 140, 105)
+      move(row, 600, 300)
+      move(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      m.ThreadDrawerEngine.applyRedockPreview({ threadId: "thr-drag", title: "Draggable", yRatio: 0.34, over: true })
+      expect(m.State.redockPreview?.insertIndex).toBe(1)
+      move(row, 120, 590)
+      m.ThreadDrawerEngine.applyRedockPreview({ active: false })
+      up(row, 120, 590)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        adopt.mock.calls.some((c) => c[0] === "thr-drag" && c[1] === 1),
+        "adoption must use the gap Rust showed, not the session's own index",
+      ).toBe(true)
+    })
+
+    it("returns the strip row when its floater closes without redocking", async () => {
+      const row = paintRow()
+      down(row, 100, 100)
+      move(row, 140, 105)
+      move(row, 600, 300)
+      move(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      // Row left the strip once the floater resolved.
+      expect(M().State.floatedThreadIds["thr-drag"]).toBeTruthy()
+      // Rust emits 'floater-closed' from WindowEvent::Destroyed when a chat
+      // instance with thread + redockTo params dies by ANY path (close
+      // button, ⌘W, close_widget). Only the redock path used to clear it -
+      // the row stayed hidden forever.
+      const handler = (tauriWindow.listen.mock.calls.find((c) => c[0] === "floater-closed") || [])[1] as
+        | ((e: { payload: unknown }) => void)
+        | undefined
+      expect(handler, "the owner must listen for floater-closed").toBeTypeOf("function")
+      handler!({ payload: { threadId: "thr-drag" } })
+      expect(M().State.floatedThreadIds["thr-drag"]).toBeUndefined()
+    })
+  })
+})
+
+describe("floater's redock-drag-ended listener", () => {
+  let invoke: ReturnType<typeof vi.fn>
+  let tauriWindow: TauriWindowStub
+  const startUrl = location.href
+
+  beforeEach(() => {
+    // A floater is a pinned window that knows its owner - the only boot that
+    // installs this listener (wiring.ts reads both params at boot).
+    history.replaceState(null, "", "?thread=thr-float&redockTo=panel-chat-owner")
+    ;({ invoke, tauriWindow } = bootChatWindow("panel-chat-floater"))
+  })
+
+  afterEach(() => {
+    teardownChatWindow()
+    history.replaceState(null, "", startUrl)
+  })
+
+  const endHandler = () =>
+    (tauriWindow.listen.mock.calls.find((c) => c[0] === "redock-drag-ended") || [])[1] as
+      | ((e: { payload: unknown }) => void)
+      | undefined
+
+  it("leaves a pull-out release to the owner's own decision", () => {
+    const handler = endHandler()
+    expect(handler, "a floater with redockTo must listen for redock-drag-ended").toBeTypeOf("function")
+    // Rust emits this with pullout:true on every pull-out release; the owner's
+    // pointerup already chose redock or keep_floater, so a redock from here
+    // would race it and adopt the row twice.
+    handler!({ payload: { over: true, pullout: true } })
+    expect(invoke.mock.calls.some((c) => c[0] === "redock_thread")).toBe(false)
+  })
+
+  it("still redocks when its own title-bar drag ends over the owner", () => {
+    endHandler()!({ payload: { over: true } })
+    expect(invoke.mock.calls.some((c) => c[0] === "redock_thread")).toBe(true)
   })
 })

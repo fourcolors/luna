@@ -89,6 +89,9 @@ export interface ThreadDragState {
   threadDragActive: boolean
   redockPreview: RedockPreview | null
   _lastRedockInsert: RedockInsert | null
+  /** The window's one live row gesture (rows share it, like threadDragActive):
+   * the pointer that owns it and how to cancel it. */
+  _threadDragGesture?: { readonly pointerId: number; readonly cancel: () => void } | null
 }
 
 /** domMap.ts, narrowed to the two ids this gesture touches. */
@@ -229,6 +232,8 @@ export function wireThreadRow(
   });
   let session: ThreadDragSession | null = null;
   let pid: number | null = null;
+  /** This row's entry in State._threadDragGesture while its gesture is live. */
+  let gesture: NonNullable<ThreadDragState['_threadDragGesture']> | null = null;
   let raf = 0;
   let lastX = 0, lastY = 0, lastSX = 0, lastSY = 0;
   let floatedLabel: string | null = null;
@@ -357,6 +362,11 @@ export function wireThreadRow(
       .catch((err) => {
         spawnPromise = null;
         clearFloatedAway();
+        // The row must be painted back once the spawn can no longer produce a
+        // window - the last render ran while the id was still floated-away, so
+        // without this it stays absent from the strip until some unrelated
+        // render happens to rebuild the list.
+        try { self.render(); } catch (_) {}
         try { moonDragDebugNote('floater_error', { message: String(err) }); } catch (_) {}
         Logger.warn('thread drag-out spawn failed:', err);
         return null;
@@ -415,8 +425,10 @@ export function wireThreadRow(
     stickyPendingAt = -1;
     stickyPendingCount = 0;
     row.classList.remove('dragging');
-    // Keep ghost only until hard promote shows a window.
-    if (self._ghost && floatedLabel) {
+    // The ghost only ever bridges until the OS window exists; leaving the
+    // strip chrome always retires it. A failed spawn (no floatedLabel) must
+    // not keep it - it would hover over the UI forever.
+    if (self._ghost) {
       self._ghost.remove();
       self._ghost = null;
     }
@@ -425,6 +437,9 @@ export function wireThreadRow(
 
   const onMove = (e: PointerEvent) => {
     if (!session) return;
+    // Only the pointer that started the gesture may drive it - a second
+    // finger's events must not steer or prematurely settle this session.
+    if (pid != null && e.pointerId !== pid) return;
     lastX = e.clientX; lastY = e.clientY;
     lastSX = e.screenX; lastSY = e.screenY;
     const move = session.pointerMove({
@@ -467,7 +482,10 @@ export function wireThreadRow(
     }
     if (move.action === 'reenter_attached') {
       // Strip gap only; floater still OS-driven (redock-preview from Rust).
-      showAttachedChrome(move.insertIndex);
+      // While the native pullout is armed the Rust probe already owns
+      // redock-preview for this cursor - writing it here too would fight
+      // Rust's insert index on every sample.
+      if (!nativePulloutArmed) showAttachedChrome(move.insertIndex);
       return;
     }
   };
@@ -484,19 +502,25 @@ export function wireThreadRow(
     } catch (_) { /* ignore */ }
   };
 
-  const teardown = () => {
+  /** `flushRender: false` when a new press is retiring this gesture: a list
+   * rebuild now would replace the row that press is landing on. The new
+   * gesture's own teardown paints instead. */
+  const teardown = (flushRender = true) => {
     row.removeEventListener('pointermove', onMove);
     row.removeEventListener('pointerup', onUp);
     row.removeEventListener('pointercancel', onCancel);
+    row.removeEventListener('contextmenu', onContextMenu);
     try { document.removeEventListener('selectstart', blockSelect, true); } catch (_) {}
     try { document.body.classList.remove('thread-dragging'); } catch (_) {}
     if (raf) { cancelAnimationFrame(raf); raf = 0; }
     try { if (pid != null) row.releasePointerCapture(pid); } catch (_) {}
     pid = null;
     session = null;
+    if (State._threadDragGesture === gesture) State._threadDragGesture = null;
+    gesture = null;
     State.threadDragActive = false;
     clearDomSelection();
-    if (self._renderPendingDuringDrag) {
+    if (flushRender && self._renderPendingDuringDrag) {
       self._renderPendingDuringDrag = false;
       self.render();
     }
@@ -504,6 +528,7 @@ export function wireThreadRow(
 
   const onUp = (e: PointerEvent) => {
     if (!session) { teardown(); return; }
+    if (pid != null && e.pointerId !== pid) return;
     const result = session.pointerUp({
       clientX: e.clientX,
       clientY: e.clientY,
@@ -511,6 +536,18 @@ export function wireThreadRow(
       rowCount: rowCount(),
     });
     const sx = e.screenX, sy = e.screenY;
+    // The displayed gap may be owned by the native probe (armed pullout), not
+    // by this session's stripRect math - snapshot the index the user actually
+    // saw before clearAttachedChrome() retires the preview.
+    // Armed, Rust's release monitor can retire the preview before this
+    // pointerup lands; applyRedockPreview kept the index it showed.
+    const kept = State._lastRedockInsert;
+    const liveInsert = (State.redockPreview && State.redockPreview.over
+        && typeof State.redockPreview.insertIndex === 'number')
+      ? { insertIndex: State.redockPreview.insertIndex, yRatio: State.redockPreview.yRatio }
+      : (nativePulloutArmed && kept && kept.threadId === t.id && typeof kept.insertIndex === 'number')
+        ? { insertIndex: kept.insertIndex, yRatio: kept.yRatio }
+        : null;
     clearAttachedChrome();
     teardown();
 
@@ -526,13 +563,13 @@ export function wireThreadRow(
     }
     if (result.outcome === 'redock') {
       cancelled = true;
-      // Prefer live preview insert under the cursor; fall back to session index.
-      if (State.redockPreview && State.redockPreview.over
-          && typeof State.redockPreview.insertIndex === 'number') {
+      // Adopt where the displayed gap was; fall back to the session index only
+      // when no live preview existed.
+      if (liveInsert) {
         State._lastRedockInsert = {
           threadId: t.id,
-          insertIndex: State.redockPreview.insertIndex,
-          yRatio: State.redockPreview.yRatio,
+          insertIndex: liveInsert.insertIndex,
+          yRatio: liveInsert.yRatio,
         };
       } else {
         State._lastRedockInsert = {
@@ -586,7 +623,16 @@ export function wireThreadRow(
     }
   };
 
-  const onCancel = () => {
+  const onCancel = (e: PointerEvent) => {
+    if (pid != null && e.pointerId !== pid) return;
+    cancelGesture(true);
+  };
+
+  // macOS turns Ctrl+click into a context click, and WKWebView then never
+  // delivers the release (no pointerup, pointercancel or lostpointercapture).
+  const onContextMenu = () => cancelGesture(true);
+
+  const cancelGesture = (flushRender: boolean) => {
     cancelled = true;
     if (session) session.cancel();
     clearAttachedChrome();
@@ -603,11 +649,21 @@ export function wireThreadRow(
     } else {
       clearFloatedAway();
     }
-    teardown();
+    teardown(flushRender);
   };
 
   row.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    const live = State._threadDragGesture;
+    if (live) {
+      // A different pointer (a second finger, or a pen while a touch is down)
+      // must not replace session/pid and take over the live gesture.
+      if (live.pointerId !== e.pointerId) return;
+      // The same pointer pressing again proves its release never arrived: one
+      // pointer cannot press twice without releasing. Retire that gesture as
+      // a cancel rather than refuse every row until the window reloads.
+      live.cancel();
+    }
     if (e.target && (e.target as MaybeClosest).closest && (e.target as MaybeClosest).closest('.thread-row-pop')) return;
     if (!(window.LunaThreadDrag && typeof window.LunaThreadDrag.createSession === 'function')) {
       Logger.warn('[ThreadDrawer] LunaThreadDrag missing; drag disabled');
@@ -628,6 +684,9 @@ export function wireThreadRow(
     stickyPendingCount = 0;
     detachStartedAt = 0;
     nativePulloutArmed = false;
+    // An index kept from an earlier gesture of this thread must not be
+    // mistaken for this one's.
+    if (State._lastRedockInsert && State._lastRedockInsert.threadId === t.id) State._lastRedockInsert = null;
     session = window.LunaThreadDrag.createSession({
       threadId: t.id,
       startClientX: e.clientX,
@@ -646,6 +705,8 @@ export function wireThreadRow(
     lastX = e.clientX; lastY = e.clientY;
     lastSX = e.screenX; lastSY = e.screenY;
     pid = e.pointerId;
+    gesture = { pointerId: e.pointerId, cancel: () => cancelGesture(false) };
+    State._threadDragGesture = gesture;
     State.threadDragActive = true;
     try { moonDragDebugNote('down', { threadId: t.id, clientX: e.clientX, clientY: e.clientY }); } catch (_) {}
     // Capture keeps move events when the pointer leaves the owner window
@@ -654,5 +715,6 @@ export function wireThreadRow(
     row.addEventListener('pointermove', onMove);
     row.addEventListener('pointerup', onUp);
     row.addEventListener('pointercancel', onCancel);
+    row.addEventListener('contextmenu', onContextMenu);
   });
 }

@@ -865,7 +865,12 @@ function installWiringChromeAndWindow(ctx, engines) {
       if (W && typeof W.listen === 'function' && REDOCK_TO) {
         W.listen('redock-drag-ended', (e) => {
           const p = e && e.payload;
-          if (!(p && p.over && window.__TAURI__ && window.__TAURI__.core)) return;
+          // 'pullout' payloads end the OWNER's row-drag session - its own
+          // pointerUp already decided redock vs keep_floater, so a redock
+          // from here would race that decision (and double-adopt the row).
+          // This listener exists for the floater's OWN title-bar drag
+          // (begin_redock_drag), the one path with no owner session.
+          if (!(p && p.over && !p.pullout && window.__TAURI__ && window.__TAURI__.core)) return;
           const draft = (DOM.messageInput && DOM.messageInput.value) || '';
           window.__TAURI__.core
             .invoke('redock_thread', {
@@ -938,6 +943,17 @@ function installWiringChromeAndWindow(ctx, engines) {
         // Live drag preview from a redock-capable floater (Rust NSEvent path).
         W.listen('redock-preview', (e) => {
           ThreadDrawerEngine.applyRedockPreview((e && e.payload) || { active: false });
+        }).catch(() => {});
+        // A floated window that closes WITHOUT redocking (its own ✕, ⌘W,
+        // close_widget) must hand the strip's row back: floatedThreadIds used
+        // to clear only via the redock path, so a plainly closed floater
+        // stranded the row hidden until restart. Rust emits this from
+        // WindowEvent::Destroyed when the label's params carry a thread.
+        W.listen('floater-closed', (e) => {
+          const p = e && e.payload;
+          const id = p && p.threadId;
+          if (!id) return;
+          ThreadDrawerEngine.clearFloatedThread(id);
         }).catch(() => {});
       }
     } catch (_) { /* off-Tauri */ }
