@@ -266,9 +266,22 @@ describe("thread row drag-out (S17 detach path)", () => {
 
     it("ignores a second pointer's events mid-gesture", async () => {
       const row = paintRow()
+      const sessions = vi.spyOn((window as any).LunaThreadDrag, "createSession")
       down(row, 100, 100) // pointerId 7 owns the session (see down/move/up)
       move(row, 140, 105)
       expect(M().State.threadDragActive).toBe(true)
+      // A second finger's pointerdown must not hijack the live session - it
+      // used to rebuild session/pid wholesale and hand the drag to finger 2.
+      row.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, button: 0, pointerId: 9,
+          clientX: 500, clientY: 400, screenX: 500, screenY: 400,
+        }),
+      )
+      expect(
+        sessions.mock.calls.length,
+        "a second pointerdown while a gesture is live opens no new session",
+      ).toBe(1)
       row.dispatchEvent(
         new PointerEvent("pointerup", {
           bubbles: true, cancelable: true, pointerId: 9,
@@ -340,6 +353,58 @@ describe("thread row drag-out (S17 detach path)", () => {
       ) as HTMLElement | null
       expect(rowBack, "a failed spawn must hand the row back to the strip").toBeTruthy()
       expect(rowBack?.classList.contains("floated-away")).toBe(false)
+    })
+
+    it("adopts at the live preview's index, not the session's own math", async () => {
+      // The displayed gap near a header/bottom comes from Rust's probe over
+      // the LIST band; the session's pointerUp maps clientY over the WHOLE
+      // drawer rect. The adopt index must be the gap the user saw.
+      const m = M()
+      m.State.threads = [
+        { id: "thr-drag", title: "Draggable", lastMessagePreview: "hi", lastActiveAt: Date.now() },
+        { id: "thr-b", title: "B", lastMessagePreview: "", lastActiveAt: Date.now() },
+        { id: "thr-c", title: "C", lastMessagePreview: "", lastActiveAt: Date.now() },
+        { id: "thr-d", title: "D", lastMessagePreview: "", lastActiveAt: Date.now() },
+      ]
+      m.ThreadDrawerEngine.openPanel()
+      m.ThreadDrawerEngine.render()
+      const row = document.querySelector(
+        '.thread-row[data-thread-id="thr-drag"]',
+      ) as HTMLElement
+      const drawer = document.getElementById("thread-drawer") as HTMLElement
+      drawer.getBoundingClientRect = () =>
+        ({ left: 0, top: 0, right: 240, bottom: 600, width: 240, height: 600, x: 0, y: 0 }) as DOMRect
+      const adopt = vi.spyOn(m.ThreadDrawerEngine, "adoptAtIndex")
+      down(row, 100, 100)
+      move(row, 140, 105)
+      move(row, 600, 300)
+      move(row, 900, 320)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        invoke.mock.calls.some((c) => c[0] === "begin_native_pullout_drag"),
+        "the floater resolved and the OS pullout armed",
+      ).toBe(true)
+      // Rust's redock-preview emit: probe over the list band says index 1.
+      m.ThreadDrawerEngine.applyRedockPreview({
+        threadId: "thr-drag",
+        title: "Draggable",
+        yRatio: 0.34,
+        over: true,
+      })
+      expect(m.State.redockPreview?.insertIndex).toBe(1)
+      // Re-enter and release at the BOTTOM of the drawer: the session's own
+      // stripRect math lands ~index 3; the displayed gap said 1.
+      move(row, 120, 590)
+      up(row, 120, 590)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(
+        adopt.mock.calls.some((c) => c[0] === "thr-drag" && c[1] === 1),
+        "adoption must land where the displayed gap was, not where stripRect() puts it",
+      ).toBe(true)
     })
 
     it("returns the strip row when its floater closes without redocking", async () => {

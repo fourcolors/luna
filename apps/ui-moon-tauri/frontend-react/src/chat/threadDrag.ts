@@ -525,6 +525,13 @@ export function wireThreadRow(
       rowCount: rowCount(),
     });
     const sx = e.screenX, sy = e.screenY;
+    // The displayed gap may be owned by the native probe (armed pullout), not
+    // by this session's stripRect math - snapshot the index the user actually
+    // saw before clearAttachedChrome() retires the preview.
+    const liveInsert = (State.redockPreview && State.redockPreview.over
+        && typeof State.redockPreview.insertIndex === 'number')
+      ? { insertIndex: State.redockPreview.insertIndex, yRatio: State.redockPreview.yRatio }
+      : null;
     clearAttachedChrome();
     teardown();
 
@@ -540,13 +547,13 @@ export function wireThreadRow(
     }
     if (result.outcome === 'redock') {
       cancelled = true;
-      // Prefer live preview insert under the cursor; fall back to session index.
-      if (State.redockPreview && State.redockPreview.over
-          && typeof State.redockPreview.insertIndex === 'number') {
+      // Adopt where the displayed gap was; fall back to the session index only
+      // when no live preview existed.
+      if (liveInsert) {
         State._lastRedockInsert = {
           threadId: t.id,
-          insertIndex: State.redockPreview.insertIndex,
-          yRatio: State.redockPreview.yRatio,
+          insertIndex: liveInsert.insertIndex,
+          yRatio: liveInsert.yRatio,
         };
       } else {
         State._lastRedockInsert = {
@@ -622,6 +629,9 @@ export function wireThreadRow(
   };
 
   row.addEventListener('pointerdown', (e) => {
+    // A live gesture owns this row - a second pointerdown (another finger, or
+    // a pen while a touch is down) must not replace session/pid and take over.
+    if (session) return;
     if (e.button !== 0) return;
     if (e.target && (e.target as MaybeClosest).closest && (e.target as MaybeClosest).closest('.thread-row-pop')) return;
     if (!(window.LunaThreadDrag && typeof window.LunaThreadDrag.createSession === 'function')) {
