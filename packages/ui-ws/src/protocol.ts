@@ -1500,6 +1500,15 @@ export interface MemoryRerankerSettingsItem {
   readonly active?: string
 }
 
+/** The classifier engine setting ("auto" | "model" | "jev"). Never carries the Jev key. */
+export interface ClassifierEngineSettingsItem {
+  /** List: the engine after the next start. Save: the operator's choice. */
+  readonly engine: string
+  /** List only: the engine this running server actually bound ("model" | "jev";
+   *  differs from `engine` both until a restart and when `engine` is "auto"). */
+  readonly active?: string
+}
+
 /**
  * Server→client: current model-routing settings. Sent after `hello` and after
  * each successful mutation. Wire-safe — no secret values, only metadata +
@@ -1512,6 +1521,9 @@ export interface ModelRoutingListFrame {
   /** The engine the server will use after its next start (saved choice, else env, else
    *  "cross-encoder"). OPTIONAL/additive: older servers omit it; clients then hide the control. */
   readonly memoryReranker?: MemoryRerankerSettingsItem
+  /** The classifier engine after the next start (saved choice, else env, else "auto").
+   *  OPTIONAL/additive: older servers omit it; clients then hide the control. */
+  readonly classifierEngine?: ClassifierEngineSettingsItem
 }
 
 /**
@@ -1542,6 +1554,8 @@ export interface ModelRoutingSaveFrame {
   readonly roleBindings: ReadonlyArray<RoleBindingItem>
   /** OPTIONAL/additive: absent (older clients) keeps the stored choice unchanged. */
   readonly memoryReranker?: MemoryRerankerSettingsItem
+  /** OPTIONAL/additive: absent (older clients) keeps the stored choice unchanged. */
+  readonly classifierEngine?: ClassifierEngineSettingsItem
 }
 
 export type ServerFrame =

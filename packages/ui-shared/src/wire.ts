@@ -953,6 +953,16 @@ export interface MemoryRerankerSettingsItem {
   readonly active?: string
 }
 
+/** The classifier engine setting ("auto" | "model" | "jev"). Never carries the Jev key.
+ * Mirrors packages/ui-ws/src/protocol.ts, keep in sync. */
+export interface ClassifierEngineSettingsItem {
+  /** List: the engine after the next start. Save: the operator's choice. */
+  readonly engine: string
+  /** List only: the engine this running server actually bound ("model" | "jev";
+   *  differs from `engine` both until a restart and when `engine` is "auto"). */
+  readonly active?: string
+}
+
 /**
  * Server→client: current model-routing settings. Sent after `hello` and after
  * each successful `model-routing-save`. Wire-safe — metadata + opaque refs only.
@@ -964,6 +974,8 @@ export interface ModelRoutingListFrame {
   readonly roleBindings: ReadonlyArray<RoleBindingItem>
   /** Engine the server uses after its next start; absent on older servers (hide the control). */
   readonly memoryReranker?: MemoryRerankerSettingsItem
+  /** Classifier engine after the next start; absent on older servers (hide the control). */
+  readonly classifierEngine?: ClassifierEngineSettingsItem
 }
 
 /**
@@ -993,6 +1005,8 @@ export interface ModelRoutingSaveFrame {
   readonly roleBindings: ReadonlyArray<RoleBindingItem>
   /** Absent (older clients) keeps the stored choice unchanged. */
   readonly memoryReranker?: MemoryRerankerSettingsItem
+  /** Absent (older clients) keeps the stored choice unchanged. */
+  readonly classifierEngine?: ClassifierEngineSettingsItem
 }
 
 /**

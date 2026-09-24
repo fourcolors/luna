@@ -59,6 +59,7 @@ import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
 import {
   ANTHROPIC_MODELS,
   buildSavePayload,
+  CLASSIFIER_ENGINES,
   DEFAULT_ROLE_MODEL,
   initialModelRoutingState,
   PROVIDERS,
@@ -100,6 +101,7 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
         providers: Array.isArray(frame?.providers) ? frame.providers : [],
         roleBindings: Array.isArray(frame?.roleBindings) ? frame.roleBindings : [],
         ...(typeof frame?.memoryReranker?.engine === "string" ? { memoryReranker: frame.memoryReranker } : {}),
+        ...(typeof frame?.classifierEngine?.engine === "string" ? { classifierEngine: frame.classifierEngine } : {}),
       })
     })
 
@@ -142,6 +144,7 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
       providers: payload.providers,
       roleBindings: payload.roleBindings,
       ...(payload.memoryReranker !== undefined ? { memoryReranker: payload.memoryReranker } : {}),
+      ...(payload.classifierEngine !== undefined ? { classifierEngine: payload.classifierEngine } : {}),
     })
     if (!ok) {
       dispatch({ type: "save-rejected" })
@@ -363,6 +366,62 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
                   Luna keeps using {rerankerLabel(state.activeReranker)} until the server restarts.
                 </Text>
               )}
+            </VStack>
+          </Card>
+        </VStack>
+      )}
+
+      {state.draftClassifierEngine !== null && (
+        <VStack gap={3} data-testid="classifier-engine-section">
+          <VStack gap={1}>
+            <Text type="label">Classifier engine</Text>
+            <Text type="supporting" color="secondary">
+              What answers decision-shaped work — message routing and small jobs. Jev is a purpose-built
+              classifier; the model lane generates answers as JSON. Changes apply after a short server restart.
+            </Text>
+          </VStack>
+          <Card>
+            <VStack gap={3}>
+              <SegmentedControl
+                label="Classifier engine"
+                layout="fill"
+                value={state.draftClassifierEngine}
+                onChange={(engine) => dispatch({ type: "set-classifier-engine", engine })}
+                data-testid="classifier-engine-control"
+              >
+                {CLASSIFIER_ENGINES.map((r) => (
+                  <SegmentedControlItem key={r.engine} value={r.engine} label={r.label} data-testid={`classifier-engine-${r.engine}`} />
+                ))}
+              </SegmentedControl>
+              {state.draftClassifierEngine === "jev" && (
+                <Banner
+                  status="warning"
+                  title="Sends message text to TypeSafe"
+                  description="Every routing decision sends the text being judged to api.typesafe.ai. Needs your TYPESAFE_API_KEY saved in the Vault; without it classifier calls fail and Luna falls back."
+                  data-testid="classifier-engine-jev-notice"
+                />
+              )}
+              {state.draftClassifierEngine === "auto" && (
+                <Text type="supporting" color="secondary" data-testid="classifier-engine-auto-note">
+                  {state.activeClassifierEngine === "jev"
+                    ? "Auto is using Jev — it picked it because your TYPESAFE_API_KEY is set. An explicit Classifier model binding overrides this."
+                    : "Auto uses Jev once your TYPESAFE_API_KEY is saved in the Vault — until then the Classifier model above handles routing."}
+                </Text>
+              )}
+              {state.draftClassifierEngine === "model" && (
+                <Text type="supporting" color="secondary" data-testid="classifier-engine-model-note">
+                  The Classifier model above handles routing decisions as generated JSON.
+                </Text>
+              )}
+              {!state.isDirty &&
+                state.activeClassifierEngine !== null &&
+                state.serverClassifierEngine !== null &&
+                state.serverClassifierEngine !== "auto" &&
+                state.activeClassifierEngine !== state.serverClassifierEngine && (
+                  <Text type="supporting" color="secondary" data-testid="classifier-engine-pending">
+                    Luna keeps using {state.activeClassifierEngine === "jev" ? "Jev (TypeSafe)" : "the model lane"} until the server restarts.
+                  </Text>
+                )}
             </VStack>
           </Card>
         </VStack>

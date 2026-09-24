@@ -41,6 +41,21 @@ export interface RoleBinding {
 export const MEMORY_RERANKER_ENGINES = ["cross-encoder", "jev"] as const
 export type MemoryRerankerEngine = (typeof MEMORY_RERANKER_ENGINES)[number]
 
+/** Classifier engines — which engine serves decision-shaped work on the
+ *  classifier lane (see packages/core/src/classifier/types.ts):
+ *  - "auto"  (default): Jev when TYPESAFE_API_KEY is set and the classifier
+ *    role has no explicit model binding; otherwise the generative lane.
+ *  - "jev":  always bind the Jev engine (warn at boot when no key resolves).
+ *  - "model": no dedicated engine — decision calls stay on the generative
+ *    classifier lane (roleBindings/env model). */
+export const CLASSIFIER_ENGINES = ["auto", "model", "jev"] as const
+export type ClassifierEngine = (typeof CLASSIFIER_ENGINES)[number]
+
+/** The engine actually bound — the "auto" resolution result and the set
+ *  reported as `active` on model-routing-list. */
+export const ACTIVE_CLASSIFIER_ENGINES = ["model", "jev"] as const
+export type ActiveClassifierEngine = (typeof ACTIVE_CLASSIFIER_ENGINES)[number]
+
 /** The full persisted settings payload stored as a single JSON blob
  *  in provider_settings(key='config', value=<json>). */
 export interface ProviderSettingsPayload {
@@ -53,6 +68,14 @@ export interface ProviderSettingsPayload {
    * payloads simply lack it.
    */
   readonly memoryReranker?: { readonly engine: MemoryRerankerEngine }
+  /**
+   * Operator-chosen classifier engine, applied at boot as
+   * LUNA_CLASSIFIER_ENGINE (store wins over env, like every setting here).
+   * Absent = never chosen in the UI: the environment decides (default
+   * "auto" — Jev when TYPESAFE_API_KEY resolves and the classifier role has
+   * no explicit model binding). Additive; older payloads simply lack it.
+   */
+  readonly classifierEngine?: { readonly engine: ClassifierEngine }
   /** Schema version for forward compat (always 1 for now). */
   readonly version: 1
 }

@@ -255,6 +255,13 @@ import {
   memoryRerankerEnvFromStore,
   nextMemoryReranker,
   resolveMemoryRerankerEngine,
+  boundClassifierEngine,
+  classifierEngineEnvFromStore,
+  isClassifierEngine,
+  nextClassifierEngine,
+  resolveClassifierEngine,
+  resolveActiveClassifierEngine,
+  type ActiveClassifierEngine,
   type ProviderSettingsPayload,
   SuggestedActions,
   SuggestedActionsStore,
@@ -275,6 +282,7 @@ import {
   type FeedbackJobsDep,
   type FeedbackSetStatusDep,
   MemoryReranker,
+  Classifier,
   BulletinWriter,
   shapeActivitySnapshot,
   buildBulletinInjectionBlock,
@@ -334,6 +342,7 @@ import {
   ChatThreadPosterTag,
   CrossEncoderRerankerLayer,
   JevRerankerLayer,
+  JevClassifierLayer,
   BulletinWriterDefault,
   loadAgents,
 } from "@luna/adapter-sdk"
@@ -1692,6 +1701,12 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
       const savedRerankEngine = memoryRerankerEnvFromStore(storeConfig)
       if (savedRerankEngine !== undefined) process.env["LUNA_RERANK_ENGINE"] = savedRerankEngine
 
+      // Classifier engine chosen in the Models settings tab: the classifier
+      // layer reads LUNA_CLASSIFIER_ENGINE at buildBaseLayer, so set it here
+      // (store wins over env; absent = env decides, default "auto").
+      const savedClassifierEngine = classifierEngineEnvFromStore(storeConfig)
+      if (savedClassifierEngine !== undefined) process.env["LUNA_CLASSIFIER_ENGINE"] = savedClassifierEngine
+
       // Wire reasoner-lane model SELECTION: wake/dream/classifier resolve their
       // model from LUNA_WAKE_MODEL / LUNA_DREAM_MODEL / LUNA_CLASSIFIER_MODEL
       // (brokered-turn resolveReasonerModel).
@@ -1895,6 +1910,12 @@ const vaultSecretStore = makeVaultSecretStore({
 // `storage()` accessor returns this; null until boot computes it, so a pre-boot
 // list frame simply omits the field (additive, backward compatible).
 let vaultStorageStatus: ReturnType<typeof buildStorageStatus> | null = null
+
+// The classifier engine this running server actually bound ("model" | "jev"),
+// set inside buildBaseLayer when classifierL is built — the `active` field on
+// model-routing-list (differs from the saved engine until a restart, and from
+// "auto" always). Plain mutable holder, same doctrine as recallReranker.
+let boundClassifierActive: ActiveClassifierEngine = "model"
 
 // ── Moon agent-summoned secure secret entry ─────────────────────────────
 //
@@ -2514,6 +2535,49 @@ export const buildBaseLayer = (
           }),
         )
       : CrossEncoderRerankerLayer()
+
+  // Classifier decision engine — which engine serves the Classifier service
+  // (packages/core/src/classifier). LUNA_CLASSIFIER_ENGINE:
+  //   auto (default) - Jev when a TypeSafe key resolves AND the classifier
+  //     role has no explicit model binding (an operator's
+  //     LUNA_CLASSIFIER_MODEL / store binding is the override); otherwise no
+  //     dedicated engine — decision call sites use the generative lane.
+  //   jev - always bind Jev (a missing key degrades per call with a typed
+  //     ClassifierError, matching the reranker's contract).
+  //   model - no dedicated engine bound; generative lane for everything.
+  // Jev sends message/decision text to api.typesafe.ai with the operator's
+  // own TYPESAFE_API_KEY (env or vault, never the repo).
+  const rawClassifierEngine = process.env["LUNA_CLASSIFIER_ENGINE"]?.trim()
+  if (rawClassifierEngine !== undefined && rawClassifierEngine !== "" && !isClassifierEngine(rawClassifierEngine)) {
+    console.warn(`[chat-server] unknown LUNA_CLASSIFIER_ENGINE="${rawClassifierEngine}" (auto | model | jev); using auto`)
+  }
+  const classifierEngine = boundClassifierEngine()
+  const classifierL = Layer.unwrap(
+    Effect.promise(async () => {
+      // Like every server secret: a key saved through the Vault lives in
+      // Keychain / the Luna vault, not process.env, so read it through the
+      // resolver (never logged: Redacted).
+      const secret = resolveEnvSecret ? await resolveEnvSecret("TYPESAFE_API_KEY") : undefined
+      const apiKey = secret !== undefined ? Redacted.value(secret).trim() : process.env["TYPESAFE_API_KEY"]?.trim()
+      const active = resolveActiveClassifierEngine({
+        engine: classifierEngine,
+        hasTypeSafeKey: apiKey !== undefined && apiKey !== "",
+        // LUNA_CLASSIFIER_MODEL is primed above ONLY from an explicit store
+        // binding, or set directly by the operator — either way "explicit".
+        hasExplicitClassifierModel: (process.env["LUNA_CLASSIFIER_MODEL"]?.trim() ?? "") !== "",
+      })
+      boundClassifierActive = active
+      if (active === "jev") {
+        if (!apiKey) {
+          console.warn("[chat-server] classifier engine jev but no TYPESAFE_API_KEY (vault or env): classifier calls will fail with a typed error")
+        } else {
+          console.log(`[chat-server] classifier engine: jev (${classifierEngine === "auto" ? "auto — TYPESAFE_API_KEY set" : "explicit"})`)
+        }
+        return JevClassifierLayer({ apiKey: apiKey ?? "" })
+      }
+      return Layer.empty as Layer.Layer<Classifier>
+    }),
+  )
   // Hot-tier bulletin (BULLETIN.md): a plain mutable holder read
   // synchronously by decorate() (same doctrine as the beliefs holder), a
   // digest file next to luna.db for warm restarts, and a refresh loop that
@@ -3012,6 +3076,7 @@ export const buildBaseLayer = (
     threadRegistryWithMigrationL, // Phase 1: durable thread index (luna.db threads table)
     channelServiceL, // Communication channels (Telegram, …): adapters registered + started in buildMain
     bulletinRefresherL, // Hot-tier bulletin (BULLETIN.md): Layer.empty unless LUNA_BULLETIN=1
+    classifierL, // Classifier service: JevClassifierLayer when the classifier engine resolves jev, else empty (call sites see serviceOption = none)
   )
 }
 
@@ -4630,12 +4695,17 @@ const buildServerLayer = (
                 // engine: what runs after the next start (saved choice, else today's);
                 // active: what this running server bound. They differ until a restart.
                 memoryReranker: { engine: resolveMemoryRerankerEngine(cfg), active: boundMemoryRerankerEngine() },
+                // engine: what runs after the next start (saved choice, else env,
+                // else "auto"); active: what this running server bound ("model"
+                // when auto didn't pick jev — no key or an explicit model).
+                classifierEngine: { engine: resolveClassifierEngine(cfg), active: boundClassifierActive },
               }
             },
             save: (input: {
               readonly providers: ReadonlyArray<import("@luna/ui-ws").ProviderSettingsItem>
               readonly roleBindings: ReadonlyArray<import("@luna/ui-ws").RoleBindingItem>
               readonly memoryReranker?: import("@luna/ui-ws").MemoryRerankerSettingsItem
+              readonly classifierEngine?: import("@luna/ui-ws").ClassifierEngineSettingsItem
             }): { readonly ok: boolean; readonly message: string } => {
               try {
                 // Sanitize client-supplied enums BEFORE casting: the wire types
@@ -4652,6 +4722,8 @@ const buildServerLayer = (
                 }
                 const rerankerChoice = nextMemoryReranker(input.memoryReranker, mrStore.read())
                 if (!rerankerChoice.ok) return { ok: false, message: rerankerChoice.message }
+                const classifierChoice = nextClassifierEngine(input.classifierEngine, mrStore.read())
+                if (!classifierChoice.ok) return { ok: false, message: classifierChoice.message }
                 for (const b of input.roleBindings) {
                   if (!KNOWN_ROLES.has(b.role)) {
                     return { ok: false, message: `Unknown role: ${String(b.role)}` }
@@ -4665,6 +4737,7 @@ const buildServerLayer = (
                 const candidate: ProviderSettingsPayload = {
                   version: 1,
                   ...(rerankerChoice.value !== undefined ? { memoryReranker: rerankerChoice.value } : {}),
+                  ...(classifierChoice.value !== undefined ? { classifierEngine: classifierChoice.value } : {}),
                   providers: input.providers.map((p) => ({
                     kind: p.kind as import("@luna/core").ProviderKind,
                     enabled: p.enabled,
@@ -4681,7 +4754,7 @@ const buildServerLayer = (
                 }
                 validateAndPrepare(candidate)
                 mrStore.write(candidate)
-                return { ok: true, message: "Model and reranker settings saved. Restart to apply." }
+                return { ok: true, message: "Model and engine settings saved. Restart to apply." }
               } catch (err) {
                 const msg =
                   err instanceof Error ? err.message : String(err)

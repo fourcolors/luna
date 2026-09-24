@@ -24,7 +24,16 @@ import {
   readOverflowConfig,
   validateOverflowConfig,
 } from "../overflow-chain.js"
-import { MEMORY_RERANKER_ENGINES, type MemoryRerankerEngine, type ProviderSettingsPayload, type RoleName } from "./types.js"
+import {
+  ACTIVE_CLASSIFIER_ENGINES,
+  CLASSIFIER_ENGINES,
+  MEMORY_RERANKER_ENGINES,
+  type ActiveClassifierEngine,
+  type ClassifierEngine,
+  type MemoryRerankerEngine,
+  type ProviderSettingsPayload,
+  type RoleName,
+} from "./types.js"
 
 // ── Default role→model mapping (PR 1 defaults) ──────────────────────────────
 
@@ -289,4 +298,82 @@ export const nextMemoryReranker = (
 export const memoryRerankerEnvFromStore = (store: ProviderSettingsPayload | null): MemoryRerankerEngine | undefined => {
   const engine = store?.memoryReranker?.engine
   return isMemoryRerankerEngine(engine) ? engine : undefined
+}
+
+/** True for a classifier engine Luna can bind (the UI sends plain strings). */
+export const isClassifierEngine = (value: unknown): value is ClassifierEngine =>
+  typeof value === "string" && (CLASSIFIER_ENGINES as ReadonlyArray<string>).includes(value)
+
+/** True for an engine the classifier lane can actually run (an "auto" resolution result). */
+export const isActiveClassifierEngine = (value: unknown): value is ActiveClassifierEngine =>
+  typeof value === "string" && (ACTIVE_CLASSIFIER_ENGINES as ReadonlyArray<string>).includes(value)
+
+/**
+ * The engine the RUNNING server bound: LUNA_CLASSIFIER_ENGINE as it was at
+ * boot (applyProviderSettingsToEnv sets it from the store before the
+ * classifier layer is built; nothing changes it later), with anything
+ * unknown falling back to "auto" exactly as the server does.
+ */
+export const boundClassifierEngine = (env: Record<string, string | undefined> = process.env): ClassifierEngine => {
+  const raw = env["LUNA_CLASSIFIER_ENGINE"]?.trim()
+  return isClassifierEngine(raw) ? raw : "auto"
+}
+
+/**
+ * The engine the server binds at its NEXT start: the operator's saved choice
+ * (Models settings tab), else what it runs now. Store wins over env, like
+ * every setting here.
+ */
+export const resolveClassifierEngine = (
+  store: ProviderSettingsPayload | null,
+  env: Record<string, string | undefined> = process.env,
+): ClassifierEngine => {
+  const saved = store?.classifierEngine?.engine
+  return isClassifierEngine(saved) ? saved : boundClassifierEngine(env)
+}
+
+/**
+ * The engine actually RUNNING, given the configured engine plus what the
+ * environment can support — the "auto" resolution:
+ *   - jev   → jev unconditionally (a missing key degrades at call time; the
+ *     operator asked for Jev, so bind it and let the call error surface).
+ *   - model → model unconditionally.
+ *   - auto  → jev when a TypeSafe key resolves AND the operator has not
+ *     explicitly bound a classifier model (LUNA_CLASSIFIER_MODEL or a
+ *     roleBindings row with a non-empty model) — an explicit binding is the
+ *     override; otherwise the generative lane stays.
+ */
+export const resolveActiveClassifierEngine = (args: {
+  readonly engine: ClassifierEngine
+  readonly hasTypeSafeKey: boolean
+  readonly hasExplicitClassifierModel: boolean
+}): ActiveClassifierEngine => {
+  if (args.engine === "jev") return "jev"
+  if (args.engine === "model") return "model"
+  return !args.hasExplicitClassifierModel && args.hasTypeSafeKey ? "jev" : "model"
+}
+
+/**
+ * The classifierEngine to persist on a model-routing save: the client's
+ * choice when it sent one (validated), else what was stored (so a client
+ * that never shows the control cannot erase it). An invalid stored value is
+ * dropped.
+ */
+export const nextClassifierEngine = (
+  input: { readonly engine: string } | undefined,
+  stored: ProviderSettingsPayload | null,
+): { readonly ok: true; readonly value: { readonly engine: ClassifierEngine } | undefined } | { readonly ok: false; readonly message: string } => {
+  if (input !== undefined) {
+    return isClassifierEngine(input.engine)
+      ? { ok: true, value: { engine: input.engine } }
+      : { ok: false, message: `Unknown classifier engine: ${String(input.engine)}` }
+  }
+  const kept = stored?.classifierEngine?.engine
+  return { ok: true, value: isClassifierEngine(kept) ? { engine: kept } : undefined }
+}
+
+/** LUNA_CLASSIFIER_ENGINE to set at boot from the store, or undefined to leave the environment alone. */
+export const classifierEngineEnvFromStore = (store: ProviderSettingsPayload | null): ClassifierEngine | undefined => {
+  const engine = store?.classifierEngine?.engine
+  return isClassifierEngine(engine) ? engine : undefined
 }

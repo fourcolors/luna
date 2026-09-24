@@ -131,6 +131,7 @@ export type {
   ModelRoutingStatusFrame,
   ModelRoutingSaveFrame,
   MemoryRerankerSettingsItem,
+  ClassifierEngineSettingsItem,
   ProviderSettingsItem,
   RoleBindingItem,
   ServerDescriptor,

@@ -28,7 +28,7 @@
  * role model options by lane, matching the vanilla module's shipped
  * behavior (see its render() role loop).
  */
-import type { MemoryRerankerSettingsItem, ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
+import type { ClassifierEngineSettingsItem, MemoryRerankerSettingsItem, ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
 
 export const ROLES = ["advisor", "daily-driver", "wake", "dream", "classifier"] as const
 export type Role = (typeof ROLES)[number]
@@ -116,6 +116,39 @@ export function rerankerLabel(engine: string): string {
   return RERANKERS.find((r) => r.engine === engine)?.label ?? engine
 }
 
+/**
+ * Classifier engines, in display order (mirror of CLASSIFIER_ENGINES in
+ * packages/core/src/provider-settings/types.ts — the server validates
+ * against the same set):
+ *   auto  - Jev when TYPESAFE_API_KEY is set and no explicit classifier
+ *           model is bound; otherwise the generative classifier lane.
+ *   model - always the generative lane (the role's model binding).
+ *   jev   - always Jev (TypeSafe System One).
+ */
+export const CLASSIFIER_ENGINES = [
+  { engine: "auto", label: "Auto" },
+  { engine: "model", label: "Model" },
+  { engine: "jev", label: "Jev (TypeSafe)" },
+] as const
+
+/** The engines the running server can report as `active` (an "auto" resolution result). */
+const ACTIVE_CLASSIFIER_ENGINES = ["model", "jev"] as const
+
+/** A reported setting the panel can show; anything unknown is shown as "auto", which is what the server binds for it. */
+function knownClassifierEngine(engine: string): string {
+  return CLASSIFIER_ENGINES.some((r) => r.engine === engine) ? engine : "auto"
+}
+
+/** A reported active engine the panel can show; anything unknown is shown as "model" (the no-dedicated-engine bound). */
+function knownActiveClassifier(engine: string): string {
+  return (ACTIVE_CLASSIFIER_ENGINES as ReadonlyArray<string>).includes(engine) ? engine : "model"
+}
+
+/** Display label for an engine id. */
+export function classifierEngineLabel(engine: string): string {
+  return CLASSIFIER_ENGINES.find((r) => r.engine === engine)?.label ?? engine
+}
+
 export interface ProviderDraft {
   enabled: boolean
   credentialRef: string
@@ -143,6 +176,12 @@ export interface ModelRoutingState {
   readonly serverReranker: string | null
   /** The engine the running server bound; differs from serverReranker until a restart. */
   readonly activeReranker: string | null
+  /** Classifier engine; null = the server does not offer the setting (older server: hide it). */
+  readonly draftClassifierEngine: string | null
+  /** The classifier engine the server reported for its next start. */
+  readonly serverClassifierEngine: string | null
+  /** The classifier engine the running server actually bound ("model" | "jev"). */
+  readonly activeClassifierEngine: string | null
   readonly reqId: string | null
   readonly status: StatusMessage | null
 }
@@ -171,6 +210,9 @@ export const initialModelRoutingState: ModelRoutingState = {
   draftReranker: null,
   serverReranker: null,
   activeReranker: null,
+  draftClassifierEngine: null,
+  serverClassifierEngine: null,
+  activeClassifierEngine: null,
   reqId: null,
   status: null,
 }
@@ -222,6 +264,8 @@ export interface ModelRoutingSavePayload {
   roleBindings: RoleBindingItem[]
   /** Only when the server offers the setting: an older server must not receive a field it would ignore. */
   memoryReranker?: MemoryRerankerSettingsItem
+  /** Only when the server offers the setting AND the draft differs — same rule as memoryReranker. */
+  classifierEngine?: ClassifierEngineSettingsItem
 }
 
 /** Ported from the vanilla module's buildPayload(). */
@@ -247,6 +291,9 @@ export function buildSavePayload(state: ModelRoutingState): ModelRoutingSavePayl
     ...(state.draftReranker !== null && state.draftReranker !== state.serverReranker
       ? { memoryReranker: { engine: state.draftReranker } }
       : {}),
+    ...(state.draftClassifierEngine !== null && state.draftClassifierEngine !== state.serverClassifierEngine
+      ? { classifierEngine: { engine: state.draftClassifierEngine } }
+      : {}),
   }
 }
 
@@ -257,8 +304,10 @@ export type ModelRoutingAction =
       providers: ReadonlyArray<ProviderSettingsItem>
       roleBindings: ReadonlyArray<RoleBindingItem>
       memoryReranker?: MemoryRerankerSettingsItem
+      classifierEngine?: ClassifierEngineSettingsItem
     }
   | { type: "set-reranker"; engine: string }
+  | { type: "set-classifier-engine"; engine: string }
   | { type: "toggle-provider"; kind: string; enabled: boolean }
   | { type: "set-credential-ref"; kind: string; value: string }
   | { type: "set-monthly-cap"; kind: string; value: number | "" }
@@ -285,12 +334,28 @@ export function reduceModelRouting(state: ModelRoutingState, action: ModelRoutin
       const { draftProviders, draftRoleModel } = draftsFromServerState(action.providers, action.roleBindings)
       const reported = action.memoryReranker === undefined ? null : knownReranker(action.memoryReranker.engine)
       const active = action.memoryReranker?.active === undefined ? null : knownReranker(action.memoryReranker.active)
-      return { ...state, draftProviders, draftRoleModel, draftReranker: reported, serverReranker: reported, activeReranker: active }
+      const reportedClassifier = action.classifierEngine === undefined ? null : knownClassifierEngine(action.classifierEngine.engine)
+      const activeClassifier = action.classifierEngine?.active === undefined ? null : knownActiveClassifier(action.classifierEngine.active)
+      return {
+        ...state,
+        draftProviders,
+        draftRoleModel,
+        draftReranker: reported,
+        serverReranker: reported,
+        activeReranker: active,
+        draftClassifierEngine: reportedClassifier,
+        serverClassifierEngine: reportedClassifier,
+        activeClassifierEngine: activeClassifier,
+      }
     }
 
     case "set-reranker":
       if (state.draftReranker === null || action.engine === state.draftReranker) return state
       return { ...state, isDirty: true, draftReranker: action.engine }
+
+    case "set-classifier-engine":
+      if (state.draftClassifierEngine === null || action.engine === state.draftClassifierEngine) return state
+      return { ...state, isDirty: true, draftClassifierEngine: action.engine }
 
     case "toggle-provider":
       return {
