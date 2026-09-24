@@ -49,6 +49,10 @@ Two options:
   leaves the panel at "Loading…" (title never flips), a wrong formatter fails exact strings.
 - Payload key names differ per panel: voice uses `downloadedBytes`/`totalBytes`, update events
   use `downloaded`/`total` — read the reducer's `applyEvent`, don't guess.
+- On macOS, computer-tool `query`/`inspect` against Chrome may fail with
+  "accessibility provider request failed" — assert UI state via screenshots and
+  `zoom` regions instead (Astryx `SegmentedControlItem` renders a plain
+  `<button role="radio" data-value>`; `data-testid` lands on the button itself).
 
 ## WS-backed panels (settings.models, settings.vault, …)
 

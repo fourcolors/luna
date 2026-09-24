@@ -944,13 +944,15 @@ export interface RoleBindingItem {
   readonly preferenceList: ReadonlyArray<{ readonly provider: string; readonly model: string }>
 }
 
-/** The memory reranker engine setting ("cross-encoder" | "jev"). Never carries the Jev key.
+/** The memory reranker engine setting ("cross-encoder" | "jev" | "laya"). Never carries the Jev key.
  * Mirrors packages/ui-ws/src/protocol.ts, keep in sync. */
 export interface MemoryRerankerSettingsItem {
   /** List: the engine after the next start. Save: the operator's choice. */
   readonly engine: string
   /** List only: the engine this running server bound (differs from `engine` until a restart). */
   readonly active?: string
+  /** List only: last health-probe verdict for the local laya sidecar — "up" answers at LUNA_LAYA_URL, "down" does not. Absent until the first probe lands (and on older servers). */
+  readonly layaSidecar?: "up" | "down"
 }
 
 /** The classifier engine setting ("auto" | "model" | "jev"). Never carries the Jev key.

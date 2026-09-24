@@ -104,6 +104,7 @@ export const ANTHROPIC_MODELS: readonly ModelOption[] = [
 export const RERANKERS = [
   { engine: "cross-encoder", label: "Local cross-encoder" },
   { engine: "jev", label: "Jev (TypeSafe)" },
+  { engine: "laya", label: "Laya (local)" },
 ] as const
 
 /** A reported engine the panel can show; anything unknown is shown as the local cross-encoder, which is what the server binds for it. */
@@ -182,6 +183,8 @@ export interface ModelRoutingState {
   readonly serverClassifierEngine: string | null
   /** The classifier engine the running server actually bound ("model" | "jev"). */
   readonly activeClassifierEngine: string | null
+  /** Latest laya sidecar health verdict; undefined until the server's first probe lands. */
+  readonly layaSidecar: "up" | "down" | undefined
   readonly reqId: string | null
   readonly status: StatusMessage | null
 }
@@ -213,6 +216,7 @@ export const initialModelRoutingState: ModelRoutingState = {
   draftClassifierEngine: null,
   serverClassifierEngine: null,
   activeClassifierEngine: null,
+  layaSidecar: undefined,
   reqId: null,
   status: null,
 }
@@ -330,7 +334,13 @@ export function reduceModelRouting(state: ModelRoutingState, action: ModelRoutin
     case "server-list": {
       // isDirty: preserve unsaved draft edits, only refresh the backing
       // arrays - ported from the vanilla module's applyServerState().
-      if (state.isDirty) return state
+      // The sidecar verdict still lands: it is not a draft field, and the
+      // install indicator should track reality even while edits are pending
+      // (probe flips broadcast this same frame out-of-band).
+      if (state.isDirty) {
+        const probe = action.memoryReranker?.layaSidecar
+        return probe === undefined || probe === state.layaSidecar ? state : { ...state, layaSidecar: probe }
+      }
       const { draftProviders, draftRoleModel } = draftsFromServerState(action.providers, action.roleBindings)
       const reported = action.memoryReranker === undefined ? null : knownReranker(action.memoryReranker.engine)
       const active = action.memoryReranker?.active === undefined ? null : knownReranker(action.memoryReranker.active)
@@ -346,6 +356,7 @@ export function reduceModelRouting(state: ModelRoutingState, action: ModelRoutin
         draftClassifierEngine: reportedClassifier,
         serverClassifierEngine: reportedClassifier,
         activeClassifierEngine: activeClassifier,
+        layaSidecar: action.memoryReranker?.layaSidecar,
       }
     }
 

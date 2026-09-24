@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+#
+# laya-env — manage the local laya sidecar environment for LUNA_RERANK_ENGINE=laya.
+#
+# One place to install and run what the local classifier needs, so the Moon
+# Models panel's "sidecar down" indicator has a single fix path:
+#
+#   scripts/laya-env install   # python>=3.10 venv at ~/.luna/laya-env + `pip install laya`
+#   scripts/laya-env start     # run scripts/laya-rerank-server detached (pidfile + log)
+#   scripts/laya-env status    # venv + interpreter + process + /health verdict
+#   scripts/laya-env stop      # stop the detached sidecar
+#   scripts/laya-env restart   # stop + start
+#   scripts/laya-env run       # foreground sidecar (debugging; Ctrl-C to stop)
+#
+# Everything lives under ~/.luna/laya-env — outside the checkout, so branch
+# switches and reinstalls can't orphan it. The server probes /health against
+# LUNA_LAYA_URL (default http://127.0.0.1:8182); status probes the same URL so
+# the verdict matches what Luna sees. LAYA_PORT / LAYA_HOST / LAYA_DEVICE /
+# LAYA_PRELOAD pass through to the sidecar — keep them consistent with
+# LUNA_LAYA_URL when overriding.
+#
+# First `install` downloads the laya package; the first `start` may download
+# the classifier checkpoints from Hugging Face (hundreds of MB) — watch
+# ~/.luna/laya-env/laya-rerank-server.log.
+
+set -euo pipefail
+
+LUNA_HOME="${LUNA_HOME:-$HOME/.luna}"
+ENV_DIR="$LUNA_HOME/laya-env"
+VENV="$ENV_DIR/venv"
+PIDFILE="$ENV_DIR/laya-rerank-server.pid"
+LOGFILE="$ENV_DIR/laya-rerank-server.log"
+SIDECAR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/laya-rerank-server"
+
+LAYA_URL="${LUNA_LAYA_URL:-http://127.0.0.1:8182}"
+LAYA_URL="${LAYA_URL%/}"
+
+usage() {
+  printf 'usage: %s <install|start|stop|status|restart|run>\n' "$0" >&2
+  exit 1
+}
+
+# First python on PATH whose --version reports >= 3.10 (the floor laya and
+# scripts/laya-rerank-server both need — `str | None` syntax). Prefers the
+# versioned names so a too-old default `python3` (e.g. macOS system python
+# 3.9) doesn't win by being first.
+find_python() {
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3 python; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    local ver
+    ver="$("$candidate" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)" || continue
+    if "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+      printf '%s\t%s\n' "$candidate" "$ver"
+      return 0
+    fi
+  done
+  return 1
+}
+
+venv_python() {
+  if [ -x "$VENV/bin/python" ]; then
+    printf '%s\n' "$VENV/bin/python"
+    return 0
+  fi
+  return 1
+}
+
+running_pid() {
+  [ -f "$PIDFILE" ] || return 1
+  local pid
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  printf '%s\n' "$pid"
+}
+
+probe_health() {
+  curl -fsS --max-time 2 "$LAYA_URL/health" >/dev/null 2>&1
+}
+
+cmd_install() {
+  local py ver
+  if py="$(find_python)"; then
+    ver="${py##*$'\t'}"
+    py="${py%%$'\t'*}"
+  else
+    printf 'no python >= 3.10 on PATH — install one (e.g. `brew install python@3.12`) and re-run.\n' >&2
+    exit 1
+  fi
+  printf 'using %s (python %s)\n' "$py" "$ver"
+  mkdir -p "$ENV_DIR"
+  if [ ! -d "$VENV" ]; then
+    "$py" -m venv "$VENV"
+  fi
+  "$VENV/bin/pip" install --upgrade pip >/dev/null
+  "$VENV/bin/pip" install laya
+  # Prove the package imports before reporting success — a partial download or
+  # platform wheel failure otherwise surfaces only at `start`.
+  "$VENV/bin/python" -c 'import laya; print("laya", getattr(laya, "__version__", "installed"))'
+  printf 'installed. next: scripts/laya-env start\n'
+}
+
+cmd_start() {
+  if running_pid >/dev/null; then
+    printf 'already running (pid %s) — scripts/laya-env stop first, or `restart`.\n' "$(running_pid)"
+    exit 0
+  fi
+  local py
+  if ! py="$(venv_python)"; then
+    printf 'no venv at %s — run `scripts/laya-env install` first.\n' "$VENV" >&2
+    exit 1
+  fi
+  mkdir -p "$ENV_DIR"
+  # nohup + & keeps the sidecar alive past the parent shell; the pidfile lets
+  # stop/status find it later. LAYA_* envs pass through to the script's own
+  # defaults.
+  nohup "$py" "$SIDECAR" >>"$LOGFILE" 2>&1 &
+  local pid=$!
+  printf '%s\n' "$pid" >"$PIDFILE"
+  # Give it a beat to bind or die loudly (missing laya, bad flag), then report.
+  sleep 2
+  if ! kill -0 "$pid" 2>/dev/null; then
+    printf 'sidecar exited on start — last log lines:\n' >&2
+    tail -n 20 "$LOGFILE" >&2 || true
+    rm -f "$PIDFILE"
+    exit 1
+  fi
+  printf 'started (pid %s) — log: %s\n' "$pid" "$LOGFILE"
+  printf 'first start may download checkpoints from Hugging Face; `scripts/laya-env status` shows when %s answers.\n' "$LAYA_URL"
+}
+
+cmd_stop() {
+  local pid
+  if ! pid="$(running_pid)"; then
+    printf 'not running.\n'
+    rm -f "$PIDFILE"
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$PIDFILE"
+  printf 'stopped (pid %s).\n' "$pid"
+}
+
+cmd_status() {
+  local ok=0 py pid
+  if py="$(venv_python)"; then
+    printf 'venv:      %s\n' "$py"
+  else
+    printf 'venv:      missing — `scripts/laya-env install`\n'
+    ok=1
+  fi
+  if pid="$(running_pid)"; then
+    printf 'process:   running (pid %s)\n' "$pid"
+  else
+    printf 'process:   not running — `scripts/laya-env start`\n'
+  fi
+  if probe_health; then
+    printf 'health:    up at %s/health\n' "$LAYA_URL"
+  else
+    printf 'health:    down — nothing answering at %s/health\n' "$LAYA_URL"
+    ok=1
+  fi
+  return "$ok"
+}
+
+cmd_run() {
+  local py
+  if ! py="$(venv_python)"; then
+    printf 'no venv at %s — run `scripts/laya-env install` first.\n' "$VENV" >&2
+    exit 1
+  fi
+  exec "$py" "$SIDECAR"
+}
+
+case "${1:-}" in
+  install) cmd_install ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
+  restart) cmd_stop; cmd_start ;;
+  run) cmd_run ;;
+  *) usage ;;
+esac

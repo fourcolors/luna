@@ -38,7 +38,7 @@ export interface RoleBinding {
 
 /** Memory reranker engines (the MemoryReranker Luna's server binds; see
  *  packages/memory/bench/README.md "Choosing the rerank engine"). */
-export const MEMORY_RERANKER_ENGINES = ["cross-encoder", "jev"] as const
+export const MEMORY_RERANKER_ENGINES = ["cross-encoder", "jev", "laya"] as const
 export type MemoryRerankerEngine = (typeof MEMORY_RERANKER_ENGINES)[number]
 
 /** Classifier engines — which engine serves decision-shaped work on the
