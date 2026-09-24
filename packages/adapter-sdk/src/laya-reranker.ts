@@ -57,7 +57,8 @@ export interface LayaRerankerOptions {
 
 const isTimeout = (e: unknown) => e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError")
 
-function resolveUrl(explicit?: string): string {
+/** The sidecar base URL Luna talks to — `LUNA_LAYA_URL` or the default. Exported so the server's health probe targets the same endpoint the reranker posts to. */
+export function layaUrl(explicit?: string): string {
   const configured = explicit ?? process.env["LUNA_LAYA_URL"]
   return (configured?.trim() || DEFAULT_LAYA_URL).replace(/\/+$/, "")
 }
@@ -67,7 +68,7 @@ function resolveModel(explicit?: string): string {
 }
 
 export function LayaRerankerLayer(opts: LayaRerankerOptions = {}): Layer.Layer<MemoryReranker> {
-  const url = resolveUrl(opts.url)
+  const url = layaUrl(opts.url)
   const model = resolveModel(opts.model)
   const defaultTimeoutMs = opts.timeoutMs ?? DEFAULT_LAYA_TIMEOUT_MS
   const doFetch = opts.fetch ?? fetch

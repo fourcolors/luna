@@ -356,11 +356,29 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
                   data-testid="memory-reranker-jev-notice"
                 />
               ) : state.draftReranker === "laya" ? (
-                <Text type="supporting" color="secondary" data-testid="memory-reranker-laya-note">
-                  Jev-style judging that runs locally via scripts/laya-rerank-server (pip install laya) — memory
-                  text never leaves the machine. Once selected it reranks every search and chat turn unless
-                  LUNA_MEMORY_RERANK=0 or LUNA_RECALL_RERANK=0 opts a lane out.
-                </Text>
+                <>
+                  <Text type="supporting" color="secondary" data-testid="memory-reranker-laya-note">
+                    Jev-style judging that runs locally via scripts/laya-rerank-server (pip install laya) — memory
+                    text never leaves the machine. Once selected it reranks every search and chat turn unless
+                    LUNA_MEMORY_RERANK=0 or LUNA_RECALL_RERANK=0 opts a lane out.
+                  </Text>
+                  {state.layaSidecar === "down" ? (
+                    <Banner
+                      status="warning"
+                      title="Sidecar not running"
+                      description="Nothing answers at LUNA_LAYA_URL (default http://127.0.0.1:8182). Set it up in one step: scripts/laya-env install && scripts/laya-env start — needs Python 3.10+ (scripts/laya-env picks a suitable interpreter). Until the sidecar runs, Luna keeps plain search order."
+                      data-testid="memory-reranker-laya-down"
+                    />
+                  ) : state.layaSidecar === "up" ? (
+                    <Text type="supporting" color="secondary" data-testid="memory-reranker-laya-up">
+                      Sidecar running — the local classifier is ready.
+                    </Text>
+                  ) : (
+                    <Text type="supporting" color="secondary" data-testid="memory-reranker-laya-probing">
+                      Checking the sidecar...
+                    </Text>
+                  )}
+                </>
               ) : (
                 <Text type="supporting" color="secondary" data-testid="memory-reranker-local-note">
                   Runs next to your Luna server. It only reranks when LUNA_MEMORY_RERANK=1 or LUNA_RECALL_RERANK=1

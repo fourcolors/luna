@@ -778,6 +778,13 @@ export interface UIWebSocketServerConfig {
     }) => { readonly ok: boolean; readonly message: string }
     /** Called after a successful save so activation (restart) is scheduled. */
     readonly scheduleRestart?: () => void
+    /**
+     * Out-of-band list changes (e.g. the laya sidecar probe flipping
+     * up/down) — the implementation registers `notify`, then the server
+     * broadcasts a fresh `model-routing-list` on each call. Absent on
+     * older/mocked services.
+     */
+    readonly changes?: (notify: () => void) => void
   } | null
 }
 
@@ -1166,6 +1173,31 @@ export const startUIWebSocketServer = (
                 ...(sync !== null ? { sync } : {}),
                 ...(storage !== null ? { storage } : {}),
               })
+            }
+          }).pipe(Effect.catchCause(() => Effect.void)),
+        )
+      })
+    }
+
+    // Laya sidecar probe flips (chat-server's /health poll) → broadcast a
+    // fresh model-routing-list so the Models panel's install indicator
+    // updates live without a reconnect or save. Same changes-hook pattern
+    // as the skill-catalog / vault-list broadcasts above; `list()` is the
+    // same wire-safe projection the hello and post-save paths send.
+    if (
+      modelRoutingService !== null &&
+      modelRoutingService !== undefined &&
+      modelRoutingService.changes !== undefined
+    ) {
+      const mrSvc = modelRoutingService
+      const registerMrChanges = modelRoutingService.changes
+      registerMrChanges(() => {
+        Effect.runForkWith(runtime)(
+          Effect.gen(function* () {
+            const frame = mrSvc.list()
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, frame)
             }
           }).pipe(Effect.catchCause(() => Effect.void)),
         )

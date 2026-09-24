@@ -344,6 +344,7 @@ import {
   JevRerankerLayer,
   JevClassifierLayer,
   LayaRerankerLayer,
+  layaUrl,
   BulletinWriterDefault,
   loadAgents,
 } from "@luna/adapter-sdk"
@@ -728,6 +729,16 @@ let notifyThreadsArchived: ((threadIds: ReadonlyArray<string>) => void) | null =
 // a pass that changed registry rows, and ui-ws re-broadcasts the (wire-safe)
 // list to every client. Null until a WS server registers.
 let notifyVaultListChanged: (() => void) | null = null
+
+// Laya sidecar readiness bridge (same late-binding pattern as
+// notifySkillCatalogChanged): the layaSidecarProbeL fiber in buildBaseLayer
+// owns the fetch loop — `layaSidecarUp` is the last probe verdict
+// (undefined = not probed yet, true = /health reachable, false = down), and
+// on a state flip it pings `notifyModelRoutingChanged` so ui-ws broadcasts a
+// fresh model-routing-list. list() reads `layaSidecarUp` synchronously so the
+// Models panel can render an install indicator for the local classifier.
+let layaSidecarUp: boolean | undefined = undefined
+let notifyModelRoutingChanged: (() => void) | null = null
 
 // Slice C - MCP tool gate policy holder.
 // Slice S11b (issue #445): a registered server that FAILS TO MOUNT (e.g. an
@@ -2585,6 +2596,44 @@ export const buildBaseLayer = (
       return Layer.empty as Layer.Layer<Classifier>
     }),
   )
+
+  // Laya sidecar health probe — feeds the Models panel's install indicator.
+  // Runs unconditionally (not just when engine=laya) so the indicator is live
+  // when Laya is only the DRAFT engine too: the operator gets "sidecar down →
+  // run scripts/laya-env" guidance BEFORE saving the engine choice. The probe
+  // fiber publishes into `layaSidecarUp`, which modelRoutingService.list()
+  // projects onto the frame's additive `layaSidecar` field, and pings
+  // notifyModelRoutingChanged on a flip so ui-ws broadcasts a fresh list
+  // (same late-binding pattern as notifySkillCatalogChanged). Reachability is
+  // the whole signal — a failed probe means "not answering at the configured
+  // URL" (not installed, not started, or wrong port), nothing finer.
+  const layaSidecarUrl = layaUrl()
+  const layaSidecarProbeL = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const tick = Effect.promise(async () =>
+        (
+          await fetch(`${layaSidecarUrl}/health`, {
+            signal: AbortSignal.timeout(1_000),
+          })
+        ).ok,
+      ).pipe(
+        Effect.catch(() => Effect.succeed(false)),
+        Effect.flatMap((up) =>
+          Effect.sync(() => {
+            if (up !== layaSidecarUp) {
+              layaSidecarUp = up
+              notifyModelRoutingChanged?.()
+            }
+          }),
+        ),
+      )
+      yield* tick
+      yield* Effect.forkScoped(
+        Effect.forever(Effect.sleep(15_000).pipe(Effect.andThen(tick))),
+      )
+    }),
+  )
+
   // Hot-tier bulletin (BULLETIN.md): a plain mutable holder read
   // synchronously by decorate() (same doctrine as the beliefs holder), a
   // digest file next to luna.db for warm restarts, and a refresh loop that
@@ -3084,6 +3133,7 @@ export const buildBaseLayer = (
     channelServiceL, // Communication channels (Telegram, …): adapters registered + started in buildMain
     bulletinRefresherL, // Hot-tier bulletin (BULLETIN.md): Layer.empty unless LUNA_BULLETIN=1
     classifierL, // Classifier service: JevClassifierLayer when the classifier engine resolves jev, else empty (call sites see serviceOption = none)
+    layaSidecarProbeL, // Laya install indicator: 15 s /health poll → layaSidecarUp + model-routing-list broadcast
   )
 }
 
@@ -4701,7 +4751,15 @@ const buildServerLayer = (
                 // else the environment, else the default. Never the Jev key.
                 // engine: what runs after the next start (saved choice, else today's);
                 // active: what this running server bound. They differ until a restart.
-                memoryReranker: { engine: resolveMemoryRerankerEngine(cfg), active: boundMemoryRerankerEngine() },
+                memoryReranker: {
+                  engine: resolveMemoryRerankerEngine(cfg),
+                  active: boundMemoryRerankerEngine(),
+                  // Additive + optional: absent until the first probe lands so
+                  // older clients / pre-probe frames carry no misleading state.
+                  ...(layaSidecarUp !== undefined
+                    ? { layaSidecar: layaSidecarUp ? ("up" as const) : ("down" as const) }
+                    : {}),
+                },
                 // engine: what runs after the next start (saved choice, else env,
                 // else "auto"); active: what this running server bound ("model"
                 // when auto didn't pick jev — no key or an explicit model).
@@ -4769,6 +4827,12 @@ const buildServerLayer = (
               }
             },
             scheduleRestart: scheduleServerRestart,
+            // Out-of-band list changes (the layaSidecar probe flipping
+            // up/down) → ui-ws broadcasts a fresh model-routing-list to every
+            // client. Same late-binding hook as the skill-catalog changes.
+            changes: (notify: () => void) => {
+              notifyModelRoutingChanged = notify
+            },
           }
         } catch (err) {
           writeSync(
