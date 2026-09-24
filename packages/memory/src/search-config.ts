@@ -15,10 +15,12 @@
  * sidecar (bench/expansion/<source>-<model>.json, see bench/expand-queries.ts)
  * and which of its independent samples to use. rr (any mode) re-orders the
  * top <depth> results with a relevance judge (adapters/eval-common/judge.ts:
- * `ce` = the local cross-encoder, `jev` = TypeSafe Jev).
+ * `ce` = the local cross-encoder, `jev` = TypeSafe Jev with every candidate in
+ * one request, `jevpair` = Jev with one request per candidate, `haiku` =
+ * Claude Haiku through the Agent SDK).
  */
 import { MEMORY_SEARCH_MODES, type MemorySearchMode } from "@luna/core"
-import type { JudgeName } from "./adapters/eval-common/judge.js"
+import { JUDGE_NAMES, type JudgeName } from "./adapters/eval-common/judge.js"
 import type { LexicalFusionOptions, StopwordSet } from "./lexical-query.js"
 
 export interface SearchConfig {
@@ -60,10 +62,10 @@ export function parseSearchConfig(label: string): SearchConfig {
       continue
     }
     if (key === "rr") {
-      const m = /^(ce|jev)@(\d+)$/.exec(value)
+      const m = /^([a-z]+)@(\d+)$/.exec(value)
       const depth = m ? Number(m[2]) : 0
-      if (!m || depth < 1 || depth > 100) {
-        throw new Error(`search config "${label}": rr must look like <ce|jev>@<depth 1-100>`)
+      if (!m || !(JUDGE_NAMES as ReadonlyArray<string>).includes(m[1]!) || depth < 1 || depth > 100) {
+        throw new Error(`search config "${label}": rr must look like <${JUDGE_NAMES.join("|")}>@<depth 1-100>`)
       }
       rerank = { judge: m[1] as JudgeName, depth }
       continue

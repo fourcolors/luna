@@ -78,7 +78,7 @@ import {
   type SearchConfig,
 } from "../src/search-config.js"
 import { makeJudges, type Judge, type JudgeName } from "../src/adapters/eval-common/judge.js"
-import { searchWithConfig } from "../src/adapters/eval-common/search.js"
+import { judgeLatency, searchWithConfig, type JudgeTiming } from "../src/adapters/eval-common/search.js"
 
 type RecordKind = "project" | "preference" | "episodic" | "distractor"
 type QuerySlice =
@@ -348,6 +348,8 @@ interface QueryResult {
   readonly rankedIds: ReadonlyArray<string>
   readonly scores: ReadonlyArray<number>
   readonly tookMs: number
+  /** The rr= judge call's timing and attempts (tookMs includes it); absent without rr=. */
+  readonly judge?: JudgeTiming
 }
 
 /** 1-indexed ranks (in emission order) of every relevant hit. */
@@ -728,6 +730,7 @@ async function main(): Promise<void> {
         for (const q of corpus.queries) {
           for (const config of configs) {
             const expansionTerms = expansionFor(config, q.id, sidecars)
+            let judge: JudgeTiming | undefined
             const t0 = performance.now()
             const hits = yield* searchWithConfig(
               router,
@@ -737,6 +740,7 @@ async function main(): Promise<void> {
                 namespace: NAMESPACE,
                 topK: TOP_K,
                 ...(expansionTerms !== undefined ? { expansionTerms } : {}),
+                onJudgeCall: (t) => (judge = t),
               },
               judges,
             )
@@ -749,14 +753,18 @@ async function main(): Promise<void> {
               rankedIds: arr.map((h) => h.record.id),
               scores: arr.map((h) => h.score),
               tookMs,
+              ...(judge !== undefined ? { judge } : {}),
             })
           }
         }
       }),
     ).pipe(Effect.provide(layer)),
   )
+  const judgeSettings = Object.fromEntries([...judges].map(([name, j]) => [name, j.describe()]))
+  for (const j of judges.values()) j.close?.()
 
   const jsonOut: Record<string, unknown> = {
+    judges: judgeSettings,
     // basename only: absolute paths are machine-specific noise in a
     // committed baseline file.
     corpus: { file: basename(corpusPath), records: corpus.records.length, queries: corpus.queries.length },
@@ -828,6 +836,9 @@ async function main(): Promise<void> {
         recallAt1: recallAtK(ranks, 1, r.relevantIds.size),
         recallAt5: recallAtK(ranks, 5, r.relevantIds.size),
         rank: ranks.length > 0 ? Math.min(...ranks) : null,
+        ...(r.judge !== undefined
+          ? { judgeMs: Math.round(r.judge.ms), judgeWaitMs: Math.round(r.judge.waitMs), judgeAttempts: r.judge.attempts }
+          : {}),
       }
     }
     jsonPerQuery[label] = perQueryForConfig
@@ -840,6 +851,21 @@ async function main(): Promise<void> {
   console.log(tabulateLatency(latencyRows))
   console.log(``)
   jsonOut["latency"] = Object.fromEntries(latencyRows.map((r) => [r.label, r]))
+  const judgeRows = configs.flatMap((c) => {
+    const l = judgeLatency(allResults[c.label]!.flatMap((r) => r.judge ?? []))
+    return l !== undefined ? [{ label: c.label, ...l }] : []
+  })
+  if (judgeRows.length > 0) {
+    console.log(`| config | judge calls | judge p50 ms | judge p95 ms | judge max ms | over 2.5 s | waited (max ms) | retried |`)
+    console.log(`|:---|---:|---:|---:|---:|---:|---:|---:|`)
+    for (const r of judgeRows) {
+      console.log(
+        `| ${r.label} | ${r.calls} | ${r.p50.toFixed(0)} | ${r.p95.toFixed(0)} | ${r.max.toFixed(0)} | ${r.over2500} | ${r.waited} (${r.maxWaitMs.toFixed(0)}) | ${r.retried} |`,
+      )
+    }
+    console.log(``)
+    jsonOut["judgeLatency"] = Object.fromEntries(judgeRows.map(({ label, ...l }) => [label, l]))
+  }
 
   console.log(
     `## score separation (no injection threshold exists today - negative-query hits WOULD be injected)`,

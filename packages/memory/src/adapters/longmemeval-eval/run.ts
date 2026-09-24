@@ -365,6 +365,7 @@ async function main(): Promise<void> {
     if (outcome.scored !== null) scored.push(outcome.scored)
     console.log(`# ${instance.question_id} (${instance.question_type}): ${outcome.ingested} turns ingested`)
   }
+  for (const j of judges.values()) j.close?.()
 
   const wallClockSec = (Date.now() - startedAt) / 1000
 

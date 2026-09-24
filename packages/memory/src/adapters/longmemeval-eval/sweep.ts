@@ -26,20 +26,28 @@
  *                                           order (default 0 / 60); 0/60 = tuning,
  *                                           60/200 = held-out
  *   LUNA_LME_SEED                           default 42
+ *   LUNA_LME_FRESH=1                        ignore (and delete) this run's checkpoint
+ *
+ * Checkpoint: each finished question is appended to .out/checkpoint-<id>.jsonl,
+ * where <id> hashes everything that defines the run (split, questions, seed,
+ * configs, embed model, Ollama version). Rerunning the same command after a
+ * failure (a network hang ends a run by design) resumes from it; every
+ * question is still computed exactly once. Deleted after a complete run.
  *   LUNA_OLLAMA_EMBED_MODEL, LUNA_OLLAMA_BASE_URL / OLLAMA_HOST
  */
 import { Effect, Stream } from "effect"
 import { MemoryRouterTag } from "../../router.js"
 import { expansionFor, parseSearchConfigs, type ExpansionSidecar, type SearchConfig } from "../../search-config.js"
 import { fetchOllamaVersion, probeModel, resolveOllamaBaseUrl } from "../eval-common/ollama.js"
-import { makeJudges, type Judge, type JudgeName } from "../eval-common/judge.js"
-import { searchWithConfig } from "../eval-common/search.js"
+import { makeJudges, warmUpJudges, type Judge, type JudgeName } from "../eval-common/judge.js"
+import { judgeLatency, searchWithConfig, type JudgeTiming } from "../eval-common/search.js"
 import { signTestP } from "./baselines.js"
 import { fetchDataset, flattenTurns, isAbstentionId, selectSubset, SPLIT_URLS, type LmeSplit } from "./dataset.js"
 import { describeError, hasErrorTag, loadExpansionSidecars, makeQuestionLayer } from "./harness.js"
 import { ingestInstance, namespaceFor, recordId } from "./ingest.js"
 import type { LmeInstance } from "./types.js"
-import { mkdirSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -87,6 +95,8 @@ interface ConfigHits {
   readonly ev10: number
   readonly sess5: number
   readonly top10: ReadonlyArray<string>
+  /** The rr= judge call's timing and attempts; absent without rr=. */
+  readonly judge?: JudgeTiming
 }
 
 interface QuestionResult {
@@ -99,6 +109,8 @@ interface QuestionResult {
   readonly perConfig: Readonly<Record<string, ConfigHits>>
   /** Rank (1-based) of each evidence turn in pure vec search, null when beyond DIAG_VEC_DEPTH. */
   readonly evidenceVecRank: Readonly<Record<string, number | null>>
+  /** Each judge's served model id(s) as of this question (a resumed run can span model updates). */
+  readonly servedModels?: Readonly<Record<string, string>>
 }
 
 function runQuestion(
@@ -116,12 +128,20 @@ function runQuestion(
     const answerSessions = new Set(instance.answer_session_ids)
     const namespace = namespaceFor(instance.question_id)
 
+    let judge: JudgeTiming | undefined
     const search = (config: SearchConfig) => {
       const kw = expansionFor(config, instance.question_id, sidecars)
+      judge = undefined
       return searchWithConfig(
         router,
         config,
-        { queryText: instance.question, topK: 10, namespace, ...(kw !== undefined ? { expansionTerms: kw } : {}) },
+        {
+          queryText: instance.question,
+          topK: 10,
+          namespace,
+          ...(kw !== undefined ? { expansionTerms: kw } : {}),
+          onJudgeCall: (t) => (judge = t),
+        },
         judges,
       ).pipe(Effect.map((hits) => hits.map((h) => h.record.id)))
     }
@@ -136,6 +156,7 @@ function runQuestion(
         ev10: top10.filter((id) => evidenceSet.has(id)).length,
         sess5: [...answerSessions].filter((s) => sessions5.has(s)).length,
         top10,
+        ...(judge !== undefined ? { judge } : {}),
       }
     }
     const vecDeep = Array.from(
@@ -207,17 +228,46 @@ async function main(): Promise<void> {
 
   console.log(`# LongMemEval retrieval sweep - ${file}, questions ${OFFSET + 1}-${OFFSET + subset.length} (seed ${SEED}), embed ${EMBED_MODEL}, ollama ${ollamaVersion}`)
   console.log(`# baseline: ${CONFIGS[0]!.label}`)
+  try {
+    await warmUpJudges(judges)
+  } catch (e) {
+    fail(2, `BLOCKED: judge warm-up failed: ${describeError(e)}.`)
+  }
+  const runId = createHash("sha256")
+    .update(JSON.stringify({ split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label) }))
+    .digest("hex")
+    .slice(0, 16)
+  mkdirSync(OUT_DIR, { recursive: true })
+  const checkpoint = resolve(OUT_DIR, `checkpoint-${runId}.jsonl`)
+  if (process.env["LUNA_LME_FRESH"] === "1") rmSync(checkpoint, { force: true })
+  const done = new Map<string, QuestionResult>()
+  if (existsSync(checkpoint)) {
+    for (const line of readFileSync(checkpoint, "utf8").split("\n")) {
+      if (line.trim() === "") continue
+      const r = JSON.parse(line) as QuestionResult
+      done.set(r.questionId, r)
+    }
+    console.log(`# resuming from ${checkpoint}: ${done.size}/${subset.length} questions already done`)
+  }
+  const resumedQuestions = subset.filter((q) => done.has(q.question_id)).length
   const startedAt = Date.now()
   const results: QuestionResult[] = []
   for (const [i, instance] of subset.entries()) {
+    const prior = done.get(instance.question_id)
+    if (prior !== undefined) {
+      results.push(prior)
+      continue
+    }
     try {
-      results.push(
-        await Effect.runPromise(
-          Effect.scoped(runQuestion(instance, sidecars, judges)).pipe(
-            Effect.provide(makeQuestionLayer(EMBED_MODEL, OLLAMA_BASE_URL)),
-          ),
-        ),
+      const r = await Effect.runPromise(
+        Effect.scoped(runQuestion(instance, sidecars, judges)).pipe(Effect.provide(makeQuestionLayer(EMBED_MODEL, OLLAMA_BASE_URL))),
       )
+      const withModels: QuestionResult = {
+        ...r,
+        servedModels: Object.fromEntries([...judges].map(([name, j]) => [name, j.describe()["servedModel"] ?? j.describe()["url"] ?? ""])),
+      }
+      results.push(withModels)
+      appendFileSync(checkpoint, JSON.stringify(withModels) + "\n")
     } catch (e) {
       if (hasErrorTag(e, "EmbedderError")) fail(2, `BLOCKED: embedder failed on ${instance.question_id}: ${describeError(e)}.`)
       if (hasErrorTag(e, "JudgeError")) fail(2, `BLOCKED: rerank judge failed on ${instance.question_id}: ${describeError(e)}.`)
@@ -225,6 +275,8 @@ async function main(): Promise<void> {
     }
     if ((i + 1) % 10 === 0) console.log(`# ${i + 1}/${subset.length} questions`)
   }
+  const judgeSettings = Object.fromEntries([...judges].map(([name, j]) => [name, j.describe()]))
+  for (const j of judges.values()) j.close?.()
 
   const scored = results.filter((r) => !r.abstention && r.evidenceCount > 0)
   const evTotal = scored.reduce((a, r) => a + r.evidenceCount, 0)
@@ -247,6 +299,8 @@ async function main(): Promise<void> {
       wins,
       losses,
       p: signTestP(wins, losses),
+      // Over every question (abstentions included): each one made a judge call.
+      judgeLatency: judgeLatency(results.flatMap((r) => r.perConfig[c.label]!.judge ?? [])),
     }
   })
 
@@ -258,6 +312,19 @@ async function main(): Promise<void> {
     console.log(
       `| ${s.label} | ${s.ev5}/${evTotal} (${pct(s.ev5, evTotal)}) | ${s.ev10}/${evTotal} (${pct(s.ev10, evTotal)}) | ${s.sess5}/${sessTotal} (${pct(s.sess5, sessTotal)}) | ${s.label === base ? "-" : `${s.wins} / ${s.losses}`} | ${s.label === base ? "-" : s.p.toFixed(4)} |`,
     )
+  }
+
+  const timed = summary.filter((s) => s.judgeLatency !== undefined)
+  if (timed.length > 0) {
+    console.log("")
+    console.log("| config | judge calls | p50 ms | p95 ms | max ms | over 2.5 s | waited (max ms) | retried |")
+    console.log("|:---|---:|---:|---:|---:|---:|---:|---:|")
+    for (const s of timed) {
+      const l = s.judgeLatency!
+      console.log(
+        `| ${s.label} | ${l.calls} | ${l.p50.toFixed(0)} | ${l.p95.toFixed(0)} | ${l.max.toFixed(0)} | ${l.over2500} | ${l.waited} (${l.maxWaitMs.toFixed(0)}) | ${l.retried} |`,
+      )
+    }
   }
 
   // Diagnostic: where do evidence turns the baseline misses (top 10) but
@@ -275,13 +342,20 @@ async function main(): Promise<void> {
   }
   console.log(`# evidence found by a non-baseline config but missed by the baseline, by pure-vector rank: ${JSON.stringify(rankBuckets)}`)
 
-  mkdirSync(OUT_DIR, { recursive: true })
+  const servedModelsSeen: Record<string, string[]> = {}
+  for (const r of results) {
+    for (const [name, m] of Object.entries(r.servedModels ?? {})) {
+      for (const one of m.split(",")) if (one !== "" && !(servedModelsSeen[name] ??= []).includes(one)) servedModelsSeen[name]!.push(one)
+    }
+  }
   const out = resolve(OUT_DIR, `sweep-${new Date().toISOString().replace(/[:.]/g, "-")}.json`)
   writeFileSync(
     out,
     JSON.stringify(
       {
-        config: { split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label) },
+        config: { split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label), judges: judgeSettings, servedModelsSeen },
+        runId,
+        resumedQuestions,
         wallClockSec: (Date.now() - startedAt) / 1000,
         summary,
         rankBuckets,
@@ -292,6 +366,7 @@ async function main(): Promise<void> {
     ),
   )
   console.log(`# wrote ${out}`)
+  rmSync(checkpoint, { force: true })
 }
 
 await main()
