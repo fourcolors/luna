@@ -297,6 +297,27 @@ describe("thread row drag-out (S17 detach path)", () => {
       expect(M().State.threadDragActive).toBeFalsy()
     })
 
+    it("does not start a second drag from another row while one is active", async () => {
+      paintRow()
+      const m = M()
+      m.State.threads.push({ id: "thr-other", title: "Other", lastMessagePreview: "", lastActiveAt: Date.now() })
+      m.ThreadDrawerEngine.render()
+      const first = document.querySelector('.thread-row[data-thread-id="thr-drag"]') as HTMLElement
+      const second = document.querySelector('.thread-row[data-thread-id="thr-other"]') as HTMLElement
+      const sessions = vi.spyOn((window as any).LunaThreadDrag, "createSession")
+      down(first, 100, 100)
+      second.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          bubbles: true, cancelable: true, button: 0, pointerId: 9,
+          clientX: 110, clientY: 150, screenX: 110, screenY: 150,
+        }),
+      )
+      expect(sessions).toHaveBeenCalledTimes(1)
+      expect(m.State.threadDragActive).toBe(true)
+      up(first, 100, 100)
+      expect(m.State.threadDragActive).toBe(false)
+    })
+
     it("lets the native probe own the preview once the pullout is armed", async () => {
       const row = paintRow()
       down(row, 100, 100)

@@ -631,7 +631,7 @@ export function wireThreadRow(
   row.addEventListener('pointerdown', (e) => {
     // A live gesture owns this row - a second pointerdown (another finger, or
     // a pen while a touch is down) must not replace session/pid and take over.
-    if (session) return;
+    if (session || State.threadDragActive) return;
     if (e.button !== 0) return;
     if (e.target && (e.target as MaybeClosest).closest && (e.target as MaybeClosest).closest('.thread-row-pop')) return;
     if (!(window.LunaThreadDrag && typeof window.LunaThreadDrag.createSession === 'function')) {
