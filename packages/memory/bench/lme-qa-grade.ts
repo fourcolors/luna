@@ -4,25 +4,32 @@
  *
  * Prompts, parameters and parsing are the official ones
  * (github.com/xiaowu0162/LongMemEval src/evaluation/evaluate_qa.py at
- * 9e0b455f): one template per question type plus the abstention template
- * for ids ending "_abs", temperature 0, max_tokens 10, n 1, and a response
- * counts as correct when "yes" appears anywhere in the judge's reply.
- * Metrics follow print_qa_metrics.py: Overall = mean over every question
- * (abstention included), Task-averaged = mean of the six per-type means,
- * Abstention = mean over "_abs" questions.
+ * 9e0b455f; the prompts are byte-identical to its get_anscheck_prompt): one
+ * template per question type plus the abstention template for ids ending
+ * "_abs", temperature 0, max_tokens 10, n 1, and a response counts as
+ * correct when "yes" appears anywhere in the judge's reply. Metrics follow
+ * print_qa_metrics.py: Overall = mean over every question (abstention
+ * included), Task-averaged = mean of the six per-type means, Abstention =
+ * mean over "_abs" questions. A table is only a score when every one of the
+ * 500 questions is graded; otherwise it is printed as INCOMPLETE.
  *
  * Graders: `gpt-4o` (gpt-4o-2024-08-06, the paper's judge; OPENAI_API_KEY)
- * and `grok-4.5` (the judge Mitosis reports with; XAI_API_KEY).
+ * and `grok-4.5` (the judge Mitosis reports with; XAI_API_KEY). Each is
+ * probed once before grading, so a bad key or model fails in seconds.
  *
  * Usage:
  *   bun bench/lme-qa-grade.ts <hyp.jsonl> [<hyp.jsonl> ...]
  * Env: LUNA_QA_GRADERS (default "gpt-4o,grok-4.5"), LUNA_QA_GRADE_CONCURRENCY (default 8)
- * Writes <hyp>.eval-results-<grader>.jsonl next to each input (the official
- * log format: the hypothesis entry plus autoeval_label { model, label });
- * rerunning resumes. Prints the metrics and, when several setups are given,
- * paired correct / wrong counts between them with an exact sign test.
+ * Writes next to each input:
+ *   <hyp>.eval-results-<grader>.jsonl  the official log format (hypothesis
+ *     entry plus autoeval_label { model, label }), with the judge's raw reply
+ *     and finish reason; contains answer text, NOT for committing.
+ *   <hyp>.labels-<grader>.jsonl  question_id + label only, for committing.
+ * Rerunning resumes; a grade is redone when its answer text changed. An
+ * empty or length-cut judge reply is a failure, never a "no".
  */
-import { appendFileSync, existsSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { signTestP } from "../src/adapters/longmemeval-eval/baselines.js"
 import { fetchDataset, SPLIT_URLS } from "../src/adapters/longmemeval-eval/dataset.js"
 
@@ -54,7 +61,16 @@ export const GRADERS: Readonly<Record<string, { readonly url: string; readonly m
   "grok-4.5": { url: "https://api.x.ai/v1/chat/completions", model: "grok-4.5", keyEnv: "XAI_API_KEY" },
 }
 
-async function judgeOnce(grader: (typeof GRADERS)[string], key: string, prompt: string): Promise<{ content: string; model: string }> {
+/** The official parse, plus the two replies it would silently turn into "no". */
+export function judgeLabel(content: string, finishReason: string | undefined): boolean {
+  if (content.trim() === "") throw new Error("empty judge reply")
+  if (finishReason === "length" && !content.toLowerCase().includes("yes")) throw new Error(`judge reply cut off: ${JSON.stringify(content)}`)
+  return content.toLowerCase().includes("yes")
+}
+
+class FatalJudgeError extends Error {}
+
+async function judgeOnce(grader: (typeof GRADERS)[string], key: string, prompt: string) {
   let last: unknown
   for (let attempt = 1; attempt <= 5; attempt++) {
     if (attempt > 1) await new Promise((r) => setTimeout(r, 1_000 * 2 ** attempt))
@@ -69,16 +85,57 @@ async function judgeOnce(grader: (typeof GRADERS)[string], key: string, prompt: 
         last = new Error(`HTTP ${res.status}`)
         continue
       }
-      const json = (await res.json()) as { model?: string; choices?: Array<{ message?: { content?: string | null } }>; error?: unknown }
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${JSON.stringify(json.error).slice(0, 200)}`)
-      const content = json.choices?.[0]?.message?.content
-      if (typeof content !== "string") throw new Error("judge reply has no content")
-      return { content: content.trim(), model: json.model ?? grader.model }
+      const json = (await res.json()) as {
+        model?: string
+        choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }>
+        error?: unknown
+      }
+      // Any other 4xx (bad key, unknown model, bad request) will never succeed on retry.
+      if (!res.ok) throw new FatalJudgeError(`HTTP ${res.status}: ${JSON.stringify(json.error).slice(0, 200)}`)
+      const choice = json.choices?.[0]
+      const content = choice?.message?.content ?? ""
+      const label = judgeLabel(content, choice?.finish_reason)
+      return { label, content: content.trim(), finishReason: choice?.finish_reason ?? "", model: json.model ?? grader.model }
     } catch (e) {
+      if (e instanceof FatalJudgeError) throw e
       last = e
     }
   }
   throw last instanceof Error ? last : new Error(String(last))
+}
+
+export interface QaRef {
+  readonly questionType: string
+  readonly abstention: boolean
+}
+
+export const QUESTION_TYPES = [
+  "single-session-user",
+  "single-session-preference",
+  "single-session-assistant",
+  "multi-session",
+  "temporal-reasoning",
+  "knowledge-update",
+] as const
+
+/** print_qa_metrics.py: Overall (micro, abstention included), Task-averaged (mean of the six type means), Abstention. */
+export function computeMetrics(labels: Readonly<Record<string, boolean>>, ref: ReadonlyMap<string, QaRef>) {
+  const ids = [...ref.keys()]
+  const missing = ids.filter((id) => !(id in labels))
+  const mean = (xs: ReadonlyArray<boolean>) => (xs.length === 0 ? Number.NaN : xs.filter(Boolean).length / xs.length)
+  const graded = ids.filter((id) => id in labels)
+  const perType = Object.fromEntries(
+    QUESTION_TYPES.map((t) => [t, mean(graded.filter((id) => ref.get(id)!.questionType === t).map((id) => labels[id]!))]),
+  ) as Record<(typeof QUESTION_TYPES)[number], number>
+  return {
+    complete: missing.length === 0,
+    graded: graded.length,
+    total: ids.length,
+    overall: mean(graded.map((id) => labels[id]!)),
+    taskAveraged: QUESTION_TYPES.reduce((a, t) => a + perType[t], 0) / QUESTION_TYPES.length,
+    abstention: mean(graded.filter((id) => ref.get(id)!.abstention).map((id) => labels[id]!)),
+    perType,
+  }
 }
 
 interface Hyp {
@@ -87,11 +144,20 @@ interface Hyp {
   readonly setup?: string
 }
 
-const readJsonl = <T>(path: string): T[] =>
+/** JSONL lines, skipping a trailing line cut short by a crash (it is simply redone). */
+export const readJsonl = <T>(path: string): T[] =>
   readFileSync(path, "utf8")
     .split("\n")
     .filter((l) => l.trim() !== "")
-    .map((l) => JSON.parse(l) as T)
+    .flatMap((l) => {
+      try {
+        return [JSON.parse(l) as T]
+      } catch {
+        return []
+      }
+    })
+
+const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16)
 
 async function main(): Promise<void> {
   const files = process.argv.slice(2)
@@ -103,10 +169,15 @@ async function main(): Promise<void> {
   for (const g of graderNames) {
     if (GRADERS[g] === undefined) throw new Error(`unknown grader ${g}`)
     if (!process.env[GRADERS[g]!.keyEnv]?.trim()) throw new Error(`grader ${g} needs ${GRADERS[g]!.keyEnv}`)
+    // Probe: a bad key or model id must fail now, not after hours of retries.
+    const probe = await judgeOnce(GRADERS[g]!, process.env[GRADERS[g]!.keyEnv]!.trim(), anscheckPrompt("single-session-user", "What is my dog's name?", "Biscuit", "Your dog is Biscuit.", false))
+    if (!probe.label) throw new Error(`grader ${g} failed its probe (said ${JSON.stringify(probe.content)} to an obviously correct answer)`)
+    console.log(`# grader ${g}: probe ok (${probe.model})`)
   }
   const concurrency = Math.max(1, Number(process.env["LUNA_QA_GRADE_CONCURRENCY"] ?? 8) || 8)
   const { instances } = await fetchDataset(SPLIT_URLS.s)
-  const ref = new Map(instances.map((i) => [i.question_id, i]))
+  const byId = new Map(instances.map((i) => [i.question_id, i]))
+  const ref = new Map<string, QaRef>(instances.map((i) => [i.question_id, { questionType: i.question_type, abstention: i.question_id.includes("_abs") }]))
 
   // labels[grader][setup][questionId]
   const labels: Record<string, Record<string, Record<string, boolean>>> = {}
@@ -118,48 +189,68 @@ async function main(): Promise<void> {
       const grader = GRADERS[g]!
       const key = process.env[grader.keyEnv]!.trim()
       const out = `${file}.eval-results-${g}.jsonl`
+      const hypHash = new Map(hyps.map((h) => [h.question_id, sha(h.hypothesis)]))
       const done = new Map<string, boolean>()
-      if (existsSync(out)) for (const e of readJsonl<Hyp & { autoeval_label: { label: boolean } }>(out)) done.set(e.question_id, e.autoeval_label.label)
+      if (existsSync(out)) {
+        for (const e of readJsonl<Hyp & { autoeval_label: { label: boolean }; hypothesis_sha?: string }>(out)) {
+          if (e.hypothesis_sha === hypHash.get(e.question_id)) done.set(e.question_id, e.autoeval_label.label)
+        }
+      }
       const todo = hyps.filter((h) => !done.has(h.question_id))
       console.log(`# ${setup} / ${g}: ${done.size} graded, ${todo.length} to go`)
       let next = 0
+      let fatal: unknown
       await Promise.all(
         Array.from({ length: concurrency }, async () => {
           for (;;) {
+            if (fatal !== undefined) return
             const h = todo[next++]
             if (h === undefined) return
-            const inst = ref.get(h.question_id)
+            const inst = byId.get(h.question_id)
             if (inst === undefined) throw new Error(`${h.question_id} is not in LongMemEval S`)
             const prompt = anscheckPrompt(inst.question_type, inst.question, String(inst.answer), h.hypothesis, h.question_id.includes("_abs"))
             try {
               const r = await judgeOnce(grader, key, prompt)
-              const label = r.content.toLowerCase().includes("yes")
-              appendFileSync(out, JSON.stringify({ ...h, autoeval_label: { model: r.model, label } }) + "\n")
-              done.set(h.question_id, label)
+              appendFileSync(
+                out,
+                JSON.stringify({
+                  ...h,
+                  hypothesis_sha: hypHash.get(h.question_id),
+                  autoeval_label: { model: r.model, label: r.label },
+                  judge_reply: r.content,
+                  finish_reason: r.finishReason,
+                }) + "\n",
+              )
+              done.set(h.question_id, r.label)
             } catch (e) {
               console.error(`[lme-qa-grade] ${setup} / ${g} ${h.question_id}: ${e instanceof Error ? e.message : String(e)}`)
+              if (e instanceof FatalJudgeError) fatal = e
               failed++
             }
           }
         }),
       )
-      ;((labels[g] ??= {})[setup] = Object.fromEntries(done))
+      if (fatal !== undefined) throw fatal
+      labels[g] ??= {}
+      labels[g][setup] = Object.fromEntries(done)
+      writeFileSync(
+        `${file}.labels-${g}.jsonl`,
+        [...done].map(([id, label]) => JSON.stringify({ question_id: id, setup, grader: grader.model, label })).join("\n") + "\n",
+      )
     }
   }
 
-  const types = ["single-session-user", "single-session-preference", "single-session-assistant", "multi-session", "temporal-reasoning", "knowledge-update"]
-  const mean = (xs: ReadonlyArray<boolean>) => (xs.length === 0 ? Number.NaN : xs.filter(Boolean).length / xs.length)
-  const pct = (x: number) => `${(x * 100).toFixed(1)}%`
+  const pct = (x: number) => (Number.isNaN(x) ? "-" : `${(x * 100).toFixed(1)}%`)
   for (const g of graderNames) {
     console.log(`\n## grader ${g} (${GRADERS[g]!.model})`)
-    console.log(`| setup | graded | Overall | Task-averaged | Abstention | ${types.join(" | ")} |`)
-    console.log(`|:---|---:|---:|---:|---:|${types.map(() => "---:").join("|")}|`)
+    console.log(`| setup | graded | Overall | Task-averaged | Abstention | ${QUESTION_TYPES.join(" | ")} |`)
+    console.log(`|:---|---:|---:|---:|---:|${QUESTION_TYPES.map(() => "---:").join("|")}|`)
     for (const [setup, byQ] of Object.entries(labels[g] ?? {})) {
-      const ids = Object.keys(byQ)
-      const perType = types.map((t) => mean(ids.filter((id) => ref.get(id)!.question_type === t).map((id) => byQ[id]!)))
-      const overall = mean(ids.map((id) => byQ[id]!))
-      const abst = mean(ids.filter((id) => id.includes("_abs")).map((id) => byQ[id]!))
-      console.log(`| ${setup} | ${ids.length} | ${pct(overall)} | ${pct(perType.reduce((a, b) => a + b, 0) / types.length)} | ${pct(abst)} | ${perType.map(pct).join(" | ")} |`)
+      const m = computeMetrics(byQ, ref)
+      const flag = m.complete ? "" : " INCOMPLETE - not a score"
+      console.log(
+        `| ${setup}${flag} | ${m.graded}/${m.total} | ${pct(m.overall)} | ${pct(m.taskAveraged)} | ${pct(m.abstention)} | ${QUESTION_TYPES.map((t) => pct(m.perType[t])).join(" | ")} |`,
+      )
     }
     const setups = Object.keys(labels[g] ?? {})
     for (let i = 0; i < setups.length; i++) {

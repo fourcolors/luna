@@ -3,8 +3,11 @@
  * (src/evaluation/evaluate_qa.py at 9e0b455f); a reworded prompt would make
  * the scores incomparable with published ones.
  */
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { anscheckPrompt, GRADERS } from "../bench/lme-qa-grade.js"
+import { anscheckPrompt, computeMetrics, GRADERS, judgeLabel, readJsonl, type QaRef } from "../bench/lme-qa-grade.js"
 
 describe("lme-qa-grade", () => {
   it("uses the official shared template for single-session and multi-session questions", () => {
@@ -37,5 +40,42 @@ describe("lme-qa-grade", () => {
 
   it("the GPT-4o grader is the paper's pinned judge", () => {
     expect(GRADERS["gpt-4o"]!.model).toBe("gpt-4o-2024-08-06")
+  })
+
+  it("judgeLabel: the official 'yes' substring rule, but an empty or cut-off reply is a failure, not a 'no'", () => {
+    expect(judgeLabel("Yes.", "stop")).toBe(true)
+    expect(judgeLabel("no", "stop")).toBe(false)
+    expect(judgeLabel("yes, but", "length")).toBe(true)
+    expect(() => judgeLabel("", "stop")).toThrow(/empty/)
+    expect(() => judgeLabel("The response", "length")).toThrow(/cut off/)
+  })
+
+  it("computeMetrics: print_qa_metrics semantics over every question, flagged incomplete when any is missing", () => {
+    const ref = new Map<string, QaRef>([
+      ["a", { questionType: "multi-session", abstention: false }],
+      ["b", { questionType: "multi-session", abstention: false }],
+      ["c_abs", { questionType: "multi-session", abstention: true }],
+      ["d", { questionType: "temporal-reasoning", abstention: false }],
+      ...(["single-session-user", "single-session-preference", "single-session-assistant", "knowledge-update"] as const).map(
+        (t) => [`x-${t}`, { questionType: t, abstention: false }] as [string, QaRef],
+      ),
+    ])
+    const labels = { a: true, b: false, c_abs: true, d: false, "x-single-session-user": true, "x-single-session-preference": true, "x-single-session-assistant": true, "x-knowledge-update": false }
+    const m = computeMetrics(labels, ref)
+    expect(m.complete).toBe(true)
+    expect(m.overall).toBeCloseTo(5 / 8) // abstention question included in Overall
+    expect(m.perType["multi-session"]).toBeCloseTo(2 / 3) // ...and in its own type
+    expect(m.taskAveraged).toBeCloseTo((2 / 3 + 0 + 1 + 1 + 1 + 0) / 6)
+    expect(m.abstention).toBe(1)
+    const partial = computeMetrics({ a: true }, ref)
+    expect(partial.complete).toBe(false)
+    expect(partial.graded).toBe(1)
+    expect(partial.total).toBe(8)
+  })
+
+  it("readJsonl skips a line cut short by a crash instead of failing the resume", () => {
+    const f = join(mkdtempSync(join(tmpdir(), "lme-qa-grade-")), "x.jsonl")
+    writeFileSync(f, '{"question_id":"a"}\n{"question_id":"b"}\n{"question_id":"c', "utf8")
+    expect(readJsonl<{ question_id: string }>(f).map((e) => e.question_id)).toEqual(["a", "b"])
   })
 })
