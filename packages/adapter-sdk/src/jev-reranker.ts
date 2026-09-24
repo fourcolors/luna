@@ -75,9 +75,9 @@ export function JevRerankerLayer(opts: JevRerankerOptions = {}): Layer.Layer<Mem
       signal,
     })
     if (!res.ok) {
-      // Auth failures: status only (the body can echo request details); others: a short body for diagnosis.
-      const detail = res.status === 401 || res.status === 403 ? "" : `: ${(await res.text()).slice(0, 200)}`
-      throw new RerankError({ op: "stream", message: `jev HTTP ${res.status}${detail}` })
+      // Any error body may echo the query or private memory text. This error
+      // reaches server logs, so keep the diagnostic data-free for every status.
+      throw new RerankError({ op: "stream", message: `jev HTTP ${res.status}` })
     }
     let json: unknown
     try {

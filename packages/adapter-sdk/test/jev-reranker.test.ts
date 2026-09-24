@@ -88,8 +88,8 @@ describe("JevRerankerLayer", () => {
   })
 
   it("an HTTP error, a malformed answer, or a missing answer is a typed error, never a partial ranking", async () => {
-    const http = (async () => new Response("overloaded", { status: 529 })) as unknown as typeof fetch
-    expect(await run(JevRerankerLayer({ apiKey: "k", warmUp: false, fetch: http }))).toMatchObject({ op: "stream", message: "jev HTTP 529: overloaded" })
+    const http = (async () => new Response("My private memory is Biscuit", { status: 529 })) as unknown as typeof fetch
+    expect(await run(JevRerankerLayer({ apiKey: "k", warmUp: false, fetch: http }))).toMatchObject({ op: "stream", message: "jev HTTP 529" })
     const auth = (async () => new Response("invalid key sk-echoed-back", { status: 401 })) as unknown as typeof fetch
     const authErr = await run(JevRerankerLayer({ apiKey: "k", warmUp: false, fetch: auth }))
     expect(authErr.message).toBe("jev HTTP 401") // no body: it can echo request details
