@@ -34,6 +34,18 @@ function recordId(turn: FlatTurn): string {
   return `lme_${turn.questionId}_s${turn.sessionIdx}_t${turn.turnIdx}`
 }
 
+/**
+ * Epoch ms of a LongMemEval date ("2023/05/20 (Sat) 02:21"), read as UTC so
+ * Luna's YYYY-MM-DD memory labels (toISOString) show the session's own date.
+ * Throws on any other shape: a record silently stamped "now" would tell the
+ * answer model a 2023 conversation happened today.
+ */
+export function parseLmeDate(date: string): number {
+  const m = /^(\d{4})\/(\d{2})\/(\d{2}) \([A-Za-z]{3}\) (\d{2}):(\d{2})$/.exec(date)
+  if (!m) throw new Error(`unparseable LongMemEval date "${date}"`)
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]))
+}
+
 function formatContent(turn: FlatTurn): string {
   return `[${turn.sessionDate}] ${turn.role}: ${turn.text}`
 }
@@ -51,6 +63,8 @@ export function ingestInstance(
           kind: "episodic",
           content: { text: formatContent(turn) },
           tags: [turn.role],
+          // As if saved when the conversation happened (search scoring ignores timestamps).
+          now: parseLmeDate(turn.sessionDate),
         }),
       )
     }

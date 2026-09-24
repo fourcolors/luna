@@ -14,7 +14,8 @@
  * dispatch time.
  */
 import type { Effect, Stream } from "effect"
-import type { MemoryBackendError } from "@luna/core"
+import type { MemoryBackendError, MemorySearchMode } from "@luna/core"
+import type { LexicalFusionOptions } from "./lexical-query.js"
 import type {
   MemoryExport,
   MemoryQuery,
@@ -36,6 +37,29 @@ export interface MemoryBackend {
   ) => Effect.Effect<number, MemoryBackendError>
 }
 
+/** Arguments to a memory vector search; shared by backends and the router. */
+export interface MemorySearchArgs {
+  readonly queryText: string
+  readonly topK?: number
+  readonly namespace?: string
+  readonly mode?: MemorySearchMode
+  readonly scope?: MemoryScopeQuery
+  /** If true, records superseded by a newer record are included. */
+  readonly includeSuperseded?: boolean
+  /**
+   * Query expansion: extra keywords (synonyms, entities, alternate
+   * phrasings), typically written by the calling agent. They feed ONLY the
+   * lexical arm, never the query embedding, so they cannot pull the vector
+   * search off-topic. ONLY `hybrid-weighted` uses them, as their own
+   * lexical arm weighted below the query's (FTS5 sums repeated terms, so
+   * mixing them into the query's OR would let them dominate). Every other
+   * mode ignores them, which keeps production `hybrid` byte-identical.
+   */
+  readonly expansionTerms?: ReadonlyArray<string>
+  /** Overrides for `hybrid-weighted` (bench sweeps); production omits it. */
+  readonly fusion?: Partial<LexicalFusionOptions>
+}
+
 export interface MemoryVectorBackend extends MemoryBackend {
   /**
    * Vector search.
@@ -47,16 +71,9 @@ export interface MemoryVectorBackend extends MemoryBackend {
    *     `MemoryBackendError`, not silently fall back to vec-only.
    *   - `"bm25"` - pure lexical FTS5 ranking, no embedding call. Backends
    *     without FTS5 in scope MUST fail with `MemoryBackendError`.
+   *   - `"hybrid-terms"` / `"hybrid-weighted"` - see `MemorySearchMode`.
    */
-  readonly search: (args: {
-    readonly queryText: string
-    readonly topK?: number
-    readonly namespace?: string
-    readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
-    readonly scope?: MemoryScopeQuery
-    /** If true, records superseded by a newer record are included. */
-    readonly includeSuperseded?: boolean
-  }) => Stream.Stream<
+  readonly search: (args: MemorySearchArgs) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
   >

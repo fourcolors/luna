@@ -9,9 +9,13 @@
  *
  * Frame flow (packages/ui-shared/src/wire.ts):
  *   <- hello                  gate on capabilities.modelRouting
- *   <- model-routing-list     providers + roleBindings from server
+ *   <- model-routing-list     providers + roleBindings (+ memoryReranker) from server
  *   <- model-routing-status   ack for a save (ok/message, requestId)
- *   -> model-routing-save     { requestId, providers, roleBindings }
+ *   -> model-routing-save     { requestId, providers, roleBindings, memoryReranker? }
+ *
+ * The memory reranker section renders only when the server reports the
+ * setting (older servers omit it). It never shows or sends the Jev key -
+ * that is stored through the Vault.
  *
  * SECURITY (unchanged from the vanilla module):
  *   - No credential values ever appear here. `credentialRef` is an opaque
@@ -32,7 +36,23 @@
 import { useEffect, useMemo, useReducer, useRef } from "react"
 import { newRequestId } from "@luna/ui-shared/core"
 import type { ModelRoutingListFrame, ModelRoutingStatusFrame } from "@luna/ui-shared/core"
-import { Badge, Banner, Button, Card, Divider, EmptyState, HStack, NumberInput, Selector, Switch, Text, TextInput, VStack } from "../../astryx-kit"
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  Divider,
+  EmptyState,
+  HStack,
+  NumberInput,
+  SegmentedControl,
+  SegmentedControlItem,
+  Selector,
+  Switch,
+  Text,
+  TextInput,
+  VStack,
+} from "../../astryx-kit"
 import type { SelectorOptionData, SelectorOptionType } from "../../astryx-kit"
 import { socketOpen } from "../panel-ctx"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
@@ -43,6 +63,8 @@ import {
   initialModelRoutingState,
   PROVIDERS,
   reduceModelRouting,
+  RERANKERS,
+  rerankerLabel,
   ROLE_DESCRIPTIONS,
   ROLE_LABELS,
   ROLES,
@@ -77,6 +99,7 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
         type: "server-list",
         providers: Array.isArray(frame?.providers) ? frame.providers : [],
         roleBindings: Array.isArray(frame?.roleBindings) ? frame.roleBindings : [],
+        ...(typeof frame?.memoryReranker?.engine === "string" ? { memoryReranker: frame.memoryReranker } : {}),
       })
     })
 
@@ -118,6 +141,7 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
       requestId,
       providers: payload.providers,
       roleBindings: payload.roleBindings,
+      ...(payload.memoryReranker !== undefined ? { memoryReranker: payload.memoryReranker } : {}),
     })
     if (!ok) {
       dispatch({ type: "save-rejected" })
@@ -297,6 +321,52 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
           )
         })}
       </VStack>
+
+      {state.draftReranker !== null && (
+        <VStack gap={3} data-testid="memory-reranker-section">
+          <VStack gap={1}>
+            <Text type="label">Memory reranker</Text>
+            <Text type="supporting" color="secondary">
+              After a memory search, the reranker re-reads the best matches and puts the most relevant first,
+              for your searches and for the memories Luna adds to each chat. Changes apply after a short
+              server restart.
+            </Text>
+          </VStack>
+          <Card>
+            <VStack gap={3}>
+              <SegmentedControl
+                label="Memory reranker"
+                layout="fill"
+                value={state.draftReranker}
+                onChange={(engine) => dispatch({ type: "set-reranker", engine })}
+                data-testid="memory-reranker-control"
+              >
+                {RERANKERS.map((r) => (
+                  <SegmentedControlItem key={r.engine} value={r.engine} label={r.label} data-testid={`memory-reranker-${r.engine}`} />
+                ))}
+              </SegmentedControl>
+              {state.draftReranker === "jev" ? (
+                <Banner
+                  status="warning"
+                  title="Sends memory text to TypeSafe"
+                  description="Every memory search and every chat turn sends the query and its top candidate memories (40 by default) to api.typesafe.ai. Needs your TYPESAFE_API_KEY saved in the Vault; without it Luna keeps plain search order."
+                  data-testid="memory-reranker-jev-notice"
+                />
+              ) : (
+                <Text type="supporting" color="secondary" data-testid="memory-reranker-local-note">
+                  Runs next to your Luna server. It only reranks when LUNA_MEMORY_RERANK=1 or LUNA_RECALL_RERANK=1
+                  is set.
+                </Text>
+              )}
+              {!state.isDirty && state.activeReranker !== null && state.activeReranker !== state.serverReranker && (
+                <Text type="supporting" color="secondary" data-testid="memory-reranker-pending">
+                  Luna keeps using {rerankerLabel(state.activeReranker)} until the server restarts.
+                </Text>
+              )}
+            </VStack>
+          </Card>
+        </VStack>
+      )}
 
       <VStack gap={2}>
         <Divider />

@@ -773,6 +773,8 @@ export interface UIWebSocketServerConfig {
     readonly save: (input: {
       readonly providers: ReadonlyArray<import("./protocol.js").ProviderSettingsItem>
       readonly roleBindings: ReadonlyArray<import("./protocol.js").RoleBindingItem>
+      /** Absent = keep the stored memory reranker choice. */
+      readonly memoryReranker?: import("./protocol.js").MemoryRerankerSettingsItem
     }) => { readonly ok: boolean; readonly message: string }
     /** Called after a successful save so activation (restart) is scheduled. */
     readonly scheduleRestart?: () => void
@@ -3537,6 +3539,7 @@ export const startUIWebSocketServer = (
                     const saveResult = mrSvc.save({
                       providers: mrFrame.providers ?? [],
                       roleBindings: mrFrame.roleBindings ?? [],
+                      ...(mrFrame.memoryReranker !== undefined ? { memoryReranker: mrFrame.memoryReranker } : {}),
                     })
                     send(ws, {
                       type: "model-routing-status",

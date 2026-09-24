@@ -28,7 +28,7 @@
  *     per Operator's `sqlite-vec-scaling` skill. With HNSW: 0.037ms p95 @ 10k
  *     measured on arm64-darwin (same skill).
  *   - search() honors namespace filter via SQL `WHERE namespace = ?`.
- *   - search() supports `mode: "vec" | "hybrid" | "bm25" | "hybrid-terms"`. `"hybrid"` (Phase 26)
+ *   - search() supports every `MemorySearchMode` (@luna/core). `"hybrid"` (Phase 26)
  *     fuses BM25 (FTS5 over `text`) with cosine vector ranking via
  *     Reciprocal Rank Fusion (k=60). Backends that don't have FTS5 in
  *     scope MUST fail; we never silently degrade.
@@ -78,6 +78,16 @@ import {
   hashEmbeddingInput,
 } from "./sqlite-vector-maintenance.js"
 import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
+import type { MemorySearchArgs } from "../backend.js"
+import {
+  HYBRID_WEIGHTED_DEFAULTS,
+  expansionMatch,
+  extractTerms,
+  minMatchTermsMatch,
+  quoteFts,
+  termsMatch,
+  weightedRrf,
+} from "../lexical-query.js"
 import {
   deriveHnswSidecarPath,
   discardSidecar,
@@ -104,16 +114,7 @@ export interface SqliteVectorBackendApi {
   readonly importAll: (
     env: MemoryExport,
   ) => Effect.Effect<number, MemoryBackendError>
-  readonly search: (args: {
-    readonly queryText: string
-    readonly topK?: number
-    readonly namespace?: string
-    readonly mode?: "vec" | "hybrid" | "bm25" | "hybrid-terms"
-    /** Visibility filter applied before ranking (Fix 4). */
-    readonly scope?: MemoryScopeQuery
-    /** If true, records superseded by a newer record are included. */
-    readonly includeSuperseded?: boolean
-  }) => Stream.Stream<
+  readonly search: (args: MemorySearchArgs) => Stream.Stream<
     { readonly record: MemoryRecord; readonly score: number },
     MemoryBackendError
   >
@@ -978,31 +979,17 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           return scored.slice(0, limit)
         }
 
-        // BM25 ranking via FTS5. Returns ids ordered best-first.
-        // FTS5 MATCH syntax is sensitive to special chars (-, :, etc.), so
-        // user text is never passed raw. Two match styles:
-        //   "phrase" - the whole query as one quoted phrase; only documents
-        //     containing the query as a contiguous token sequence match.
-        //     This is the historical hybrid behavior (kept unchanged).
-        //   "terms" - each word quoted individually and OR-joined, giving
-        //     bag-of-words bm25() ranking over any term overlap. Tokenizer
-        //     is ASCII-only ([A-Za-z0-9_]) while FTS5 itself is unicode61,
-        //     so non-ASCII query terms (CJK, accented) are dropped; fine for
-        //     the current English corpus, revisit before i18n.
-        const rankByBm25 = (
-          queryText: string,
+        // BM25 ranking via FTS5. Returns ids ordered best-first, or [] for an
+        // empty MATCH (nothing survived term extraction: the arm abstains
+        // instead of matching everything or throwing). MATCH strings are
+        // built by ../lexical-query.ts, which quotes every token, so user
+        // text never reaches FTS5 as syntax.
+        const rankByFts = (
+          match: string,
           namespace: string | undefined,
           limit: number,
-          matchStyle: "phrase" | "terms",
           scope?: MemoryScopeQuery,
         ): string[] => {
-          // Escape embedded double-quotes per FTS5 quoting rules ("" = ").
-          const match =
-            matchStyle === "phrase"
-              ? `"${queryText.replace(/"/g, '""')}"`
-              : (queryText.match(/[A-Za-z0-9_]+/g) ?? [])
-                  .map((w) => `"${w}"`)
-                  .join(" OR ")
           if (match.length === 0) return []
           const rows = (
             scope !== undefined
@@ -1027,6 +1014,14 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           return rows.map((r) => r.id)
         }
 
+        // The single lexical MATCH for bm25 / hybrid / hybrid-terms. These
+        // modes IGNORE expansionTerms (only hybrid-weighted can weight them
+        // below the query), so "hybrid" - production - stays byte-identical.
+        //   "hybrid"               the whole query as ONE quoted phrase
+        //   "bm25", "hybrid-terms" every query word OR'd, no stopwords
+        const singleArmMatch = (args: MemorySearchArgs, style: "phrase" | "terms"): string =>
+          style === "phrase" ? quoteFts(args.queryText) : termsMatch(extractTerms(args.queryText))
+
         const search: SqliteVectorBackendApi["search"] = (args) => {
           const mode = args.mode ?? "vec"
           const topK = args.topK ?? 10
@@ -1040,13 +1035,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
               if (mode === "bm25") {
                 const bm25Ranked = yield* Effect.try({
                   try: () =>
-                    rankByBm25(
-                      args.queryText,
-                      args.namespace,
-                      topK,
-                      "terms",
-                      scope,
-                    ),
+                    rankByFts(singleArmMatch(args, "terms"), args.namespace, topK, scope),
                   catch: (cause) => asError("search.bm25", cause),
                 })
                 // Score = 1/(rank+1), 1-indexed rank from bm25() order. This
@@ -1084,8 +1073,8 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 return Stream.fromIterable(out)
               }
 
-              // mode === "hybrid" | "hybrid-terms"
-              // Pull max(topK, 50) candidates per side; fuse via RRF (k=60).
+              // mode === "hybrid" | "hybrid-terms" | "hybrid-weighted"
+              // Pull max(topK, 50) candidates per arm; fuse via RRF (k=60).
               const candidateLimit = Math.max(topK, 50)
 
               const vecRanked = yield* Effect.try({
@@ -1093,39 +1082,60 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                   rankByVec(queryVec, args.namespace, candidateLimit, scope),
                 catch: (cause) => asError("search.hybrid.vec", cause),
               })
-              // "hybrid" keeps the historical exact-phrase BM25 arm; the
-              // additive "hybrid-terms" mode fuses the bag-of-words arm
-              // instead, so the bench can judge that product change before
-              // any default flips (see bench/memory-suite.ts).
-              const bm25Ranked = yield* Effect.try({
-                try: () =>
-                  rankByBm25(
-                    args.queryText,
-                    args.namespace,
-                    candidateLimit,
-                    mode === "hybrid-terms" ? "terms" : "phrase",
-                    scope,
-                  ),
-                catch: (cause) => asError("search.hybrid.bm25", cause),
-              })
+              const vecIds = vecRanked.map((e) => e.id)
 
-              // RRF: score = sum(1 / (k + rank)) over rankings the id appears in.
-              const RRF_K = 60
-              const fused = new Map<string, number>()
-              vecRanked.forEach((entry, idx) => {
-                fused.set(
-                  entry.id,
-                  (fused.get(entry.id) ?? 0) + 1 / (RRF_K + idx + 1),
-                )
-              })
-              bm25Ranked.forEach((id, idx) => {
-                fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + idx + 1))
-              })
-
-              const top = Array.from(fused.entries())
-                .map(([id, score]) => ({ id, score }))
-                .sort((a, b) => b.score - a.score)
-                .slice(0, topK)
+              let top: ReadonlyArray<{ readonly id: string; readonly score: number }>
+              if (mode === "hybrid-weighted") {
+                // Stopword-filtered query terms and expansion keywords are
+                // SEPARATE lexical arms, each with its own RRF weight below
+                // the vector arm's 1.0: a noisy lexical rank-1 can no longer
+                // outvote a strong vector rank-1 (the hybrid-terms failure on
+                // vocabulary-mismatch queries), and keywords cannot swamp the
+                // query's own words.
+                const cfg = { ...HYBRID_WEIGHTED_DEFAULTS, ...args.fusion }
+                // With the query arm off (weight 0) its search is skipped, and
+                // keywords are not de-duplicated against query words: a keyword
+                // restating a query word is then its ONLY lexical match.
+                const queryArmOn = cfg.lexicalWeight > 0
+                const queryTerms = queryArmOn ? extractTerms(args.queryText, cfg.stopwords) : []
+                const [queryRanked, expansionRanked] = yield* Effect.try({
+                  try: () => [
+                    queryArmOn
+                      ? rankByFts(minMatchTermsMatch(queryTerms, cfg.minMatch), args.namespace, candidateLimit, scope)
+                      : [],
+                    rankByFts(
+                      expansionMatch(args.expansionTerms ?? [], cfg.stopwords, queryTerms),
+                      args.namespace,
+                      candidateLimit,
+                      scope,
+                    ),
+                  ] as const,
+                  catch: (cause) => asError("search.hybrid.bm25", cause),
+                })
+                top = weightedRrf([
+                  { ids: vecIds, weight: 1 },
+                  { ids: queryRanked, weight: cfg.lexicalWeight },
+                  { ids: expansionRanked, weight: cfg.expansionWeight },
+                ]).slice(0, topK)
+              } else {
+                // "hybrid" keeps the historical exact-phrase BM25 arm; the
+                // additive "hybrid-terms" mode fuses the bag-of-words arm
+                // instead. Both are equal-weight RRF.
+                const bm25Ranked = yield* Effect.try({
+                  try: () =>
+                    rankByFts(
+                      singleArmMatch(args, mode === "hybrid-terms" ? "terms" : "phrase"),
+                      args.namespace,
+                      candidateLimit,
+                      scope,
+                    ),
+                  catch: (cause) => asError("search.hybrid.bm25", cause),
+                })
+                top = weightedRrf([
+                  { ids: vecIds, weight: 1 },
+                  { ids: bm25Ranked, weight: 1 },
+                ]).slice(0, topK)
+              }
 
               const out: { record: MemoryRecord; score: number }[] = []
               for (const s of top) {

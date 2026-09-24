@@ -1,0 +1,6090 @@
+{
+  "source": "memory-suite",
+  "model": "haiku",
+  "promptHash": "8a3361b317a6e81f",
+  "generatedAt": "2026-09-23T09:09:07.817Z",
+  "samples": 3,
+  "keywords": {
+    "q_verbatim_001": [
+      [
+        "vector database architecture",
+        "HNSW hierarchical clustering",
+        "SQLite-backed embedding storage",
+        "local semantic search index",
+        "approximate nearest neighbor",
+        "in-process vector retrieval"
+      ],
+      [
+        "semantic search",
+        "vector database",
+        "approximate nearest neighbor",
+        "HNSW algorithm",
+        "embedding storage",
+        "SQLite integration",
+        "hierarchical navigable small world"
+      ],
+      [
+        "approximate nearest neighbor search",
+        "hybrid search capability",
+        "in-process embedding storage",
+        "semantic search infrastructure",
+        "dense vector indexing",
+        "knowledge base retrieval"
+      ]
+    ],
+    "q_verbatim_002": [
+      [
+        "hybrid search ranking",
+        "lexical and semantic fusion",
+        "RRF score normalization",
+        "combined ranking algorithm",
+        "full-text and vector search",
+        "score aggregation method"
+      ],
+      [
+        "hybrid search ranking",
+        "full-text search",
+        "vector similarity matching",
+        "multi-modal search",
+        "relevance scoring fusion",
+        "ranking algorithms"
+      ],
+      [
+        "hybrid search ranking",
+        "keyword and semantic fusion",
+        "relevance scoring algorithms",
+        "lexical and vector search",
+        "ranking aggregation methods",
+        "information retrieval scoring"
+      ]
+    ],
+    "q_verbatim_003": [
+      [
+        "agent memory operations",
+        "persistence interface",
+        "CRUD for agents",
+        "memory mutation and retrieval",
+        "agent action toolkit",
+        "document lifecycle management"
+      ],
+      [
+        "CRUD operations",
+        "agent tool interface",
+        "memory operations",
+        "persistence layer",
+        "tool capabilities"
+      ],
+      [
+        "memory interface operations",
+        "knowledge persistence tools",
+        "CRUD agent capabilities",
+        "tool definitions for agents"
+      ]
+    ],
+    "q_verbatim_004": [
+      [
+        "release channel strategy",
+        "staged rollout",
+        "development and production branches",
+        "deployment pipeline",
+        "multi-channel distribution",
+        "canary vs stable"
+      ],
+      [
+        "deployment strategy",
+        "release channels",
+        "multi-environment deployment",
+        "staging and production",
+        "rollout management"
+      ],
+      [
+        "release channel strategy",
+        "staged deployment process",
+        "environment separation",
+        "production and testing tracks"
+      ]
+    ],
+    "q_verbatim_005": [
+      [
+        "self-healing deployment",
+        "health verification",
+        "automated rollback trigger",
+        "deployment safety guardrail",
+        "restart validation",
+        "failure recovery mechanism"
+      ],
+      [
+        "automated rollback on failure",
+        "health check validation",
+        "deployment recovery",
+        "post-deployment verification",
+        "circuit breaker pattern"
+      ],
+      [
+        "automatic deployment rollback",
+        "health check verification",
+        "canary deployment strategy",
+        "failure recovery mechanism",
+        "deployment safety checks"
+      ]
+    ],
+    "q_verbatim_006": [
+      [
+        "functional effect system",
+        "service composition pattern",
+        "dependency injection framework",
+        "Effect-TS architecture",
+        "layer abstraction",
+        "modular backend design"
+      ],
+      [
+        "Effect-TS framework",
+        "service composition pattern",
+        "dependency injection",
+        "functional effects",
+        "layered architecture"
+      ],
+      [
+        "functional architecture pattern",
+        "service layer composition",
+        "dependency injection framework",
+        "modular backend services"
+      ]
+    ],
+    "q_verbatim_007": [
+      [
+        "scheduler upgrade",
+        "job queue system",
+        "background task execution",
+        "legacy system replacement",
+        "scheduler redesign",
+        "async job processing"
+      ],
+      [
+        "scheduler rewrite",
+        "job scheduling system",
+        "background task processing",
+        "task queue",
+        "legacy migration"
+      ],
+      [
+        "background job scheduler",
+        "task execution system",
+        "scheduler upgrade migration",
+        "cron-like job runner",
+        "async task processing"
+      ]
+    ],
+    "q_verbatim_008": [
+      [
+        "event sourcing",
+        "append-only event stream",
+        "JSON serialization format",
+        "activity logging",
+        "local event storage",
+        "structured event capture"
+      ],
+      [
+        "event logging system",
+        "JSONL format",
+        "event stream",
+        "audit trail",
+        "event sourcing pattern"
+      ],
+      [
+        "event log persistence",
+        "event sourcing pattern",
+        "structured logging format",
+        "audit event tracking",
+        "immutable event stream"
+      ]
+    ],
+    "q_verbatim_009": [
+      [
+        "credential rotation strategy",
+        "rate limit balancing",
+        "multi-account token cycling",
+        "API quota management",
+        "token lifecycle management",
+        "request distribution"
+      ],
+      [
+        "OAuth token management",
+        "account rotation",
+        "load balancing strategy",
+        "multi-account authentication",
+        "credential distribution"
+      ],
+      [
+        "OAuth token management",
+        "account linking strategy",
+        "authentication load balancing",
+        "multi-account credential rotation",
+        "rate limit distribution"
+      ]
+    ],
+    "q_verbatim_010": [
+      [
+        "credential vault",
+        "system keychain integration",
+        "secret management",
+        "secure credential storage",
+        "OS-level encryption",
+        "platform-specific key storage"
+      ],
+      [
+        "OS keychain integration",
+        "credential vault",
+        "secure credential storage",
+        "system integration",
+        "secrets management"
+      ],
+      [
+        "credential storage system",
+        "OS keychain integration",
+        "secure secret management",
+        "platform-specific encryption"
+      ]
+    ],
+    "q_verbatim_021": [
+      [
+        "technical merit prioritized over cost concerns",
+        "cost efficiency not a primary constraint",
+        "scope decisions favor technical excellence",
+        "architectural soundness valued highly",
+        "quality prioritized regardless of effort",
+        "economical efficiency deprioritized"
+      ],
+      [
+        "implementation pragmatism",
+        "correctness priority",
+        "engineering judgment calls",
+        "business-technical tradeoffs",
+        "scope constraints",
+        "design autonomy"
+      ],
+      [
+        "cost-agnostic technical decisions",
+        "prioritize quality over budget",
+        "minimize development cost consideration",
+        "engineering merit primary factor",
+        "budget not a blocker"
+      ]
+    ],
+    "q_verbatim_022": [
+      [
+        "work completion summary format specification",
+        "shipped features recap structure",
+        "risk assessment in project closure",
+        "judgment call documentation at completion",
+        "forward-looking roadmap in summary",
+        "implementation wrap-up documentation style"
+      ],
+      [
+        "shipped feature recap",
+        "delivery documentation",
+        "completion narrative",
+        "post-release assessment",
+        "next-phase planning",
+        "decision rationale"
+      ],
+      [
+        "shipped deliverables summary",
+        "risk assessment in handoff",
+        "judgment calls documentation",
+        "forward-looking next steps",
+        "work completion recap format"
+      ]
+    ],
+    "q_verbatim_023": [
+      [
+        "visual consistency standards throughout codebase",
+        "UI polish non-negotiable",
+        "design details matter in implementation",
+        "incidental aesthetic improvements expected",
+        "user-facing appearance quality baseline",
+        "subtle design flaws worth fixing"
+      ],
+      [
+        "design polish",
+        "visual correctness",
+        "UI detail standards",
+        "appearance requirements",
+        "incidental bug fixing",
+        "design-driven work"
+      ],
+      [
+        "UI polish standards",
+        "visual detail corrections",
+        "design fidelity attention",
+        "aesthetic quality proactive fixes",
+        "obvious UI flaws"
+      ]
+    ],
+    "q_verbatim_024": [
+      [
+        "hands-off approach to generated artifacts",
+        "auto-generated content integrity required",
+        "tooling owns generated file updates",
+        "generated documentation tooling only",
+        "automation-generated files immutable",
+        "source-of-truth automation for artifacts"
+      ],
+      [
+        "CHANGELOG automation",
+        "generated file handling",
+        "tooling preference",
+        "auto-generated content",
+        "manual edit policy",
+        "file automation"
+      ],
+      [
+        "auto-generated file preservation",
+        "changelog automation policy",
+        "hands-off generated content",
+        "machine-maintained artifacts",
+        "avoid manual edits"
+      ]
+    ],
+    "q_verbatim_025": [
+      [
+        "AI contribution never attributed in commits",
+        "co-author fields exclude agents",
+        "human-only authorship policy",
+        "agent contribution unmarked in metadata",
+        "commit authorship attribution standards"
+      ],
+      [
+        "commit attribution",
+        "co-author policy",
+        "authorship standards",
+        "commit credit"
+      ],
+      [
+        "agent authorship exclusion",
+        "commit attribution policy",
+        "no AI co-authoring",
+        "human-only commit author"
+      ]
+    ],
+    "q_verbatim_026": [
+      [
+        "visual proof required before completion",
+        "screenshot evidence for UI work",
+        "user-facing change acceptance criteria",
+        "visual testing before sign-off",
+        "UI changes need visual documentation",
+        "before-and-after screenshots required"
+      ],
+      [
+        "screenshot proof",
+        "visual verification",
+        "UI validation gate",
+        "manual visual testing",
+        "change approval standard"
+      ],
+      [
+        "visual verification requirement",
+        "UI screenshot proof",
+        "user-facing change validation",
+        "before-after visual confirmation"
+      ]
+    ],
+    "q_verbatim_027": [
+      [
+        "internal infrastructure details redacted",
+        "hostname leakage prevention in repos",
+        "public repository sanitization standards",
+        "configuration secrets exposure prevention",
+        "internal networking details protected",
+        "infrastructure naming conventions kept secret"
+      ],
+      [
+        "infrastructure privacy",
+        "hostname redaction",
+        "internal alias exposure",
+        "secrets management",
+        "confidentiality standards",
+        "data sensitivity policy"
+      ],
+      [
+        "infrastructure secrecy",
+        "internal hostname protection",
+        "sensitive network details",
+        "public repo sanitization",
+        "private system aliases"
+      ]
+    ],
+    "q_verbatim_028": [
+      [
+        "scheduler migration to job ticker",
+        "old scheduler deprecation complete",
+        "job ticker production consolidation",
+        "single scheduler architecture adopted",
+        "scheduler system transition event",
+        "production workload moved to ticker"
+      ],
+      [
+        "scheduler deprecation",
+        "job ticker migration",
+        "production transition",
+        "system architecture change",
+        "scheduler replacement"
+      ],
+      [
+        "scheduler migration",
+        "legacy scheduler retirement",
+        "job ticker replacement",
+        "single scheduler production",
+        "system consolidation"
+      ]
+    ],
+    "q_verbatim_029": [
+      [
+        "capability requirements in desktop framework",
+        "silent failure without permissions",
+        "window operation permission model",
+        "explicit capability declaration required",
+        "desktop framework permission gotcha",
+        "framework config needed for commands"
+      ],
+      [
+        "capability model",
+        "framework permissions",
+        "window API security",
+        "explicit grant requirement",
+        "silent failure handling"
+      ],
+      [
+        "window command capability",
+        "framework permission model",
+        "capability-gated commands",
+        "silent API rejection"
+      ]
+    ],
+    "q_verbatim_030": [
+      [
+        "move event batching reduces lag",
+        "animation frame optimization technique",
+        "event coalescing performance fix",
+        "drag performance via frame sync",
+        "input event throttling improvement",
+        "frame-coherent event processing"
+      ],
+      [
+        "event coalescing",
+        "animation frame batching",
+        "drag optimization",
+        "input event batching",
+        "motion smoothing"
+      ],
+      [
+        "event coalescing optimization",
+        "animation frame throttling",
+        "drag performance fix",
+        "event batching",
+        "move event consolidation"
+      ]
+    ],
+    "q_verbatim_031": [
+      [
+        "cache invalidation strategy",
+        "version upgrade cleanup",
+        "browser state reset",
+        "client data refresh",
+        "deployment cache busting"
+      ],
+      [
+        "cache invalidation version",
+        "webview startup cache",
+        "staleness prevention mechanism",
+        "version update purge",
+        "browser cache lifecycle",
+        "app release cache"
+      ],
+      [
+        "cache invalidation strategy",
+        "app update lifecycle",
+        "browser view caching",
+        "deploy time cache",
+        "webview state refresh"
+      ]
+    ],
+    "q_verbatim_032": [
+      [
+        "background job timeout",
+        "deadline exceeded handling",
+        "scheduled task failure",
+        "async job deadline",
+        "cron retry logic"
+      ],
+      [
+        "nightly job timeout",
+        "batch deadline handling",
+        "digest timeout bug",
+        "scheduled job monitoring",
+        "deadline exceeded fault",
+        "cron job failure"
+      ],
+      [
+        "scheduled task timeout",
+        "background job deadline",
+        "cron job scheduling",
+        "async task failure",
+        "deadline exceeded error"
+      ]
+    ],
+    "q_verbatim_033": [
+      [
+        "window consolidation refactor",
+        "thread navigation simplification",
+        "multi-window to single",
+        "app window hierarchy",
+        "UI docking strategy"
+      ],
+      [
+        "desktop UI navigation",
+        "thread switcher redesign",
+        "window management UI",
+        "single window architecture",
+        "UI refactor navigation",
+        "thread selection pattern"
+      ],
+      [
+        "window management refactor",
+        "UI navigation thread",
+        "desktop app architecture",
+        "window docking system",
+        "application state redocking"
+      ]
+    ],
+    "q_verbatim_034": [
+      [
+        "thread visibility filtering",
+        "sidebar existence validation",
+        "filter ordering precedence",
+        "pagination optimization",
+        "query filter strategy"
+      ],
+      [
+        "thread visibility algorithm",
+        "row limit optimization",
+        "filtering before pagination",
+        "sidebar filtering logic",
+        "thread list algorithm",
+        "visibility filtering order"
+      ],
+      [
+        "visibility filtering sidebar",
+        "performance query ordering",
+        "thread deduplication check",
+        "sidebar UI cleanup",
+        "query optimization filter"
+      ]
+    ],
+    "q_verbatim_035": [
+      [
+        "type definition duplication",
+        "schema sprawl across modules",
+        "protocol inconsistency issue",
+        "type specification redundancy",
+        "state reducer schema"
+      ],
+      [
+        "duplicate schema definitions",
+        "type consistency bug",
+        "cross module type",
+        "schema reconciliation",
+        "type mismatch detection",
+        "protocol schema version"
+      ],
+      [
+        "type definition duplication",
+        "schema inconsistency layers",
+        "data model encoding",
+        "protocol encoding mismatch",
+        "type definition conflict"
+      ]
+    ],
+    "q_verbatim_036": [
+      [
+        "connection resource cleanup",
+        "server reconnect stability",
+        "heartbeat connection health",
+        "socket lifecycle management",
+        "reattach mechanism"
+      ],
+      [
+        "connection keepalive fix",
+        "resource cleanup reattach",
+        "memory management chat",
+        "heartbeat mechanism",
+        "connection lifecycle",
+        "session reattach cleanup"
+      ],
+      [
+        "resource cleanup leak",
+        "session connection management",
+        "keep-alive message",
+        "socket reattach handling",
+        "connection state cleanup"
+      ]
+    ],
+    "q_verbatim_037": [
+      [
+        "native app rollout phase",
+        "session restoration feature",
+        "transport protocol layer",
+        "cross-platform companion",
+        "state persistence layer"
+      ],
+      [
+        "app transport protocol",
+        "session restoration",
+        "native development phase",
+        "app milestone shipped",
+        "companion app launch",
+        "thread recovery mechanism"
+      ],
+      [
+        "native application platform",
+        "interprocess communication transport",
+        "session state persistence",
+        "app startup restoration",
+        "native extension feature"
+      ]
+    ],
+    "q_verbatim_038": [
+      [
+        "thread rendering optimization",
+        "viewport size reduction",
+        "pagination strategy change",
+        "memory footprint improvement",
+        "visible items limit"
+      ],
+      [
+        "thread pagination",
+        "sidebar load optimization",
+        "visibility threshold",
+        "performance optimization threads",
+        "thread limit adjustment",
+        "sidebar thread count"
+      ],
+      [
+        "rendering performance optimization",
+        "thread viewport limit",
+        "pagination count reduction",
+        "display list efficiency",
+        "performance thread rendering"
+      ]
+    ],
+    "q_verbatim_039": [
+      [
+        "model-based request routing",
+        "routing key selection",
+        "provider dispatch mechanism",
+        "model lookup table",
+        "handler mapping logic"
+      ],
+      [
+        "provider routing configuration",
+        "model based routing",
+        "routing pattern",
+        "configuration keying",
+        "provider selector logic",
+        "chain routing strategy"
+      ],
+      [
+        "LLM provider selection",
+        "AI model dispatch",
+        "provider selection mechanism",
+        "request routing dispatch",
+        "model identifier lookup"
+      ]
+    ],
+    "q_verbatim_040": [
+      [
+        "hidden configuration directory",
+        "local state file organization",
+        "encrypted credential storage",
+        "app data directory structure",
+        "runtime state isolation"
+      ],
+      [
+        "directory structure app",
+        "data persistence location",
+        "state storage",
+        "local configuration",
+        "app data organization",
+        "runtime state directory"
+      ],
+      [
+        "configuration directory structure",
+        "dot directory convention",
+        "data file persistence",
+        "home directory state",
+        "application storage structure"
+      ]
+    ],
+    "q_paraphrase_001": [
+      [
+        "external API embedding service",
+        "local embedding computation",
+        "vector embedding generation",
+        "remote vs on-device embeddings",
+        "third-party embedding provider",
+        "embedding infrastructure architecture"
+      ],
+      [
+        "embedding infrastructure",
+        "vector computation",
+        "remote processing",
+        "edge computation",
+        "API architecture",
+        "distributed embeddings",
+        "local inference"
+      ],
+      [
+        "embedding computation architecture",
+        "vector generation external service",
+        "local embedding processing",
+        "on-device embedding inference",
+        "API-based embeddings",
+        "embedding infrastructure"
+      ]
+    ],
+    "q_paraphrase_002": [
+      [
+        "duplicate memory detection",
+        "memory deduplication strategy",
+        "similar record merging",
+        "near-duplicate handling",
+        "memory conflict resolution",
+        "redundant entry consolidation"
+      ],
+      [
+        "collision detection",
+        "deduplication strategy",
+        "similarity matching",
+        "redundancy handling",
+        "near-duplicate resolution",
+        "merge behavior",
+        "conflict resolution"
+      ],
+      [
+        "duplicate memory handling",
+        "similar memory detection",
+        "memory deduplication",
+        "memory collision resolution",
+        "redundant memory saving",
+        "near-identical memory merging"
+      ]
+    ],
+    "q_paraphrase_003": [
+      [
+        "memory type classification",
+        "query intent detection",
+        "factual vs episodic vs preference",
+        "semantic memory categorization",
+        "distinguishing statement types",
+        "memory metadata typing"
+      ],
+      [
+        "query intent classification",
+        "memory type detection",
+        "episodic vs semantic",
+        "intent inference",
+        "category detection",
+        "semantic intent",
+        "knowledge categorization"
+      ],
+      [
+        "query intent detection",
+        "memory type classification",
+        "semantic categorization",
+        "fact vs preference distinction",
+        "episodic vs procedural classification",
+        "intent recognition"
+      ]
+    ],
+    "q_paraphrase_004": [
+      [
+        "memory export functionality",
+        "bulk memory retrieval",
+        "data portability or backup",
+        "JSON export format",
+        "full memory dump",
+        "archival export mechanism"
+      ],
+      [
+        "bulk export",
+        "data portability",
+        "backup format",
+        "aggregation",
+        "archival extraction",
+        "unified dump",
+        "memory consolidation"
+      ],
+      [
+        "memory export functionality",
+        "bulk memory download",
+        "data portability",
+        "memory backup",
+        "unified memory export",
+        "archive to file format"
+      ]
+    ],
+    "q_paraphrase_005": [
+      [
+        "memory retention policy",
+        "search result aging",
+        "historical memory removal",
+        "episodic memory lifespan",
+        "memory pruning strategy",
+        "archive or delete old records"
+      ],
+      [
+        "retention policy",
+        "memory decay",
+        "age-based filtering",
+        "result ranking",
+        "index cleanup",
+        "archival mechanism",
+        "stale removal"
+      ],
+      [
+        "memory retention policy",
+        "episodic memory archival",
+        "memory aging",
+        "search result filtering by age",
+        "memory decay over time",
+        "old record indexing"
+      ]
+    ],
+    "q_paraphrase_006": [
+      [
+        "graceful deployment waiting",
+        "active connection preservation",
+        "channel restart scheduling",
+        "deploy queue management",
+        "session persistence during rollout"
+      ],
+      [
+        "deployment strategy",
+        "gradual rollout",
+        "state preservation",
+        "connection draining",
+        "graceful transition",
+        "controlled update",
+        "phased restart"
+      ],
+      [
+        "deployment waiting mechanisms",
+        "gradual rollout strategy",
+        "channel restart scheduling",
+        "deploy timing constraints",
+        "graceful shutdown",
+        "staged rollout delay"
+      ]
+    ],
+    "q_paraphrase_007": [
+      [
+        "force rollout override",
+        "skip deployment guards",
+        "immediate deploy forcing",
+        "interrupt active user sessions",
+        "bypass safety checks"
+      ],
+      [
+        "live update",
+        "active user handling",
+        "session migration",
+        "interruption mitigation",
+        "zero-downtime deploy",
+        "concurrent handling",
+        "forced activation"
+      ],
+      [
+        "forced deployment override",
+        "live traffic deployment",
+        "active session interruption",
+        "deployment safety bypass",
+        "concurrent user rollout",
+        "immediate channel restart"
+      ]
+    ],
+    "q_paraphrase_008": [
+      [
+        "canary deployment strategy",
+        "staged rollout mechanism",
+        "desktop app release safety",
+        "gradual build rollout",
+        "blast radius control",
+        "testing gates before release"
+      ],
+      [
+        "canary release",
+        "staged deployment",
+        "progressive rollout",
+        "beta validation",
+        "phased testing",
+        "build verification",
+        "early detection"
+      ],
+      [
+        "canary deployment strategy",
+        "staged rollout",
+        "progressive delivery",
+        "build validation gates",
+        "desktop update distribution",
+        "beta testing before release"
+      ]
+    ],
+    "q_paraphrase_009": [
+      [
+        "channel isolation or separation",
+        "stable vs dev environment",
+        "cross-channel file sharing",
+        "process separation between channels",
+        "resource isolation or sharing"
+      ],
+      [
+        "channel isolation",
+        "resource contention",
+        "binary sharing",
+        "cross-channel interaction",
+        "separation boundaries",
+        "shared resources",
+        "process isolation"
+      ],
+      [
+        "channel isolation mechanisms",
+        "shared resources between channels",
+        "process separation architecture",
+        "file system sharing",
+        "resource contention prevention",
+        "dev stable channel boundaries"
+      ]
+    ],
+    "q_paraphrase_010": [
+      [
+        "deployment approval gates",
+        "pre-deploy validation checks",
+        "release criteria requirements",
+        "CI/CD pipeline stages",
+        "change promotion workflow",
+        "quality gates for deployment"
+      ],
+      [
+        "deployment gates",
+        "validation criteria",
+        "CI/CD pipeline",
+        "approval process",
+        "quality checkpoints",
+        "pre-flight checks",
+        "release criteria"
+      ],
+      [
+        "deployment approval gates",
+        "pre-deployment validation",
+        "change acceptance criteria",
+        "deployment prerequisites",
+        "quality assurance gates",
+        "release readiness criteria"
+      ]
+    ],
+    "q_paraphrase_011": [
+      [
+        "conversation persistence layer",
+        "message storage backend",
+        "chat history database",
+        "data durability mechanism",
+        "archival system",
+        "long-term storage infrastructure"
+      ],
+      [
+        "conversation persistence",
+        "storage backend",
+        "message database",
+        "archival system",
+        "data retention",
+        "backup location",
+        "conversation cache",
+        "storage layer"
+      ],
+      [
+        "chat history persistence mechanism",
+        "conversation database backend storage",
+        "message log archival system",
+        "session data retention policy",
+        "distributed chat storage layer",
+        "encrypted conversation cache",
+        "off-device backup for chats",
+        "long-term message storage"
+      ]
+    ],
+    "q_paraphrase_012": [
+      [
+        "reconnection deduplication logic",
+        "stale connection cleanup",
+        "server restart recovery",
+        "connection pool expiry",
+        "duplicate reconnect prevention",
+        "client disconnect handling"
+      ],
+      [
+        "connection cleanup",
+        "reconnection deduplication",
+        "connection pooling",
+        "restart recovery",
+        "duplicate filtering",
+        "connection throttling",
+        "lifecycle management",
+        "stale removal"
+      ],
+      [
+        "connection pool cleanup after restart",
+        "stale session timeout eviction",
+        "reconnection deduplication logic",
+        "TCP connection state reset",
+        "socket cleanup on server bounce",
+        "lingering connection timeout",
+        "duplicate client reconnect prevention",
+        "graceful connection termination"
+      ]
+    ],
+    "q_paraphrase_013": [
+      [
+        "automatic thread title generation",
+        "title inference mechanism",
+        "LLM-based naming",
+        "thread metadata auto-population",
+        "smart thread naming",
+        "title derivation logic"
+      ],
+      [
+        "auto title generation",
+        "smart naming",
+        "title inference",
+        "naming algorithm",
+        "automatic assignment",
+        "title service",
+        "naming intelligence",
+        "AI title"
+      ],
+      [
+        "automated thread title generation",
+        "AI-generated conversation subject lines",
+        "semantic title extraction",
+        "title synthesis from messages",
+        "first message content summarization",
+        "LLM-based naming",
+        "topic inference for titles",
+        "auto-naming on thread init"
+      ]
+    ],
+    "q_paraphrase_014": [
+      [
+        "empty conversation filtering",
+        "sidebar visibility rules",
+        "thread display conditions",
+        "test thread cleanup",
+        "empty state handling",
+        "conversation retention policy"
+      ],
+      [
+        "sidebar filter",
+        "visibility rules",
+        "thread filtering",
+        "empty removal",
+        "display logic",
+        "thread archival",
+        "cleanup rules",
+        "filter conditions"
+      ],
+      [
+        "empty thread visibility filtering",
+        "sidebar display logic",
+        "test conversation removal",
+        "thread pruning policy",
+        "sidebar state persistence",
+        "conversation cleanup heuristics",
+        "thread list deduplication",
+        "ghost thread removal"
+      ]
+    ],
+    "q_paraphrase_015": [
+      [
+        "new conversation initialization",
+        "create button flow",
+        "thread creation workflow",
+        "UI action handler",
+        "conversation startup process"
+      ],
+      [
+        "button click handler",
+        "thread creation flow",
+        "action dispatch",
+        "initialization sequence",
+        "event handler",
+        "action sequence",
+        "creation trigger",
+        "new thread flow"
+      ],
+      [
+        "new chat button click handler",
+        "conversation creation entry point",
+        "UI action flow",
+        "modal or form launch",
+        "new thread initialization",
+        "button event binding",
+        "conversation factory invocation",
+        "UI to backend action mapping"
+      ]
+    ],
+    "q_paraphrase_016": [
+      [
+        "real-time run output streaming",
+        "subagent progress display",
+        "live execution visualization",
+        "run status updates",
+        "async result rendering",
+        "incremental output display"
+      ],
+      [
+        "real-time streaming",
+        "live progress",
+        "async display",
+        "streaming output",
+        "progress updates",
+        "live rendering",
+        "execution visualization",
+        "agent output display"
+      ],
+      [
+        "live agent output streaming",
+        "real-time subagent progress display",
+        "incremental result rendering",
+        "WebSocket agent updates",
+        "polling mechanism for agent status",
+        "agent run progress notification",
+        "partial output display",
+        "streaming agent execution results"
+      ]
+    ],
+    "q_paraphrase_017": [
+      [
+        "job timeout configuration",
+        "task execution limits",
+        "timeout per job type",
+        "background job scheduling",
+        "timeout variance",
+        "task timeout policy"
+      ],
+      [
+        "timeout configuration",
+        "timeout policy",
+        "job duration",
+        "timeout standardization",
+        "timeout enforcement",
+        "uniform timeout",
+        "timeout limits",
+        "timeout settings"
+      ],
+      [
+        "job timeout configuration",
+        "uniform timeout across jobs",
+        "background task timeout policy",
+        "timeout heterogeneity",
+        "job-specific timeout values",
+        "scheduler timeout enforcement",
+        "timeout differentiation by type",
+        "configurable job timeouts"
+      ]
+    ],
+    "q_paraphrase_018": [
+      [
+        "background job rate limiting",
+        "resource consumption control",
+        "job queue concurrency limits",
+        "worker pool management",
+        "load balancing strategy",
+        "backpressure handling",
+        "task concurrency cap"
+      ],
+      [
+        "rate limiting",
+        "resource limits",
+        "concurrency control",
+        "job queue",
+        "load management",
+        "execution throttling",
+        "resource allocation",
+        "job throttling"
+      ],
+      [
+        "background job resource throttling",
+        "worker process concurrency limits",
+        "CPU memory usage bounds",
+        "job queue rate limiting",
+        "resource contention prevention",
+        "process isolation strategy",
+        "load balancing worker pools",
+        "system overload protection"
+      ]
+    ],
+    "q_paraphrase_019": [
+      [
+        "daily activity recap generation",
+        "recap compilation logic",
+        "summary report destination",
+        "scheduled digest generation",
+        "day summary delivery",
+        "report storage location"
+      ],
+      [
+        "summary generation",
+        "daily digest",
+        "recap service",
+        "summary compilation",
+        "delivery mechanism",
+        "scheduled recap",
+        "recap destination",
+        "auto summarization"
+      ],
+      [
+        "daily recap generation logic",
+        "digest compilation service",
+        "day summary destination",
+        "end-of-day report routing",
+        "recap notification delivery",
+        "summary aggregation mechanism",
+        "daily digest storage",
+        "recap message composition"
+      ]
+    ],
+    "q_paraphrase_020": [
+      [
+        "cost tracking granularity",
+        "spend attribution model",
+        "usage-based billing",
+        "team-level cost tracking",
+        "workflow billing breakdown",
+        "resource cost allocation"
+      ],
+      [
+        "cost allocation",
+        "billing system",
+        "usage tracking",
+        "cost reporting",
+        "team billing",
+        "workflow billing",
+        "cost attribution",
+        "spend reporting"
+      ],
+      [
+        "team-level usage billing",
+        "workflow cost attribution",
+        "spend metering by group",
+        "billing granularity per entity",
+        "cost allocation strategy",
+        "usage tracking infrastructure",
+        "team quota management",
+        "workflow resource pricing"
+      ]
+    ],
+    "q_verbatim_011": [
+      [
+        "whitelist blacklist combination",
+        "permission default-allow restricted",
+        "deny rules constraint model",
+        "security policy allowlist based",
+        "permissive access control",
+        "explicit deny list",
+        "access control hierarchy",
+        "restrictive security rails"
+      ],
+      [
+        "default deny principle",
+        "zero trust security",
+        "whitelist blacklist pattern",
+        "permission authorization control",
+        "access control list",
+        "security denylist pattern",
+        "authorization rules enforcement"
+      ],
+      [
+        "deny rules",
+        "whitelist enforcement",
+        "access control layers",
+        "security policy",
+        "explicit-deny pattern",
+        "positive-list approach",
+        "layered authorization",
+        "rule composition"
+      ]
+    ],
+    "q_verbatim_012": [
+      [
+        "plugin system dynamic loading",
+        "skill bundle agent tools",
+        "executable module library",
+        "on-demand script packages",
+        "tool plugin architecture",
+        "modular tool bundles",
+        "agent skill loader",
+        "self contained package"
+      ],
+      [
+        "agent plugin system",
+        "dynamic module loading",
+        "modular architecture",
+        "scriptable tool capability",
+        "agent extension framework",
+        "on-demand tool bundle",
+        "runtime capability system"
+      ],
+      [
+        "plugin architecture",
+        "modular capabilities",
+        "dynamic loading",
+        "tool bundles",
+        "scriptable extensions",
+        "runtime module loading",
+        "agent toolkits",
+        "lazy loading"
+      ]
+    ],
+    "q_verbatim_013": [
+      [
+        "Telegram message queue system",
+        "bounded FIFO buffer chat",
+        "media file queue processing",
+        "per-channel message buffer",
+        "rate limited photo PDF",
+        "queue per conversation",
+        "file attachment queue",
+        "bounded queue implementation"
+      ],
+      [
+        "message queue system",
+        "Telegram bot integration",
+        "media file processing",
+        "chat buffer management",
+        "bounded queue per channel",
+        "message buffering architecture",
+        "Telegram media handler"
+      ],
+      [
+        "Telegram integration",
+        "per-chat buffering",
+        "media file queue",
+        "FIFO queue pattern",
+        "chat isolation",
+        "message queue system",
+        "bounded buffer",
+        "queue architecture"
+      ]
+    ],
+    "q_verbatim_014": [
+      [
+        "trunk based development workflow",
+        "short lived feature branches",
+        "main branch direct merge",
+        "no secondary branch strategy",
+        "continuous integration branching",
+        "trunk only workflow",
+        "branch merge strategy",
+        "trunk main branch"
+      ],
+      [
+        "trunk-based development",
+        "mainline continuous integration",
+        "feature branch strategy",
+        "git workflow direct",
+        "branch integration policy",
+        "continuous deployment flow",
+        "no feature branches"
+      ],
+      [
+        "trunk-based development",
+        "mainline integration",
+        "direct main merges",
+        "continuous integration",
+        "short-lived branches",
+        "single integration point",
+        "CI/CD workflow",
+        "feature branch discipline"
+      ]
+    ],
+    "q_verbatim_015": [
+      [
+        "widget snapping alignment system",
+        "magnetic panel docking",
+        "edge alignment UI behavior",
+        "auto snap panels together",
+        "magnetism UI component",
+        "panel welding layout",
+        "snap to edge UI",
+        "magnetic snap behavior"
+      ],
+      [
+        "panel docking behavior",
+        "magnetic snap feature",
+        "widget auto-alignment",
+        "snap-to-grid layout",
+        "panel magnetism system",
+        "widget edge attachment",
+        "UI layout behavior"
+      ],
+      [
+        "widget snapping",
+        "magnetic alignment",
+        "edge docking",
+        "automatic alignment",
+        "responsive layout",
+        "panel docking",
+        "visual alignment",
+        "grid snapping"
+      ]
+    ],
+    "q_verbatim_016": [
+      [
+        "feedback loop system design",
+        "periodic reflection job",
+        "closed loop feedback",
+        "belief state tracking",
+        "survey data collection",
+        "nightly batch job",
+        "loop closure mechanism",
+        "periodic system update"
+      ],
+      [
+        "feedback loop system",
+        "reflection job automation",
+        "periodic survey feedback",
+        "belief state tracking",
+        "closed-loop monitoring",
+        "nightly reflection automation",
+        "survey configuration system"
+      ],
+      [
+        "nightly reflection",
+        "belief state updates",
+        "feedback loop",
+        "automated evaluation",
+        "survey-driven",
+        "closed-loop system",
+        "periodic introspection",
+        "state tracking"
+      ]
+    ],
+    "q_verbatim_017": [
+      [
+        "concise output no summary",
+        "brief response style",
+        "minimal trailing text",
+        "avoid recap summaries",
+        "terse communication preference",
+        "no trailing summary",
+        "concise communication",
+        "summary-free responses"
+      ],
+      [
+        "communication style preference",
+        "brief output format",
+        "no summary recap",
+        "concise response style",
+        "minimal explanation preferred",
+        "direct answer delivery",
+        "terse output"
+      ],
+      [
+        "response format preference",
+        "summary exclusion",
+        "brief output style",
+        "direct communication",
+        "output style rule",
+        "minimal response",
+        "no-recap convention",
+        "communication guideline"
+      ]
+    ],
+    "q_verbatim_018": [
+      [
+        "Zsh default syntax",
+        "shell script examples",
+        "Zsh bash preference",
+        "code example dialect",
+        "shell syntax convention",
+        "Zsh script examples",
+        "shell language choice",
+        "bash alternative language"
+      ],
+      [
+        "Zsh shell preference",
+        "command-line syntax style",
+        "scripting language default",
+        "shell example format",
+        "terminal code syntax",
+        "shell script style",
+        "Zsh scripting"
+      ],
+      [
+        "Zsh preference",
+        "shell scripting examples",
+        "code snippet language",
+        "default shell",
+        "command syntax style",
+        "example language choice",
+        "shell code samples",
+        "Zsh default"
+      ]
+    ],
+    "q_verbatim_019": [
+      [
+        "new commit preferred amend",
+        "git commit strategy",
+        "avoid amend commits",
+        "fresh commit workflow",
+        "commit history preference",
+        "no commit amend",
+        "new commits preferred",
+        "commit creation pattern"
+      ],
+      [
+        "git commit strategy",
+        "linear history preference",
+        "commit workflow pattern",
+        "no amended commits",
+        "fresh commit creation",
+        "immutable history preference",
+        "commit immutability"
+      ],
+      [
+        "git commit strategy",
+        "avoid amend",
+        "new commit approach",
+        "commit independence",
+        "fresh commit",
+        "commit history philosophy",
+        "commit discipline",
+        "sequential commits"
+      ]
+    ],
+    "q_verbatim_020": [
+      [
+        "no em dashes",
+        "avoid em dash",
+        "dash punctuation preference",
+        "punctuation style guide",
+        "em dash avoidance",
+        "punctuation convention",
+        "dash style preference",
+        "typography rules"
+      ],
+      [
+        "punctuation style preference",
+        "typography convention",
+        "writing format rule",
+        "text formatting preference",
+        "punctuation avoidance",
+        "dash typography",
+        "style guide punctuation"
+      ],
+      [
+        "em dash avoidance",
+        "punctuation rule",
+        "typography style",
+        "text formatting",
+        "dash usage",
+        "style guideline",
+        "character preference",
+        "hyphen alternative"
+      ]
+    ],
+    "q_paraphrase_031": [
+      [
+        "speech synthesis local or remote",
+        "TTS processing location",
+        "on-device voice generation",
+        "audio synthesis privacy",
+        "cloud-based TTS service",
+        "offline speech support",
+        "TTS deployment model"
+      ],
+      [
+        "text to speech processing location",
+        "on-device vs cloud TTS",
+        "speech synthesis backend",
+        "local audio generation",
+        "TTS privacy implications"
+      ],
+      [
+        "speech synthesis",
+        "offline processing",
+        "voice generation",
+        "audio latency",
+        "network vs local",
+        "compute location",
+        "privacy considerations",
+        "streaming audio"
+      ]
+    ],
+    "q_paraphrase_032": [
+      [
+        "agent filesystem access scope",
+        "attach machine file permissions",
+        "agent directory traversal limits",
+        "file access sandboxing agent",
+        "filesystem boundaries security",
+        "agent read-only access",
+        "path traversal restrictions"
+      ],
+      [
+        "filesystem access permissions agent",
+        "sandbox boundaries file visibility",
+        "attach machine scope limits",
+        "agent file access restrictions"
+      ],
+      [
+        "directory permissions",
+        "file access scope",
+        "sandbox boundaries",
+        "filesystem isolation",
+        "access control",
+        "what's visible",
+        "security boundaries",
+        "attachment scope"
+      ]
+    ],
+    "q_paraphrase_033": [
+      [
+        "sqlite migration study findings",
+        "database alternatives recommendation",
+        "move away from sqlite",
+        "sqlite deprecation strategy",
+        "migration path sqlite",
+        "database migration plan",
+        "replacement for sqlite"
+      ],
+      [
+        "SQLite deprecation recommendations",
+        "database migration study findings",
+        "storage technology upgrade path",
+        "alternative database options"
+      ],
+      [
+        "database deprecation",
+        "backend infrastructure",
+        "SQLite alternatives",
+        "data migration findings",
+        "performance analysis",
+        "legacy systems",
+        "storage technology",
+        "migration recommendations"
+      ]
+    ],
+    "q_paraphrase_034": [
+      [
+        "model selection menu",
+        "thinking effort control",
+        "reasoning token budget",
+        "computation depth setting",
+        "extended thinking toggle",
+        "model picker interface",
+        "inference parameters control"
+      ],
+      [
+        "model selection configuration",
+        "thinking depth settings",
+        "inference computation level",
+        "reasoning depth control",
+        "model picker interface"
+      ],
+      [
+        "reasoning settings",
+        "inference controls",
+        "thinking budget",
+        "extended cognition",
+        "compute allocation",
+        "performance tuning",
+        "model configuration UI",
+        "processing depth"
+      ]
+    ],
+    "q_paraphrase_035": [
+      [
+        "chat font size persistent",
+        "typography display settings",
+        "font preference save",
+        "text appearance customization",
+        "font settings permanent",
+        "display font configuration",
+        "UI text sizing"
+      ],
+      [
+        "chat UI font customization",
+        "font preference persistence",
+        "settings save after restart",
+        "typography configuration options"
+      ],
+      [
+        "typeface options",
+        "appearance persistence",
+        "user preferences",
+        "text styling",
+        "settings storage",
+        "theme customization",
+        "typography settings",
+        "UI configuration"
+      ]
+    ],
+    "q_paraphrase_036": [
+      [
+        "desktop notification categories",
+        "alert grouping system",
+        "notification mute settings",
+        "suppress specific alerts",
+        "notification channel control",
+        "grouped notifications management",
+        "alert filtering options"
+      ],
+      [
+        "desktop notification grouping",
+        "alert muting options",
+        "notification filtering categories",
+        "alert suppression settings"
+      ],
+      [
+        "notification grouping",
+        "alert suppression",
+        "notification filtering",
+        "do-not-disturb",
+        "quiet mode",
+        "notification channels",
+        "alert management",
+        "muting strategy"
+      ]
+    ],
+    "q_paraphrase_037": [
+      [
+        "theme customization beyond dark light",
+        "alternative color schemes",
+        "UI appearance options",
+        "theme variants available",
+        "visual style alternatives",
+        "custom theme support",
+        "appearance theme modes"
+      ],
+      [
+        "UI theme alternatives",
+        "visual style variants",
+        "color scheme customization",
+        "theme beyond light dark"
+      ],
+      [
+        "theme variants",
+        "accent colors",
+        "color schemes",
+        "interface appearance",
+        "visual customization",
+        "high contrast mode",
+        "appearance options",
+        "UI styling"
+      ]
+    ],
+    "q_paraphrase_038": [
+      [
+        "dock system tray icon",
+        "minimize to tray",
+        "compact dock appearance",
+        "dock reduction mode",
+        "window dock shrink",
+        "icon-only dock mode",
+        "tray minimization"
+      ],
+      [
+        "dock size minimization",
+        "collapse dock to icon",
+        "minimal dock appearance",
+        "UI compacting options"
+      ],
+      [
+        "dock minimization",
+        "floating panel",
+        "collapsed interface",
+        "icon-only mode",
+        "autohide settings",
+        "compact view",
+        "UI sizing",
+        "taskbar reduction"
+      ]
+    ],
+    "q_paraphrase_039": [
+      [
+        "artifact external editor",
+        "export artifact file",
+        "open artifact outside chat",
+        "save generated artifact",
+        "artifact export location",
+        "artifact file viewer",
+        "external artifact viewer"
+      ],
+      [
+        "artifact external viewing",
+        "export generated output",
+        "open artifact in editor",
+        "external artifact export"
+      ],
+      [
+        "external editor",
+        "code viewer",
+        "standalone export",
+        "file opening",
+        "external application",
+        "artifact export",
+        "preview options",
+        "output destination"
+      ]
+    ],
+    "q_paraphrase_040": [
+      [
+        "close button hitbox size",
+        "window control clickability",
+        "close button edge behavior",
+        "target area accessibility",
+        "button hit area",
+        "window chrome usability",
+        "click target precision"
+      ],
+      [
+        "close button click target",
+        "window control hitbox sizing",
+        "UI button accessibility",
+        "close button positioning edge"
+      ],
+      [
+        "hit area sizing",
+        "button accessibility",
+        "cursor precision",
+        "UI hit targets",
+        "interaction surface",
+        "button positioning",
+        "clickability issues",
+        "edge behavior"
+      ]
+    ],
+    "q_paraphrase_041": [
+      [
+        "alert routing decision logic",
+        "escalation policy configuration",
+        "on-call paging thresholds",
+        "incident severity classification rules",
+        "critical vs routine alerts",
+        "alert fatigue prevention strategy"
+      ],
+      [
+        "alerting criteria",
+        "on-call policies",
+        "incident severity thresholds",
+        "escalation conditions",
+        "alert routing logic",
+        "critical notification",
+        "paging rules",
+        "notification threshold"
+      ],
+      [
+        "alert severity thresholds",
+        "escalation routing policy",
+        "on-call notification rules",
+        "incident triage levels",
+        "alerting fatigue prevention",
+        "escalation trigger algorithm",
+        "notification dispatch criteria"
+      ]
+    ],
+    "q_paraphrase_042": [
+      [
+        "operator name convention preference",
+        "formal vs informal address",
+        "workplace communication etiquette standard",
+        "professional naming protocol",
+        "respectful operator contact format"
+      ],
+      [
+        "naming conventions",
+        "communication etiquette",
+        "professional formality",
+        "operator address protocol",
+        "team communication standards",
+        "formal vs informal",
+        "address format",
+        "contact protocols"
+      ],
+      [
+        "team naming conventions",
+        "communication formality level",
+        "operator identity protocol",
+        "professional courtesy standards",
+        "addressing preferences"
+      ]
+    ],
+    "q_paraphrase_043": [
+      [
+        "operator tool theme preference",
+        "dark mode light mode",
+        "UI visual appearance setup",
+        "operator interface configuration",
+        "tool appearance configuration",
+        "operator visual preference"
+      ],
+      [
+        "dark mode preference",
+        "light mode",
+        "color scheme",
+        "operator interface preferences",
+        "visual appearance settings",
+        "theme selection",
+        "UI appearance",
+        "interface customization"
+      ],
+      [
+        "dark mode preference",
+        "editor theme configuration",
+        "UI appearance settings",
+        "display customization",
+        "tool color scheme"
+      ]
+    ],
+    "q_paraphrase_044": [
+      [
+        "claim verification requirement",
+        "assumption validation standard",
+        "fact checking before assertion",
+        "unverified statement policy",
+        "accuracy requirement for assertions",
+        "due diligence before truth claims"
+      ],
+      [
+        "verification requirement",
+        "fact-checking protocol",
+        "assumption validation",
+        "system boundaries",
+        "validation at entry points",
+        "trust boundaries",
+        "internal code validation",
+        "input validation"
+      ],
+      [
+        "fact-checking standards",
+        "evidence-based communication",
+        "verification before assertion",
+        "assumption validation",
+        "claim verification requirement"
+      ]
+    ],
+    "q_paraphrase_045": [
+      [
+        "interactive command execution handoff",
+        "real-time process control transfer",
+        "operator manual intervention point",
+        "command shell execution delegation",
+        "live command interaction protocol"
+      ],
+      [
+        "interactive subprocess",
+        "process delegation",
+        "interactive execution handling",
+        "subprocess communication",
+        "foreground process",
+        "IPC patterns",
+        "async tasks",
+        "spawning processes"
+      ],
+      [
+        "interactive subprocess management",
+        "command control transfer",
+        "user input delegation",
+        "interactive execution protocol",
+        "shell session handoff"
+      ]
+    ],
+    "q_paraphrase_046": [
+      [
+        "operator email contact method",
+        "best email communication practice",
+        "operator email address protocol",
+        "email delivery standard",
+        "operator notification method",
+        "email as contact channel"
+      ],
+      [
+        "operator email address",
+        "contact method",
+        "communication channel",
+        "email protocol",
+        "operator contact information",
+        "communication best practices",
+        "outreach method",
+        "email communication"
+      ],
+      [
+        "email communication protocol",
+        "operator contact method",
+        "message delivery preference",
+        "contact address format",
+        "email preference settings"
+      ]
+    ],
+    "q_paraphrase_047": [
+      [
+        "markdown documentation line structure",
+        "sentence-by-sentence formatting convention",
+        "doc readability guideline",
+        "markdown style standard",
+        "text formatting best practice"
+      ],
+      [
+        "markdown style guide",
+        "line breaking conventions",
+        "prose formatting",
+        "paragraph structure",
+        "text wrapping rules",
+        "documentation standards",
+        "sentence formatting",
+        "markdown best practices"
+      ],
+      [
+        "markdown formatting standards",
+        "line-by-line doc structure",
+        "sentence-level formatting",
+        "documentation style guide",
+        "writing convention rules"
+      ]
+    ],
+    "q_paraphrase_048": [
+      [
+        "shared branch editing policy",
+        "direct code modification protocol",
+        "branch collaboration standard",
+        "code review requirement",
+        "git workflow branching strategy"
+      ],
+      [
+        "branching strategy",
+        "direct commits",
+        "collaborative workflow",
+        "code review requirements",
+        "branch protection policy",
+        "PR workflow",
+        "development workflow standards",
+        "shared branch editing"
+      ],
+      [
+        "git workflow protocol",
+        "code review requirement",
+        "branch editing policy",
+        "collaboration standards",
+        "shared branch guidelines"
+      ]
+    ],
+    "q_paraphrase_049": [
+      [
+        "file search threading strategy",
+        "background thread responsibility",
+        "main thread blocking concern",
+        "worker thread task allocation",
+        "concurrent file search pattern"
+      ],
+      [
+        "threading model",
+        "worker threads",
+        "background tasks",
+        "concurrency strategy",
+        "async operations",
+        "I/O blocking",
+        "resource allocation",
+        "thread pooling"
+      ],
+      [
+        "threading strategy decisions",
+        "file operation concurrency",
+        "background task execution",
+        "worker thread usage",
+        "main vs helper thread"
+      ]
+    ],
+    "q_paraphrase_050": [
+      [
+        "bug reproduction requirement",
+        "user-triggered error path",
+        "bug verification before fix",
+        "production scenario testing",
+        "realistic error reproduction standard",
+        "assumption-free bug fixing"
+      ],
+      [
+        "bug reproduction",
+        "manual testing first",
+        "reproduction steps",
+        "golden path testing",
+        "verify before fixing",
+        "test-driven debugging",
+        "observational verification",
+        "user flow testing"
+      ],
+      [
+        "bug reproduction methodology",
+        "user scenario testing",
+        "verification before fixing",
+        "actual behavior confirmation",
+        "reproduce before attempting fix"
+      ]
+    ],
+    "q_vocab-mismatch_001": [
+      [
+        "semantic search",
+        "vector indexing",
+        "full scan avoidance",
+        "relevance ranking",
+        "similarity matching",
+        "embedded retrieval",
+        "fast lookup"
+      ],
+      [
+        "vector embeddings",
+        "semantic search indexing",
+        "similarity matching algorithm",
+        "retrieval optimization",
+        "full-text search alternative",
+        "nearest neighbor search",
+        "fast lookup mechanism"
+      ],
+      [
+        "indexing",
+        "similarity matching",
+        "embedding search",
+        "retrieval efficiency",
+        "full-text search",
+        "semantic search",
+        "vector database"
+      ]
+    ],
+    "q_vocab-mismatch_002": [
+      [
+        "automatic user profiling",
+        "persistent memory",
+        "self-managed tracking",
+        "user preference learning",
+        "autonomous data collection",
+        "memory persistence"
+      ],
+      [
+        "auto-save functionality",
+        "persistent state management",
+        "user metadata storage",
+        "automatic data collection",
+        "built-in persistence layer",
+        "profile tracking system",
+        "memory storage backend"
+      ],
+      [
+        "automatic tracking",
+        "persistent state",
+        "user metadata",
+        "state management",
+        "memory system",
+        "automatic collection",
+        "persistent storage"
+      ]
+    ],
+    "q_vocab-mismatch_003": [
+      [
+        "staging environment",
+        "feature flags",
+        "canary deployment",
+        "beta testing",
+        "gradual rollout",
+        "experimental releases"
+      ],
+      [
+        "staging deployment environment",
+        "beta testing phase",
+        "canary release mechanism",
+        "feature flags system",
+        "gradual rollout strategy",
+        "experimental feature testing",
+        "pre-release validation"
+      ],
+      [
+        "staging environment",
+        "canary deployment",
+        "beta testing",
+        "gradual rollout",
+        "deployment strategy",
+        "pre-release testing",
+        "feature flags"
+      ]
+    ],
+    "q_vocab-mismatch_004": [
+      [
+        "automatic rollback",
+        "post-release failures",
+        "health monitoring",
+        "auto-recovery",
+        "deployment safety",
+        "incident response"
+      ],
+      [
+        "automatic rollback mechanism",
+        "incident response automation",
+        "deployment health monitoring",
+        "automatic failure recovery",
+        "canary monitoring alerts",
+        "release safeguards"
+      ],
+      [
+        "automatic rollback",
+        "deployment recovery",
+        "failure detection",
+        "incident response",
+        "auto-recovery",
+        "health monitoring",
+        "deployment safety"
+      ]
+    ],
+    "q_vocab-mismatch_005": [
+      [
+        "local file storage",
+        "disk storage location",
+        "memory file path",
+        "private data persistence"
+      ],
+      [
+        "server infrastructure",
+        "data center location",
+        "on-premises storage",
+        "cloud storage model",
+        "geographic data placement",
+        "local storage backend"
+      ],
+      [
+        "data residency",
+        "server location",
+        "local storage",
+        "infrastructure deployment",
+        "storage location",
+        "data center",
+        "physical infrastructure"
+      ]
+    ],
+    "q_vocab-mismatch_006": [
+      [
+        "legacy task runner",
+        "deprecated build tool",
+        "obsolete job executor",
+        "old automation",
+        "residual code"
+      ],
+      [
+        "deprecated tools",
+        "legacy job scheduler",
+        "background task runner",
+        "cron job system",
+        "abandoned components",
+        "technical debt remnants"
+      ],
+      [
+        "legacy code",
+        "deprecated tools",
+        "unused dependencies",
+        "old dependencies",
+        "build system",
+        "automation tools",
+        "legacy implementation"
+      ]
+    ],
+    "q_vocab-mismatch_007": [
+      [
+        "audit logging format",
+        "activity logs",
+        "log format",
+        "operation recording",
+        "behind scenes logging"
+      ],
+      [
+        "audit logging format",
+        "activity event recording",
+        "structured log format",
+        "trace logging system",
+        "event serialization",
+        "log file structure"
+      ],
+      [
+        "logging format",
+        "audit logs",
+        "event recording",
+        "activity tracking",
+        "serialization format",
+        "log structure",
+        "activity history"
+      ]
+    ],
+    "q_vocab-mismatch_008": [
+      [
+        "load balancing",
+        "credential rotation",
+        "request distribution",
+        "credential pooling",
+        "resource allocation"
+      ],
+      [
+        "load balancing strategy",
+        "credential rotation",
+        "connection pooling",
+        "request routing mechanism",
+        "rate limiting enforcement",
+        "multi-connection distribution"
+      ],
+      [
+        "load balancing",
+        "credential rotation",
+        "request routing",
+        "connection pooling",
+        "rate limiting",
+        "traffic distribution",
+        "request queuing"
+      ]
+    ],
+    "q_vocab-mismatch_009": [
+      [
+        "credential storage",
+        "password vault",
+        "secret persistence",
+        "encrypted credentials",
+        "credential encryption"
+      ],
+      [
+        "credential vault",
+        "encrypted secret storage",
+        "password encryption",
+        "secret management system",
+        "secure storage backend"
+      ],
+      [
+        "credential vault",
+        "password encryption",
+        "secret management",
+        "secure storage",
+        "encrypted credentials",
+        "key management",
+        "credential protection"
+      ]
+    ],
+    "q_vocab-mismatch_010": [
+      [
+        "access control",
+        "permission restrictions",
+        "sensitive operation guards",
+        "capability limitations",
+        "operation restrictions"
+      ],
+      [
+        "permission controls",
+        "access control boundaries",
+        "operational restrictions",
+        "safety guardrails",
+        "restricted operations list",
+        "privilege boundaries"
+      ],
+      [
+        "access control",
+        "permission restrictions",
+        "safety guardrails",
+        "operation restrictions",
+        "authorization",
+        "privilege separation",
+        "permission model"
+      ]
+    ],
+    "q_paraphrase_021": [
+      [
+        "CrashLoopBackOff pattern",
+        "recovery restart mechanism",
+        "health check failures",
+        "monitoring crash detection",
+        "readiness probe configuration",
+        "restart backoff strategy",
+        "pod lifecycle events"
+      ],
+      [
+        "restart loop detection",
+        "crash loop prevention",
+        "backoff strategy",
+        "circuit breaker pattern",
+        "service resilience",
+        "supervisor behavior",
+        "failure recovery",
+        "exponential backoff"
+      ],
+      [
+        "crash loop detection",
+        "restart loop mitigation",
+        "service failure recovery",
+        "infinite restart handling",
+        "cascading failures prevention",
+        "circuit breaker patterns",
+        "deadlock scenarios",
+        "resilience mechanisms"
+      ]
+    ],
+    "q_paraphrase_022": [
+      [
+        "log query interface",
+        "audit trail analysis",
+        "historical data exploration",
+        "database log access",
+        "event store querying",
+        "ad hoc analysis",
+        "query builder"
+      ],
+      [
+        "event log SQL",
+        "historical data querying",
+        "audit trail queries",
+        "time-series analysis",
+        "event analytics",
+        "log database access",
+        "query builder",
+        "temporal data"
+      ],
+      [
+        "event log SQL querying",
+        "historical event search",
+        "audit trail queries",
+        "event sourcing temporal access",
+        "log analytics interface",
+        "time-series event filtering",
+        "event store queries",
+        "historical data retrieval"
+      ]
+    ],
+    "q_paraphrase_023": [
+      [
+        "password input masking",
+        "sensitive data redaction",
+        "log filtering for credentials",
+        "hidden input fields",
+        "secure credential handling",
+        "chat history privacy",
+        "non-echoed prompts"
+      ],
+      [
+        "password masking",
+        "sensitive data redaction",
+        "hidden credential input",
+        "log sanitization",
+        "secure prompts",
+        "input obfuscation",
+        "chat privacy",
+        "credential protection"
+      ],
+      [
+        "hidden prompt input",
+        "password masking mechanism",
+        "sensitive data redaction",
+        "secret input handling",
+        "chat log sanitization",
+        "credential obfuscation",
+        "private input prompts",
+        "secure credential entry"
+      ]
+    ],
+    "q_paraphrase_024": [
+      [
+        "multiple OAuth connections",
+        "account aggregation",
+        "duplicate provider accounts",
+        "concurrent authentication",
+        "multi-account linking",
+        "provider connection limits",
+        "OAuth account linking"
+      ],
+      [
+        "multiple accounts support",
+        "account linking",
+        "provider consolidation",
+        "duplicate provider handling",
+        "multi-account setup",
+        "identity federation",
+        "account management",
+        "provider integration"
+      ],
+      [
+        "multiple account linking",
+        "multi-account support",
+        "duplicate provider accounts",
+        "account consolidation",
+        "provider credential multiplexing",
+        "account switching",
+        "parallel provider connections",
+        "account management UI"
+      ]
+    ],
+    "q_paraphrase_025": [
+      [
+        "app singleton behavior",
+        "multiple desktop instances",
+        "window management",
+        "concurrent app sessions",
+        "instance launching",
+        "dual window behavior",
+        "application instances"
+      ],
+      [
+        "single instance mode",
+        "multi-window support",
+        "app instance management",
+        "window spawning",
+        "duplicate launch handling",
+        "application behavior",
+        "process management",
+        "window behavior"
+      ],
+      [
+        "multi-instance support",
+        "desktop app instances",
+        "window spawning behavior",
+        "concurrent app sessions",
+        "application instance management",
+        "singleton pattern implementation",
+        "window reuse strategy",
+        "app launch behavior"
+      ]
+    ],
+    "q_paraphrase_026": [
+      [
+        "connector architecture overview",
+        "system design components",
+        "integration framework structure",
+        "connector modules",
+        "architectural layers",
+        "architecture specification"
+      ],
+      [
+        "connector architecture",
+        "system components",
+        "design documentation",
+        "integration points",
+        "module structure",
+        "technical specification",
+        "system overview",
+        "connector modules"
+      ],
+      [
+        "connector architecture overview",
+        "system design components",
+        "subsystem interactions",
+        "connector framework layers",
+        "technical module design",
+        "architecture documentation",
+        "connector integration points",
+        "system design documentation"
+      ]
+    ],
+    "q_paraphrase_027": [
+      [
+        "custom tool interface",
+        "embedded plugin UI",
+        "panel component rendering",
+        "tool dashboard display",
+        "UI integration framework",
+        "custom visualization",
+        "panel plugin architecture"
+      ],
+      [
+        "custom UI panels",
+        "tool visualization",
+        "embedded UI",
+        "panel rendering",
+        "tool interface customization",
+        "UI injection",
+        "iframe integration",
+        "component rendering"
+      ],
+      [
+        "tool custom UI rendering",
+        "embedded interface support",
+        "panel UI extension",
+        "plugin interface capabilities",
+        "custom component integration",
+        "tool-provided interface",
+        "extensible panel display",
+        "custom tool UI"
+      ]
+    ],
+    "q_paraphrase_028": [
+      [
+        "workflow launcher interface",
+        "saved automation execution",
+        "multi-step playbook",
+        "orchestration interface",
+        "workflow storage location",
+        "automation management",
+        "workflow execution interface"
+      ],
+      [
+        "workflow execution",
+        "automation workflows",
+        "workflow launcher",
+        "workflow dashboard",
+        "saved workflow management",
+        "workflow scheduling",
+        "workflow orchestration",
+        "multi-step automation"
+      ],
+      [
+        "workflow execution interface",
+        "saved workflow launching",
+        "workflow management UI",
+        "automation workflow library",
+        "workflow orchestration interface",
+        "multi-step automation",
+        "workflow repository access",
+        "workflow trigger location"
+      ]
+    ],
+    "q_paraphrase_029": [
+      [
+        "skill improvement suggestions",
+        "reflection job capabilities",
+        "automated capability assessment",
+        "learning recommendations",
+        "skill enhancement",
+        "skill suggestion engine",
+        "reflection analysis"
+      ],
+      [
+        "skill suggestions",
+        "reflection system",
+        "skill recommendations",
+        "skill improvement",
+        "skill analysis",
+        "auto-suggestions",
+        "skill refinement",
+        "capability analysis"
+      ],
+      [
+        "skill refinement suggestions",
+        "reflection feedback mechanism",
+        "skill improvement recommendations",
+        "existing skill modifications",
+        "skill optimization",
+        "learning reflection system",
+        "skill evolution feedback",
+        "automated skill suggestions"
+      ]
+    ],
+    "q_paraphrase_030": [
+      [
+        "Telegram command support",
+        "slash command parsing",
+        "bot interaction methods",
+        "message command types",
+        "bot capabilities",
+        "structured messaging",
+        "message interpretation"
+      ],
+      [
+        "Telegram bot integration",
+        "command support",
+        "text commands",
+        "bot capabilities",
+        "chat commands",
+        "message parsing",
+        "bot interaction modes",
+        "command interface"
+      ],
+      [
+        "Telegram bot commands",
+        "slash command support",
+        "bot command interface",
+        "text command parsing",
+        "Telegram command syntax",
+        "bot capability features",
+        "command vs text mode",
+        "Telegram integration features"
+      ]
+    ],
+    "q_vocab-mismatch_011": [
+      [
+        "dynamic resource loading",
+        "job-triggered workflow selection",
+        "context-aware tool activation",
+        "conditional plugin retrieval",
+        "task-specific runbook loading",
+        "runtime capability selection"
+      ],
+      [
+        "contextual resource loading",
+        "task-based template selection",
+        "conditional playbook activation",
+        "job-type workflows",
+        "dynamic resource provisioning",
+        "role-specific configurations"
+      ],
+      [
+        "dynamic playbook loading",
+        "conditional template selection",
+        "job type triggers",
+        "workflow automation by task",
+        "on-demand resource retrieval",
+        "capability-based workflow"
+      ]
+    ],
+    "q_vocab-mismatch_012": [
+      [
+        "media persistence layer",
+        "attachment reliability",
+        "chat history integrity",
+        "upload resumption",
+        "file storage redundancy",
+        "message media retention"
+      ],
+      [
+        "media attachment handling",
+        "image persistence improvements",
+        "photo sync reliability",
+        "messaging app media backup",
+        "attachment loss prevention",
+        "storage resilience"
+      ],
+      [
+        "message attachment handling",
+        "image preservation in chat",
+        "media file persistence",
+        "chat integration reliability",
+        "attachment sync",
+        "photo message recovery"
+      ]
+    ],
+    "q_vocab-mismatch_013": [
+      [
+        "text-to-speech offline capability",
+        "voice synthesis local processing",
+        "TTS dependency requirements",
+        "offline audio generation",
+        "neural speech synthesis",
+        "client-side voice rendering"
+      ],
+      [
+        "text-to-speech offline capability",
+        "local voice synthesis",
+        "audio generation connectivity requirements",
+        "speech processing dependencies",
+        "offline TTS support"
+      ],
+      [
+        "text-to-speech dependencies",
+        "offline audio synthesis",
+        "voice generation requirements",
+        "TTS connectivity needs",
+        "local speech synthesis",
+        "audio output offline capability"
+      ]
+    ],
+    "q_vocab-mismatch_014": [
+      [
+        "draft branch storage strategy",
+        "work-in-progress lifecycle",
+        "incremental commit behavior",
+        "staging vs production timing",
+        "branch cleanup policy",
+        "long-lived feature branch handling"
+      ],
+      [
+        "WIP staging strategy",
+        "code integration timing",
+        "draft isolation period",
+        "deployment schedule",
+        "shared repository commit frequency",
+        "pending work retention"
+      ],
+      [
+        "work-in-progress staging",
+        "code review process",
+        "release timing strategy",
+        "draft vs production deployment",
+        "change management workflow",
+        "merge policy"
+      ]
+    ],
+    "q_vocab-mismatch_015": [
+      [
+        "dynamic backend routing selection",
+        "model availability detection",
+        "engine compatibility matching",
+        "capability-based load balancing",
+        "runtime API selection",
+        "feature-specific backend delegation"
+      ],
+      [
+        "backend routing selection logic",
+        "engine compatibility detection",
+        "service capability matching",
+        "dynamic backend allocation",
+        "feature parity checking",
+        "model availability routing"
+      ],
+      [
+        "backend routing logic",
+        "capability-based selection",
+        "model availability routing",
+        "multi-backend coordination",
+        "engine detection mechanism",
+        "conversation routing strategy"
+      ]
+    ],
+    "q_vocab-mismatch_016": [
+      [
+        "alert notification filtering",
+        "category-based muting",
+        "priority-tiered notifications",
+        "selective alert suppression",
+        "notification preference granularity",
+        "alert classification system"
+      ],
+      [
+        "granular notification filtering",
+        "alert type suppression",
+        "selective alert muting",
+        "priority-based notification control",
+        "warning categories management"
+      ],
+      [
+        "alert filtering granularity",
+        "notification preferences",
+        "selective alert suppression",
+        "notification categories",
+        "priority-based control",
+        "mute specific alert types"
+      ]
+    ],
+    "q_vocab-mismatch_017": [
+      [
+        "floating window snapping behavior",
+        "connected UI element synchronization",
+        "pane magnetic interaction",
+        "grouped element movement",
+        "spatial element coupling",
+        "coordinated window dragging"
+      ],
+      [
+        "floating pane coupling behavior",
+        "grouped window movement",
+        "UI panel synchronization",
+        "pane drag coordination",
+        "layout group dynamics"
+      ],
+      [
+        "floating pane magnetism",
+        "window snapping behavior",
+        "UI element coupling",
+        "drag physics interaction",
+        "pane linking behavior",
+        "floating panel dynamics"
+      ]
+    ],
+    "q_vocab-mismatch_018": [
+      [
+        "touch input corner precision",
+        "tap target boundary detection",
+        "edge region hit testing",
+        "corner tap improvement",
+        "touch accuracy enhancement",
+        "boundary detection refinement"
+      ],
+      [
+        "touch target accuracy corner regions",
+        "hit detection edge cases",
+        "corner tap registration",
+        "input boundary improvements",
+        "touch responsiveness fix"
+      ],
+      [
+        "touch hit detection",
+        "corner tap targeting",
+        "edge case accuracy",
+        "hitbox boundaries",
+        "tap registration improvements",
+        "coordinate precision"
+      ]
+    ],
+    "q_vocab-mismatch_019": [
+      [
+        "behavior consistency verification",
+        "actual vs claimed tracking",
+        "habit alignment auditing",
+        "behavior pattern monitoring",
+        "claim verification system",
+        "consistency checking mechanism"
+      ],
+      [
+        "behavioral consistency validation",
+        "stated versus actual monitoring",
+        "habit accuracy tracking",
+        "behavior drift detection",
+        "performance assertion verification"
+      ],
+      [
+        "behavioral consistency verification",
+        "claimed behavior monitoring",
+        "alignment tracking over time",
+        "compliance checking",
+        "action-statement match",
+        "behavior validation"
+      ]
+    ],
+    "q_vocab-mismatch_020": [
+      [
+        "user profile data export",
+        "personal data portability",
+        "assistant learning history download",
+        "user information backup",
+        "profile data extraction",
+        "personal intelligence export"
+      ],
+      [
+        "personal data export capability",
+        "learning history retrieval",
+        "user profile download",
+        "knowledge base backup access",
+        "training data export"
+      ],
+      [
+        "user data export",
+        "profile information retrieval",
+        "learning history download",
+        "personal data backup",
+        "knowledge extraction",
+        "training data access"
+      ]
+    ],
+    "q_paraphrase_051": [
+      [
+        "test maintenance policy",
+        "inherited defects scope",
+        "cleanup boundary decision",
+        "pre-existing test failures",
+        "test debt handling",
+        "related issue scope"
+      ],
+      [
+        "test maintenance",
+        "intermittent failures",
+        "unrelated fixes",
+        "technical debt",
+        "regression prevention",
+        "scope boundaries"
+      ],
+      [
+        "test maintenance philosophy",
+        "scope creep boundaries",
+        "pre-existing failure remediation",
+        "technical debt obligations",
+        "unrelated test failures",
+        "test reliability improvement",
+        "fixing unrelated bugs",
+        "current work scope"
+      ]
+    ],
+    "q_paraphrase_052": [
+      [
+        "technical justification",
+        "backing technical claims",
+        "substantiation requirement",
+        "peer review expectation",
+        "rigor standard",
+        "show your work"
+      ],
+      [
+        "backing recommendations",
+        "technical justification",
+        "data-driven decisions",
+        "rationale requirements",
+        "evidence standards"
+      ],
+      [
+        "recommendation justification standard",
+        "evidence standards",
+        "proposal support format",
+        "decision rationale expectations",
+        "backing technical claims",
+        "operator decision process",
+        "justification level expectations",
+        "evidence-backed recommendations"
+      ]
+    ],
+    "q_paraphrase_053": [
+      [
+        "exception sets precedent",
+        "standing rule override",
+        "policy change risk",
+        "one-off consequence",
+        "precedent from exception",
+        "override impact"
+      ],
+      [
+        "precedent setting",
+        "one-off exceptions",
+        "permanent overrides",
+        "standing rules",
+        "future implications"
+      ],
+      [
+        "temporary instruction precedent",
+        "standing rule permanence",
+        "override scope limits",
+        "instruction authority boundaries",
+        "one-time exceptions",
+        "rule change implications",
+        "precedent setting",
+        "temporary vs permanent"
+      ]
+    ],
+    "q_paraphrase_054": [
+      [
+        "approval requirement",
+        "destructive git operations",
+        "high-risk operation",
+        "safety confirmation gate",
+        "risky action protocol",
+        "pre-action check"
+      ],
+      [
+        "risky operations approval",
+        "force push safety",
+        "destructive actions",
+        "confirmation requirements",
+        "reversible steps"
+      ],
+      [
+        "approval before destructive operations",
+        "force push confirmation protocol",
+        "reversible operation threshold",
+        "git operation approval",
+        "high-risk command check",
+        "confirmation requirements",
+        "destructive operation boundaries",
+        "risky git operations"
+      ]
+    ],
+    "q_paraphrase_055": [
+      [
+        "notification style preference",
+        "alert delivery method",
+        "system vs in-app notification",
+        "alert mechanism choice",
+        "notification UX",
+        "delivery channel"
+      ],
+      [
+        "notification preferences",
+        "system alerts",
+        "toast styling",
+        "alert channels",
+        "user feedback"
+      ],
+      [
+        "notification modality preference",
+        "system vs app alerts",
+        "interrupt style preference",
+        "alert delivery channel",
+        "notification method",
+        "alert configuration",
+        "user notification preference",
+        "alert notification type"
+      ]
+    ],
+    "q_paraphrase_056": [
+      [
+        "atomic change principle",
+        "PR scope boundary",
+        "related vs unrelated changes",
+        "change granularity",
+        "bundling strategy",
+        "monolithic vs split"
+      ],
+      [
+        "PR scope",
+        "bundled commits",
+        "change organization",
+        "review practices",
+        "split versus bundle"
+      ],
+      [
+        "PR scope bundling",
+        "change atomicity",
+        "related modifications grouping",
+        "bundled change organization",
+        "PR structure practice",
+        "atomic change policy",
+        "unrelated changes bundling",
+        "PR organization strategy"
+      ]
+    ],
+    "q_paraphrase_057": [
+      [
+        "ephemeral file location",
+        "temporary file storage",
+        "debug tool placement",
+        "transient file home",
+        "scratch file location",
+        "utility script storage"
+      ],
+      [
+        "script organization",
+        "debug tools",
+        "temporary files",
+        "project layout",
+        "scratch outputs"
+      ],
+      [
+        "debug script placement",
+        "temporary file organization",
+        "scratch code directory",
+        "artifact lifecycle",
+        "temporary code storage",
+        "project file organization",
+        "temporary file cleanup",
+        "debugging script location"
+      ]
+    ],
+    "q_paraphrase_058": [
+      [
+        "feature validation timing",
+        "testing milestone",
+        "validation confirmation",
+        "feature verification timing",
+        "integration test",
+        "release testing"
+      ],
+      [
+        "onboarding feature",
+        "first-run experience",
+        "real build testing",
+        "feature verification"
+      ],
+      [
+        "onboarding validation timeline",
+        "real build testing",
+        "feature readiness confirmation",
+        "launch preparedness",
+        "validation completion date",
+        "feature testing phase",
+        "onboarding testing status",
+        "build readiness check"
+      ]
+    ],
+    "q_paraphrase_059": [
+      [
+        "phased rollout strategy",
+        "deferred implementation",
+        "staged deployment",
+        "partial scope decision",
+        "incremental rollout",
+        "deferred work items"
+      ],
+      [
+        "router changes",
+        "incremental merging",
+        "phased rollout",
+        "partial merges"
+      ],
+      [
+        "deploy router scope",
+        "staged implementation phases",
+        "partial merge planning",
+        "deferred feature scope",
+        "component change stages",
+        "implementation timeline",
+        "router implementation scope",
+        "feature merge status"
+      ]
+    ],
+    "q_paraphrase_060": [
+      [
+        "rendering bug discovery",
+        "UI regression incident",
+        "refactoring side effect",
+        "component bug",
+        "visual defect discovery",
+        "unintended behavior"
+      ],
+      [
+        "rendering bugs",
+        "header component",
+        "refactoring side effects",
+        "UI glitches"
+      ],
+      [
+        "rendering regression discovery",
+        "refactoring side effects",
+        "top bar component",
+        "discovered issues",
+        "rendering bug category",
+        "unexpected visual regression",
+        "visual regression bug",
+        "component rework issues"
+      ]
+    ],
+    "q_vocab-mismatch_041": [
+      [
+        "visual defects unrelated task",
+        "UI glitches outside scope",
+        "display issues unrelated work",
+        "aesthetic regressions unrelated",
+        "unplanned visual fixes"
+      ],
+      [
+        "fix visual issues regardless of scope",
+        "UI bugs high priority",
+        "incidental fixes encouraged",
+        "screen appearance matters",
+        "visual regressions unrelated work"
+      ],
+      [
+        "off-topic visual issues",
+        "scope boundaries and exceptions",
+        "fixing unrelated problems",
+        "visual regression discovery",
+        "interrupt handling"
+      ]
+    ],
+    "q_vocab-mismatch_042": [
+      [
+        "operator preferences",
+        "personal beverage choice",
+        "morning routine preferences"
+      ],
+      [
+        "morning coffee preference",
+        "caffeine beverage choice",
+        "operator daily routine",
+        "morning drink habit"
+      ],
+      [
+        "morning beverage preference",
+        "coffee or tea routine",
+        "operator daily habits",
+        "caffeine intake",
+        "breakfast ritual"
+      ]
+    ],
+    "q_vocab-mismatch_043": [
+      [
+        "confirmation before reversible action",
+        "request user approval",
+        "low-risk change protocol",
+        "reversible step authorization"
+      ],
+      [
+        "confirm reversible actions first",
+        "seek approval before changes",
+        "communicate reversible steps",
+        "check stakeholder consent",
+        "undoable action protocol"
+      ],
+      [
+        "permission before reversible actions",
+        "confirmation protocol",
+        "operator sign-off needed",
+        "easily undone changes",
+        "approval workflow"
+      ]
+    ],
+    "q_vocab-mismatch_044": [
+      [
+        "operator timezone",
+        "clock timezone setting",
+        "time zone preference"
+      ],
+      [
+        "timezone configuration",
+        "operator location setting",
+        "EST PST setup",
+        "time zone preference",
+        "clock time region"
+      ],
+      [
+        "operator timezone preference",
+        "clock configuration timezone",
+        "regional time setting",
+        "coast-based time zone",
+        "UTC offset"
+      ]
+    ],
+    "q_vocab-mismatch_045": [
+      [
+        "unverified information presentation",
+        "confidence level display",
+        "uncertainty indicators",
+        "mark unverified claims"
+      ],
+      [
+        "display uncertainty accurately",
+        "confidence level indicators",
+        "avoid false certainty",
+        "mark unverified information",
+        "data reliability display"
+      ],
+      [
+        "unverified as confident",
+        "confidence level indication",
+        "uncertain display presentation",
+        "qualified vs absolute claims",
+        "verification status display"
+      ]
+    ],
+    "q_vocab-mismatch_046": [
+      [
+        "autonomous scope expansion",
+        "self-initiated action authority",
+        "unilateral permission escalation",
+        "agent boundary constraints"
+      ],
+      [
+        "scope expansion autonomously",
+        "permission boundary expansion",
+        "self-directed initiative taking",
+        "unrequested scope broadening",
+        "helper authority limits"
+      ],
+      [
+        "autonomous scope expansion",
+        "self-initiated capability broadening",
+        "permission without instruction",
+        "unsolicited scope increase",
+        "helper initiative boundaries"
+      ]
+    ],
+    "q_vocab-mismatch_047": [
+      [
+        "primary source verification",
+        "avoid secondhand information",
+        "check original reference directly",
+        "authoritative source preference"
+      ],
+      [
+        "verify primary sources directly",
+        "secondhand information reliability",
+        "source verification process",
+        "trust but verify",
+        "check original reference"
+      ],
+      [
+        "secondhand vs primary source",
+        "original documentation check",
+        "source verification practice",
+        "hearsay vs direct evidence",
+        "first-hand reference"
+      ]
+    ],
+    "q_vocab-mismatch_048": [
+      [
+        "secrets encryption release",
+        "cryptographic safekeeping deployment",
+        "security enhancement release date"
+      ],
+      [
+        "secrets management release",
+        "encryption upgrade deployment",
+        "security feature rollout",
+        "secret safekeeping version"
+      ],
+      [
+        "secret management system release",
+        "layered encryption feature release",
+        "security upgrade deployment",
+        "encrypted storage version"
+      ]
+    ],
+    "q_vocab-mismatch_049": [
+      [
+        "component coupling improvement",
+        "widget clustering stability",
+        "dependency strengthening release"
+      ],
+      [
+        "widget stability improvements",
+        "component architecture strengthening",
+        "UI framework upgrades",
+        "widget cluster reliability"
+      ],
+      [
+        "widget clustering link stability",
+        "floating widget connection upgrade",
+        "tether robustness improvement",
+        "cluster cohesion enhancement"
+      ]
+    ],
+    "q_vocab-mismatch_050": [
+      [
+        "session cleanup server restart",
+        "dropped session accumulation",
+        "session leak fix",
+        "ghost session removal"
+      ],
+      [
+        "session cleanup after restart",
+        "server restart session handling",
+        "memory leak prevention",
+        "dropped session accumulation",
+        "session garbage collection"
+      ],
+      [
+        "session cleanup on restart",
+        "dropped connection accumulation",
+        "server recovery session handling",
+        "connection leak prevention"
+      ]
+    ],
+    "q_vocab-mismatch_051": [
+      [
+        "data pipeline fix",
+        "hidden root cause",
+        "silent failure investigation",
+        "streaming data bug",
+        "feed outage",
+        "bug diagnosis"
+      ],
+      [
+        "data stream failure",
+        "silent failure root cause",
+        "production incident patch",
+        "debugging streaming data issue",
+        "regression in data flow",
+        "obscured bug in streaming",
+        "incident affecting live data"
+      ],
+      [
+        "data feed outage investigation",
+        "silent failure root cause",
+        "hidden bug patch landing",
+        "live data breakage debugging",
+        "obscured failure incident"
+      ]
+    ],
+    "q_vocab-mismatch_052": [
+      [
+        "window snapping behavior",
+        "OS window linking",
+        "grouped pane management",
+        "platform linking feature",
+        "native window grouping"
+      ],
+      [
+        "window snapping behavior",
+        "native window grouping",
+        "synchronized pane movement",
+        "unified window control",
+        "multi-window coordination",
+        "pane docking together",
+        "system window synchronization"
+      ],
+      [
+        "window grouping implementation",
+        "OS-level pane linking",
+        "macOS spaces integration",
+        "automatic pane arrangement",
+        "spatial window management"
+      ]
+    ],
+    "q_vocab-mismatch_053": [
+      [
+        "competing internal project",
+        "project stagnation discovery",
+        "inactive initiative review",
+        "team effort assessment"
+      ],
+      [
+        "internal competing project",
+        "parallel effort discovery",
+        "internal team dormancy",
+        "abandoned internal initiative",
+        "overlapping project work",
+        "stalled internal initiative",
+        "internal duplicate project"
+      ],
+      [
+        "internal competing project assessment",
+        "rival team project stalled",
+        "competitive effort dormant",
+        "project status review discovery"
+      ]
+    ],
+    "q_vocab-mismatch_054": [
+      [
+        "conversation auto-naming",
+        "title generation from content",
+        "initial message parsing",
+        "thread naming feature"
+      ],
+      [
+        "thread auto-naming",
+        "conversation title generation",
+        "message-derived naming",
+        "automatic thread titling",
+        "first-message labeling",
+        "conversation name derivation"
+      ],
+      [
+        "auto-generated conversation names",
+        "title from opening message",
+        "conversation naming feature",
+        "message-derived naming system"
+      ]
+    ],
+    "q_vocab-mismatch_055": [
+      [
+        "task automation removal",
+        "workflow runner deprecation",
+        "UI feature removal",
+        "conversation workflow tool"
+      ],
+      [
+        "workflow automation tool removal",
+        "task scheduling feature removal",
+        "conversation UI simplification",
+        "built-in scheduler deprecation",
+        "task automation deprecation",
+        "multi-step workflow elimination"
+      ],
+      [
+        "task runner deprecation",
+        "workflow executor removal",
+        "multi-step task removal",
+        "built-in workflow removal"
+      ]
+    ],
+    "q_vocab-mismatch_056": [
+      [
+        "alert system rollout",
+        "failure monitoring MVP",
+        "progressive alert implementation",
+        "escalation framework"
+      ],
+      [
+        "alert escalation levels",
+        "failure detection system",
+        "progressive monitoring framework",
+        "severity escalation feature",
+        "alert notification escalation",
+        "failure notification levels",
+        "monitoring system foundation"
+      ],
+      [
+        "alert system MVP rollout",
+        "incremental alerting framework",
+        "failure alert first phase",
+        "escalation system foundation"
+      ]
+    ],
+    "q_vocab-mismatch_057": [
+      [
+        "header rendering bug",
+        "vector graphic glitch",
+        "UI top bar update",
+        "SVG rendering issue"
+      ],
+      [
+        "header bar rendering bug",
+        "SVG graphic glitch",
+        "UI header update issue",
+        "vector graphics rendering error",
+        "toolbar display regression",
+        "SVG element malfunction",
+        "top bar rendering issue"
+      ],
+      [
+        "header display glitch fix",
+        "SVG icon rendering bug",
+        "vector graphic rendering bug",
+        "icon display regression"
+      ]
+    ],
+    "q_vocab-mismatch_058": [
+      [
+        "messaging file handling",
+        "bug confirmation during use",
+        "file attachment resolution",
+        "chat service verification"
+      ],
+      [
+        "file attachment bug resolution",
+        "live testing confirmation",
+        "messaging regression verification",
+        "attachment handling fixed",
+        "file transfer issue resolution",
+        "attachment malfunction fix"
+      ],
+      [
+        "messaging file attachment bug",
+        "missing file error resolution",
+        "file handling fix confirmation",
+        "attachment handling bug fix"
+      ]
+    ],
+    "q_vocab-mismatch_059": [
+      [
+        "standalone client completion",
+        "project roadmap finished",
+        "prototype to production",
+        "phase milestones"
+      ],
+      [
+        "standalone client launch",
+        "desktop app completion",
+        "pilot to release",
+        "prototype to production",
+        "feature parity achieved",
+        "MVP to stable release",
+        "project completion milestone"
+      ],
+      [
+        "standalone client launch complete",
+        "client MVP to release",
+        "pilot to production launch",
+        "client roadmap completion"
+      ]
+    ],
+    "q_vocab-mismatch_060": [
+      [
+        "version control filtering",
+        "build artifact handling",
+        "auto-generated code exclusion",
+        "diff improvements"
+      ],
+      [
+        "build artifact filtering",
+        "generated file handling",
+        "compilation output ignored",
+        "build cleanup automation",
+        "generated code exclusion",
+        "compilation byproduct filtering",
+        "version control auto-ignore"
+      ],
+      [
+        "build artifact filtering",
+        "generated file exclusion",
+        "version control noise reduction",
+        "git diff filter rules",
+        "compilation artifact filtering"
+      ]
+    ],
+    "q_vocab-mismatch_031": [
+      [
+        "response brevity preference",
+        "end-of-turn summary expectation",
+        "message closure style",
+        "communication verbosity",
+        "terse output preference",
+        "trailing summary behavior"
+      ],
+      [
+        "response length preference",
+        "end-of-turn summary style",
+        "verbosity level preference",
+        "terse vs detailed responses",
+        "communication output format"
+      ],
+      [
+        "terse responses",
+        "end-of-turn summaries",
+        "response verbosity",
+        "communication style preference",
+        "trailing summaries"
+      ]
+    ],
+    "q_vocab-mismatch_032": [
+      [
+        "IDE theme preference",
+        "terminal appearance settings",
+        "editor visual configuration",
+        "dark mode usage",
+        "syntax highlighting preference",
+        "coding environment aesthetics"
+      ],
+      [
+        "editor color scheme",
+        "IDE theme preference",
+        "terminal color palette",
+        "syntax highlighting colors",
+        "dark mode vs light mode"
+      ],
+      [
+        "IDE theme",
+        "editor color scheme",
+        "dark mode preference",
+        "syntax highlighting",
+        "development environment"
+      ]
+    ],
+    "q_vocab-mismatch_033": [
+      [
+        "epistemic hedging style",
+        "certainty expression norms",
+        "provisional claim framing",
+        "verification status indication",
+        "claim confidence levels",
+        "unverified statement presentation"
+      ],
+      [
+        "framing unconfirmed assumptions",
+        "hedging language preference",
+        "stating uncertain claims",
+        "confident vs tentative framing"
+      ],
+      [
+        "unconfirmed assumptions",
+        "unstated hypotheticals",
+        "presenting as fact",
+        "assumption validation",
+        "premature conclusions"
+      ]
+    ],
+    "q_vocab-mismatch_034": [
+      [
+        "credential storage location",
+        "secret management system",
+        "authentication data storage",
+        "password holding location",
+        "cryptographic key storage",
+        "sensitive data repository"
+      ],
+      [
+        "credential storage location",
+        "password manager choice",
+        "API key storage method",
+        "secrets management tool",
+        "authentication handling"
+      ],
+      [
+        "credential storage",
+        "password management",
+        "secret location",
+        "key management",
+        "authentication secrets"
+      ]
+    ],
+    "q_vocab-mismatch_035": [
+      [
+        "note-taking platform",
+        "knowledge base system",
+        "documentation repository",
+        "reference material location",
+        "daily journal platform",
+        "information management system"
+      ],
+      [
+        "note-taking tool",
+        "documentation system",
+        "knowledge base platform",
+        "personal reference storage"
+      ],
+      [
+        "note-taking system",
+        "knowledge base",
+        "reference storage",
+        "documentation tool",
+        "personal wiki"
+      ]
+    ],
+    "q_vocab-mismatch_036": [
+      [
+        "command syntax formatting",
+        "user input marking",
+        "CLI instruction presentation",
+        "typed command notation",
+        "terminal input highlighting",
+        "code block formatting"
+      ],
+      [
+        "command formatting notation",
+        "user instruction styling",
+        "shell command presentation",
+        "CLI input format"
+      ],
+      [
+        "command formatting",
+        "user input notation",
+        "shell command markup",
+        "instruction highlighting",
+        "code block notation"
+      ]
+    ],
+    "q_vocab-mismatch_037": [
+      [
+        "cost-quality tradeoff",
+        "financial versus reliability priority",
+        "resource expenditure prioritization",
+        "engineering constraint satisfaction",
+        "performance versus efficiency",
+        "development cost preferences"
+      ],
+      [
+        "cost vs reliability tradeoff",
+        "budget prioritization",
+        "robustness vs expense",
+        "engineering trade-off preferences"
+      ],
+      [
+        "cost vs reliability",
+        "engineering tradeoffs",
+        "performance optimization",
+        "resource efficiency",
+        "robustness priorities"
+      ]
+    ],
+    "q_vocab-mismatch_038": [
+      [
+        "direct main branch commits",
+        "branching strategy preference",
+        "commit isolation practices",
+        "version control workflow",
+        "collaborative code practices",
+        "feature branch requirements"
+      ],
+      [
+        "git workflow preference",
+        "main branch edit policy",
+        "branching strategy",
+        "feature branch usage"
+      ],
+      [
+        "direct main commits",
+        "branching strategy",
+        "feature branches",
+        "version control practices",
+        "shared repository"
+      ]
+    ],
+    "q_vocab-mismatch_039": [
+      [
+        "code investigation responsibility",
+        "agent role allocation",
+        "primary versus helper duties",
+        "investigation delegation",
+        "codebase exploration assignment",
+        "search responsibility distribution"
+      ],
+      [
+        "code search delegation",
+        "helper vs primary agent role",
+        "task delegation preference",
+        "agent specialization"
+      ],
+      [
+        "task delegation",
+        "agent roles",
+        "autonomous actions",
+        "work distribution",
+        "codebase exploration"
+      ]
+    ],
+    "q_vocab-mismatch_040": [
+      [
+        "bug reproduction methodology",
+        "user scenario simulation",
+        "realistic issue recreation",
+        "reproduction requirements",
+        "scenario authenticity standards",
+        "testing verification approach"
+      ],
+      [
+        "exact bug reproduction method",
+        "user scenario testing approach",
+        "realistic test conditions",
+        "problem recreation methodology"
+      ],
+      [
+        "bug reproduction",
+        "user scenario testing",
+        "golden path testing",
+        "realistic test cases",
+        "actual usage patterns"
+      ]
+    ],
+    "q_vocab-mismatch_021": [
+      [
+        "hot fix",
+        "zero downtime deployment",
+        "rolling update",
+        "canary release",
+        "live update",
+        "production rollout",
+        "no-downtime patch"
+      ],
+      [
+        "zero-downtime deployment",
+        "rolling update",
+        "canary release",
+        "blue-green deployment",
+        "live production release",
+        "hotfix without downtime"
+      ],
+      [
+        "zero-downtime deployment",
+        "rolling update",
+        "hot patch deployment",
+        "live traffic deployment",
+        "production seamless update",
+        "no-service-interruption release",
+        "active user deployment"
+      ]
+    ],
+    "q_vocab-mismatch_022": [
+      [
+        "automatic title generation",
+        "generated labels",
+        "auto-naming system",
+        "smart conversation title",
+        "conversation metadata"
+      ],
+      [
+        "auto-generated conversation title",
+        "automatic label inference",
+        "metadata auto-assignment",
+        "implicit naming system"
+      ],
+      [
+        "auto-generated conversation title",
+        "implicit session naming",
+        "automatic thread labeling",
+        "conversation title generation",
+        "default thread naming",
+        "inferred conversation label"
+      ]
+    ],
+    "q_vocab-mismatch_023": [
+      [
+        "context compression",
+        "message summarization",
+        "automatic cleanup",
+        "display compaction",
+        "conversation timeline compression"
+      ],
+      [
+        "context window compression",
+        "message summarization",
+        "conversation truncation",
+        "automated condensing",
+        "display compaction"
+      ],
+      [
+        "message summarization",
+        "context compression",
+        "conversation truncation",
+        "collapsed view mode",
+        "condensed display",
+        "automatic cleanup"
+      ]
+    ],
+    "q_vocab-mismatch_024": [
+      [
+        "cost attribution",
+        "token usage tracking",
+        "project-based billing",
+        "LLM pricing",
+        "usage attribution",
+        "billing allocation"
+      ],
+      [
+        "token usage attribution",
+        "cost per project",
+        "billing allocation",
+        "usage metering",
+        "compute cost tracking"
+      ],
+      [
+        "token usage billing",
+        "cost allocation across projects",
+        "model usage accounting",
+        "project-level expense tracking",
+        "billing attribution",
+        "usage-based cost distribution"
+      ]
+    ],
+    "q_vocab-mismatch_025": [
+      [
+        "password masking",
+        "hidden input fields",
+        "secure credential entry",
+        "masked display",
+        "sensitive data input protection"
+      ],
+      [
+        "sensitive input masking",
+        "secure prompting",
+        "redacted logging",
+        "credential input handling",
+        "private data input"
+      ],
+      [
+        "masked password prompt",
+        "hidden credential input",
+        "sensitive data logging",
+        "redacted logs",
+        "secure input handling",
+        "input masking"
+      ]
+    ],
+    "q_vocab-mismatch_026": [
+      [
+        "deep linking",
+        "URL scheme handler",
+        "app context resumption",
+        "browser integration",
+        "session restoration",
+        "direct launch"
+      ],
+      [
+        "deep linking",
+        "URL session restoration",
+        "persistent app state",
+        "universal link",
+        "navigation URL scheme"
+      ],
+      [
+        "deep linking to active session",
+        "URL scheme handler",
+        "resume running instance",
+        "persistent connection via URL",
+        "session deep link",
+        "browser tab recovery"
+      ]
+    ],
+    "q_vocab-mismatch_027": [
+      [
+        "plugin UI panel",
+        "extension widget rendering",
+        "dynamic panel system",
+        "floating element",
+        "extension interface"
+      ],
+      [
+        "floating widget panel",
+        "custom embedded UI",
+        "floating window extension",
+        "widget rendering",
+        "sidebar custom component"
+      ],
+      [
+        "plugin custom widget",
+        "overlay rendering",
+        "extension UI panel",
+        "floating component",
+        "live widget display",
+        "embedded overlay"
+      ]
+    ],
+    "q_vocab-mismatch_028": [
+      [
+        "typing indicator",
+        "thinking indicator",
+        "response streaming",
+        "generation feedback",
+        "status indicator",
+        "composing feedback"
+      ],
+      [
+        "typing indicator",
+        "composing status",
+        "message generation indicator",
+        "real-time response feedback",
+        "in-progress notification"
+      ],
+      [
+        "typing indicator",
+        "composing status indicator",
+        "response loading state",
+        "bot activity signal",
+        "pending message indicator",
+        "draft in progress"
+      ]
+    ],
+    "q_vocab-mismatch_029": [
+      [
+        "database migration",
+        "infrastructure replacement",
+        "backend swap",
+        "schema transition",
+        "data migration plan"
+      ],
+      [
+        "database migration",
+        "storage system replacement",
+        "backend architecture change",
+        "data migration strategy"
+      ],
+      [
+        "database migration",
+        "data store replacement",
+        "persistence layer change",
+        "backend infrastructure update",
+        "database system swap"
+      ]
+    ],
+    "q_vocab-mismatch_030": [
+      [
+        "design themes",
+        "aesthetic variants",
+        "styling options",
+        "appearance customization",
+        "visual design modes",
+        "theme selection"
+      ],
+      [
+        "alternative color theme",
+        "aesthetic UI variant",
+        "visual customization option",
+        "design theme variant",
+        "softer appearance mode"
+      ],
+      [
+        "custom theme options",
+        "visual style preset",
+        "UI aesthetic",
+        "alternate design theme",
+        "color palette selection",
+        "soft design style"
+      ]
+    ],
+    "q_temporal_011": [
+      [
+        "regression detected",
+        "deploy failure",
+        "release quality issue",
+        "build broken",
+        "version unstable",
+        "production incident",
+        "failed deployment",
+        "broken code"
+      ],
+      [
+        "rendering regression",
+        "visual defect",
+        "UI glitch",
+        "display issue",
+        "appearance problem",
+        "quality regression",
+        "visual problem",
+        "release quality"
+      ],
+      [
+        "release regression",
+        "visual defect",
+        "build artifact issue",
+        "broken UI appearance",
+        "release quality incident",
+        "visual rendering failure"
+      ]
+    ],
+    "q_temporal_012": [
+      [
+        "button malfunction",
+        "click behavior",
+        "UI glitch",
+        "window control issue",
+        "interaction failure",
+        "button state",
+        "control problem",
+        "window element"
+      ],
+      [
+        "title bar controls",
+        "frame controls",
+        "window chrome",
+        "control behavior",
+        "button interaction",
+        "control issue",
+        "window frame",
+        "UI controls"
+      ],
+      [
+        "button control regression",
+        "window system UI",
+        "interactive element bug",
+        "control component issue",
+        "button state handling",
+        "window UI failure"
+      ]
+    ],
+    "q_temporal_013": [
+      [
+        "drag malfunction",
+        "mouse drag",
+        "UI drag behavior",
+        "interaction failure",
+        "drag performance",
+        "element dragging",
+        "drag problem",
+        "mouse interaction"
+      ],
+      [
+        "drag-and-drop",
+        "repositioning behavior",
+        "layout movement",
+        "mouse interaction",
+        "drag behavior",
+        "movement issue",
+        "resizable feature",
+        "panel layout"
+      ],
+      [
+        "drag and drop",
+        "user interaction issue",
+        "panel repositioning logic",
+        "movement behavior fix",
+        "interaction regression",
+        "element movement system"
+      ]
+    ],
+    "q_temporal_014": [
+      [
+        "border style rule",
+        "visual guideline",
+        "styling decision",
+        "border specification",
+        "design constraint",
+        "widget styling",
+        "style adoption",
+        "visual property"
+      ],
+      [
+        "border styling",
+        "outline rule",
+        "edge styling",
+        "visual styling",
+        "design standard",
+        "CSS rule",
+        "styling guideline",
+        "border rule"
+      ],
+      [
+        "design system rule",
+        "border styling guide",
+        "widget appearance spec",
+        "CSS border standard",
+        "visual style decision",
+        "component styling convention"
+      ]
+    ],
+    "q_temporal_015": [
+      [
+        "stream failure",
+        "data transmission",
+        "network issue",
+        "buffer problem",
+        "real-time sync",
+        "stream error",
+        "data flow",
+        "transmission failure"
+      ],
+      [
+        "data flow issue",
+        "video transmission",
+        "network transmission",
+        "performance issue",
+        "media flow",
+        "data transmission",
+        "streaming data",
+        "media bug"
+      ],
+      [
+        "streaming data bug",
+        "connection handling issue",
+        "video stream failure",
+        "stream protocol error",
+        "broadcast interruption",
+        "data connection bug"
+      ]
+    ],
+    "q_temporal_016": [
+      [
+        "routing configuration",
+        "traffic control",
+        "deployment infrastructure",
+        "rollout config",
+        "service routing",
+        "deployment strategy",
+        "routing rule",
+        "infrastructure change"
+      ],
+      [
+        "deployment logic",
+        "traffic routing",
+        "release distribution",
+        "infrastructure change",
+        "CI/CD pipeline",
+        "network routing",
+        "deployment mechanism",
+        "release routing"
+      ],
+      [
+        "deployment path logic",
+        "route configuration change",
+        "infrastructure deployment system",
+        "routing rule update",
+        "deployment pipeline change",
+        "network routing logic"
+      ]
+    ],
+    "q_temporal_017": [
+      [
+        "visual seam",
+        "rendering issue",
+        "alignment problem",
+        "visual artifact",
+        "edge case",
+        "layout problem",
+        "boundary issue",
+        "rendering glitch"
+      ],
+      [
+        "edge alignment",
+        "boundary issue",
+        "seam gap",
+        "visual alignment",
+        "layout seam",
+        "junction problem",
+        "spacing issue",
+        "panel alignment"
+      ],
+      [
+        "panel layout fix",
+        "visual seam issue",
+        "UI boundary rendering",
+        "panel edge alignment",
+        "layout gap correction",
+        "panel junction repair"
+      ]
+    ],
+    "q_temporal_018": [
+      [
+        "Telegram integration",
+        "messaging platform",
+        "notification setup",
+        "channel configuration",
+        "bot implementation",
+        "third-party service",
+        "messaging feature",
+        "Telegram setup"
+      ],
+      [
+        "Telegram integration",
+        "messaging platform",
+        "chat notification",
+        "bot feature",
+        "message delivery",
+        "platform integration",
+        "messaging integration",
+        "chat bot"
+      ],
+      [
+        "messaging platform integration",
+        "chat channel feature",
+        "notification system",
+        "external platform support",
+        "bot messaging service",
+        "social media integration"
+      ]
+    ],
+    "q_temporal_019": [
+      [
+        "model configuration",
+        "system preference",
+        "default setting",
+        "model switch",
+        "configuration change",
+        "setting update",
+        "model choice",
+        "system default"
+      ],
+      [
+        "model selection",
+        "AI configuration",
+        "LLM default",
+        "model switching",
+        "configuration change",
+        "model upgrade",
+        "default setting",
+        "model configuration"
+      ],
+      [
+        "AI model preference",
+        "configuration setting change",
+        "model selection logic",
+        "inference model default",
+        "system initialization setting",
+        "AI configuration update"
+      ]
+    ],
+    "q_temporal_020": [
+      [
+        "window management",
+        "window grouping",
+        "UI organization",
+        "layout feature",
+        "grouping logic",
+        "multi-window support",
+        "window cluster feature",
+        "window organization"
+      ],
+      [
+        "window grouping",
+        "window organization",
+        "multi-window feature",
+        "window layout",
+        "window management",
+        "grouping system",
+        "window arrangement",
+        "window tabbing"
+      ],
+      [
+        "window management feature",
+        "UI grouping system",
+        "window organization logic",
+        "grouped window support",
+        "multi window cluster",
+        "desktop arrangement system"
+      ]
+    ],
+    "q_temporal_001": [
+      [
+        "release notes",
+        "deployment rollout",
+        "version shipped",
+        "feature launch",
+        "product release",
+        "changelog",
+        "release cycle",
+        "update notes"
+      ],
+      [
+        "product features",
+        "infrastructure changes",
+        "version release",
+        "changelog entries",
+        "component updates",
+        "initialization"
+      ],
+      [
+        "released early January",
+        "deployment January",
+        "feature launch",
+        "product release",
+        "January rollout",
+        "delivery January",
+        "shipment January",
+        "product shipment"
+      ]
+    ],
+    "q_temporal_002": [
+      [
+        "email automation",
+        "job processing issue",
+        "digest service",
+        "scheduled job bug",
+        "automation failure",
+        "May outage",
+        "service incident",
+        "job error"
+      ],
+      [
+        "email digest system",
+        "background job",
+        "job failure",
+        "service regression",
+        "notification issue",
+        "scheduled task"
+      ],
+      [
+        "digest job bug",
+        "digest job issue",
+        "May digest incident",
+        "digest service problem",
+        "digest failure",
+        "digest performance",
+        "digest timeout",
+        "digest error"
+      ]
+    ],
+    "q_temporal_003": [
+      [
+        "production incident",
+        "deployment issue",
+        "system outage",
+        "bug discovered",
+        "incident report",
+        "downtime",
+        "service problem",
+        "issue found"
+      ],
+      [
+        "outage occurred",
+        "incident report",
+        "deployment issue",
+        "production problem",
+        "service incident",
+        "system failure"
+      ],
+      [
+        "July 9 incident",
+        "July 9 release",
+        "July 9 deployment",
+        "July 9 bug",
+        "July 9 outage",
+        "July 9 change",
+        "July 9 fix",
+        "production incident"
+      ]
+    ],
+    "q_temporal_004": [
+      [
+        "refactor planning",
+        "architectural design",
+        "code cleanup",
+        "technical debt",
+        "implementation scope",
+        "design decision",
+        "engineering roadmap",
+        "team discussion"
+      ],
+      [
+        "architecture redesign",
+        "tech debt reduction",
+        "engineering scope",
+        "codebase restructure",
+        "project timeline",
+        "engineering effort"
+      ],
+      [
+        "refactor decision",
+        "big refactor planning",
+        "large refactor scope",
+        "architecture refactor",
+        "refactoring strategy",
+        "refactor plan",
+        "code restructuring",
+        "refactor kickoff"
+      ]
+    ],
+    "q_temporal_005": [
+      [
+        "bug resolution",
+        "settings configuration fix",
+        "effort tracking",
+        "feature patch",
+        "issue repair",
+        "settings change",
+        "update deployed",
+        "configuration update"
+      ],
+      [
+        "bug correction",
+        "settings feature",
+        "performance improvement",
+        "configuration issue",
+        "effort tracking",
+        "workload adjustment"
+      ],
+      [
+        "effort settings fix",
+        "late June bug",
+        "effort configuration",
+        "settings patch",
+        "effort tracking bug",
+        "June bug fix",
+        "effort feature fix",
+        "configuration issue"
+      ]
+    ],
+    "q_temporal_006": [
+      [
+        "title display issue",
+        "thread naming bug",
+        "UI problem",
+        "interface fix",
+        "feature change",
+        "display bug",
+        "naming system",
+        "component issue"
+      ],
+      [
+        "display issue",
+        "naming change",
+        "thread feature",
+        "label modification",
+        "heading bug",
+        "conversation naming"
+      ],
+      [
+        "thread titles bug",
+        "early June changes",
+        "thread naming",
+        "title display",
+        "thread title fix",
+        "June thread bug",
+        "message title",
+        "title formatting"
+      ]
+    ],
+    "q_temporal_007": [
+      [
+        "sidebar feature",
+        "desktop UI update",
+        "app release",
+        "component launch",
+        "interface change",
+        "feature added",
+        "navigation update",
+        "UI component"
+      ],
+      [
+        "UI enhancement",
+        "navigation feature",
+        "sidebar widget",
+        "desktop interface",
+        "panel modification",
+        "layout improvement"
+      ],
+      [
+        "desktop sidebar",
+        "May app release",
+        "sidebar feature",
+        "desktop UI",
+        "sidebar launch",
+        "May desktop release",
+        "app sidebar update",
+        "desktop application"
+      ]
+    ],
+    "q_temporal_008": [
+      [
+        "data validation",
+        "audit findings",
+        "quality issue",
+        "checking results",
+        "investigation report",
+        "discovery findings",
+        "problem identified",
+        "issue detection"
+      ],
+      [
+        "data quality issue",
+        "audit discovery",
+        "investigation findings",
+        "anomaly detected",
+        "data corruption",
+        "validation problem"
+      ],
+      [
+        "thread data audit",
+        "June data findings",
+        "data integrity issue",
+        "thread data check",
+        "data discovery",
+        "thread validation",
+        "data quality",
+        "thread data problem"
+      ]
+    ],
+    "q_temporal_009": [
+      [
+        "routing issue",
+        "provider integration",
+        "configuration change",
+        "service update",
+        "routing bug fix",
+        "system change",
+        "integration fix",
+        "connection update"
+      ],
+      [
+        "routing logic",
+        "provider integration",
+        "configuration change",
+        "connection issue",
+        "service selection",
+        "handler update"
+      ],
+      [
+        "provider routing",
+        "February routing",
+        "routing strategy",
+        "provider configuration",
+        "routing bug",
+        "provider selection",
+        "February incident",
+        "routing fix"
+      ]
+    ],
+    "q_temporal_010": [
+      [
+        "onboarding flow",
+        "signup feature",
+        "user experience",
+        "feature launch",
+        "user setup",
+        "flow update",
+        "experience improvement",
+        "user journey"
+      ],
+      [
+        "onboarding flow",
+        "user signup",
+        "setup process",
+        "registration feature",
+        "enrollment sequence",
+        "initialization phase"
+      ],
+      [
+        "onboarding feature",
+        "January launch",
+        "user onboarding",
+        "onboarding release",
+        "setup flow",
+        "onboarding update",
+        "user setup",
+        "onboarding shipped"
+      ]
+    ],
+    "q_temporal_021": [
+      [
+        "webkit cache memory",
+        "browser rendering cache",
+        "mobile webview fix",
+        "cache invalidation bug",
+        "memory caching validation",
+        "May cache confirmation",
+        "browser storage issue",
+        "view cache behavior"
+      ],
+      [
+        "cache invalidation",
+        "webview performance",
+        "browser cache behavior",
+        "cache clearing",
+        "May confirmation retest"
+      ],
+      [
+        "cache invalidation",
+        "webkit rendering",
+        "cached resources",
+        "browser cache",
+        "memory leak",
+        "cache corruption",
+        "cache ttl",
+        "rendering performance"
+      ]
+    ],
+    "q_temporal_022": [
+      [
+        "job scheduler timeout",
+        "deadline scheduling fix",
+        "async task timing",
+        "job queue deadlines",
+        "deadline enforcement merge",
+        "scheduling system fix",
+        "timeout handling",
+        "background job timing"
+      ],
+      [
+        "job timeout fix",
+        "deadline enforcement",
+        "job scheduling",
+        "task timeout",
+        "May merge deadline"
+      ],
+      [
+        "scheduler timeout",
+        "background job",
+        "cron job",
+        "deadline enforcement",
+        "job queue",
+        "retry logic",
+        "job timeout",
+        "scheduled task"
+      ]
+    ],
+    "q_temporal_023": [
+      [
+        "notification aggregation job",
+        "email digest service",
+        "scheduled batch digest",
+        "digest compilation",
+        "notification digest feature",
+        "aggregation service deployed",
+        "digest task scheduling",
+        "May batch processing"
+      ],
+      [
+        "digest notification",
+        "email delivery",
+        "summary job",
+        "May deployment",
+        "scheduled notification"
+      ],
+      [
+        "email digest",
+        "periodic task",
+        "batch processing",
+        "notification digest",
+        "digest template",
+        "job scheduling",
+        "delivery mechanism",
+        "message batching"
+      ]
+    ],
+    "q_temporal_024": [
+      [
+        "reflection prompt template",
+        "AI prompt tuning",
+        "June prompt configuration",
+        "reflection generation",
+        "prompt template update",
+        "reflection task modification",
+        "model prompt engineering",
+        "prompt settings change"
+      ],
+      [
+        "prompt configuration",
+        "job parameters",
+        "AI prompting",
+        "June incident",
+        "reflection task"
+      ],
+      [
+        "LLM prompt",
+        "AI model",
+        "prompt engineering",
+        "AI response",
+        "reflection feature",
+        "chatbot response",
+        "language model",
+        "prompt tuning"
+      ]
+    ],
+    "q_temporal_025": [
+      [
+        "async result handling",
+        "job completion notification",
+        "async job output",
+        "result queue system",
+        "background task completion",
+        "June async merge",
+        "job result persistence",
+        "completion status delivery"
+      ],
+      [
+        "async result callback",
+        "background result storage",
+        "job completion",
+        "June merge",
+        "async delivery"
+      ],
+      [
+        "async results",
+        "callback mechanism",
+        "webhook delivery",
+        "job completion",
+        "event system",
+        "result storage",
+        "asynchronous task",
+        "task completion"
+      ]
+    ],
+    "q_temporal_026": [
+      [
+        "workflow ownership tracking",
+        "workflow creator metadata",
+        "July 1 authorship",
+        "ownership attribution system",
+        "workflow creator assignment",
+        "author tracking feature",
+        "workflow accountability",
+        "creator identity mapping"
+      ],
+      [
+        "workflow creator tracking",
+        "workflow metadata",
+        "authorship permission",
+        "July change",
+        "ownership"
+      ],
+      [
+        "workflow ownership",
+        "access control",
+        "RBAC",
+        "creator attribution",
+        "permissions model",
+        "owner assignment",
+        "user roles",
+        "permission control"
+      ]
+    ],
+    "q_temporal_027": [
+      [
+        "app store approval",
+        "native app launch",
+        "companion app release",
+        "mobile platform support",
+        "app review passed",
+        "standalone native app",
+        "platform support July",
+        "native application submission"
+      ],
+      [
+        "app store review",
+        "platform approval",
+        "native app launch",
+        "July release",
+        "companion feature"
+      ],
+      [
+        "iOS app",
+        "Android app",
+        "native code",
+        "app release",
+        "testing phase",
+        "app store",
+        "SDK integration",
+        "platform support"
+      ]
+    ],
+    "q_temporal_028": [
+      [
+        "UI rendering bug",
+        "header layout glitch",
+        "display issue top bar",
+        "visual rendering error",
+        "bar component bug",
+        "interface rendering problem",
+        "top bar ui",
+        "navigation header glitch"
+      ],
+      [
+        "UI rendering bug",
+        "header display",
+        "navigation glitch",
+        "June bug",
+        "visual regression"
+      ],
+      [
+        "UI rendering",
+        "CSS bug",
+        "layout issue",
+        "header display",
+        "visual glitch",
+        "interface bug",
+        "display problem",
+        "DOM rendering"
+      ]
+    ],
+    "q_temporal_029": [
+      [
+        "skill improvement cards",
+        "learning feature chips",
+        "skill development feature",
+        "ui chip component",
+        "improvement card component",
+        "skill learning ui",
+        "chip feature update",
+        "development progress cards"
+      ],
+      [
+        "skill chips UI",
+        "skill recommendation",
+        "gamification",
+        "recent update",
+        "chip component"
+      ],
+      [
+        "component update",
+        "UI badge",
+        "feature update",
+        "chip component",
+        "interface element",
+        "recent change",
+        "user interface",
+        "visual element"
+      ]
+    ],
+    "q_temporal_030": [
+      [
+        "git worktree caching",
+        "cache memory invalidation",
+        "file system cache",
+        "today cache incident",
+        "caching layer bug",
+        "worktree performance cache",
+        "cache management issue",
+        "today's cache problem"
+      ],
+      [
+        "git worktree",
+        "build cache",
+        "cache management",
+        "today incident",
+        "cache clearing"
+      ],
+      [
+        "git worktree",
+        "workspace cache",
+        "repository state",
+        "file system",
+        "git cache",
+        "checkout cache",
+        "repository cache",
+        "git operations"
+      ]
+    ],
+    "q_negative_001": [
+      [
+        "subscription cost per month",
+        "pricing tier structure",
+        "monthly billing amount",
+        "subscription plan cost",
+        "pricing model details",
+        "billing cycle cost",
+        "monthly fee structure",
+        "plan pricing information"
+      ],
+      [
+        "billing rates",
+        "cost structure",
+        "plan tiers",
+        "pricing models",
+        "payment options",
+        "rate card",
+        "fee schedule",
+        "enterprise pricing"
+      ],
+      [
+        "billing cycles",
+        "cost structure",
+        "pricing tiers",
+        "plan pricing",
+        "rate structure",
+        "subscription cost",
+        "monthly fee"
+      ]
+    ],
+    "q_negative_002": [
+      [
+        "Android support available",
+        "mobile platform version",
+        "Android app availability",
+        "platform compatibility support",
+        "mobile operating system",
+        "Android port exists",
+        "cross platform desktop",
+        "alternative platform support"
+      ],
+      [
+        "iOS support",
+        "mobile platforms",
+        "device compatibility",
+        "operating systems",
+        "cross-platform support",
+        "download availability",
+        "system requirements",
+        "platform options"
+      ],
+      [
+        "mobile app",
+        "platform support",
+        "cross-platform",
+        "app availability",
+        "operating system support",
+        "app distribution"
+      ]
+    ],
+    "q_negative_003": [
+      [
+        "SOC 2 certification status",
+        "compliance audit results",
+        "security audit passed",
+        "SOC 2 certified",
+        "audit certification achievement",
+        "security compliance standard",
+        "compliance verification completed",
+        "regulatory audit result"
+      ],
+      [
+        "security certification",
+        "ISO standards",
+        "third-party audit",
+        "certification status",
+        "compliance verification",
+        "audit results",
+        "security standards",
+        "certified providers"
+      ],
+      [
+        "security certification",
+        "compliance certification",
+        "audit attestation",
+        "security standards",
+        "certification status"
+      ]
+    ],
+    "q_negative_004": [
+      [
+        "model context window tokens",
+        "language model token limit",
+        "maximum context length",
+        "underlying LLM specification",
+        "token capacity size",
+        "sequence length limit",
+        "model token window",
+        "context window specification"
+      ],
+      [
+        "token limits",
+        "model specifications",
+        "input capacity",
+        "technical parameters",
+        "maximum tokens",
+        "architecture parameters",
+        "capability limits",
+        "specification details"
+      ],
+      [
+        "token limit",
+        "model specifications",
+        "sequence length",
+        "capacity",
+        "LLM architecture",
+        "model capabilities"
+      ]
+    ],
+    "q_negative_005": [
+      [
+        "support response time guarantee",
+        "ticket SLA commitment",
+        "support tier response hours",
+        "customer support response SLA",
+        "ticket resolution time guarantee",
+        "support service level agreement",
+        "response time commitment",
+        "help desk response SLA"
+      ],
+      [
+        "customer service",
+        "turnaround time",
+        "service level agreement",
+        "response guarantees",
+        "resolution standards",
+        "service commitment",
+        "ticket handling",
+        "support metrics"
+      ],
+      [
+        "support response commitment",
+        "SLA terms",
+        "response performance",
+        "service level",
+        "ticket handling",
+        "support speed"
+      ]
+    ],
+    "q_negative_006": [
+      [
+        "self hosted backend option",
+        "on premise deployment available",
+        "enterprise self hosting",
+        "private server deployment",
+        "customer hosted backend",
+        "dedicated deployment option",
+        "enterprise on premise",
+        "infrastructure deployment control"
+      ],
+      [
+        "on-premises deployment",
+        "self-hosted option",
+        "private infrastructure",
+        "deployment options",
+        "infrastructure hosting",
+        "cloud alternatives",
+        "server options",
+        "hosting models"
+      ],
+      [
+        "on-premises deployment",
+        "deployment flexibility",
+        "infrastructure options",
+        "customer hosting",
+        "enterprise deployment",
+        "self-hosted options"
+      ]
+    ],
+    "q_negative_007": [
+      [
+        "Rust backend rewrite",
+        "backend language Rust",
+        "Rust implementation details",
+        "technology stack Rust",
+        "Rust backend migration",
+        "backend rewritten language",
+        "Rust infrastructure",
+        "language rewrite decision"
+      ],
+      [
+        "programming language",
+        "tech stack",
+        "implementation language",
+        "infrastructure code",
+        "engineering decisions",
+        "architecture changes",
+        "technology choices",
+        "system redesign"
+      ],
+      [
+        "implementation language",
+        "tech stack",
+        "programming language",
+        "backend technology",
+        "codebase composition"
+      ]
+    ],
+    "q_negative_008": [
+      [
+        "competitor pricing comparison",
+        "enterprise tier pricing benchmark",
+        "competitive pricing analysis",
+        "market pricing comparison",
+        "competitor enterprise cost",
+        "pricing competitiveness analysis",
+        "rival service pricing",
+        "pricing versus competitor"
+      ],
+      [
+        "competitive analysis",
+        "price benchmarking",
+        "market comparison",
+        "alternative solutions",
+        "vendor comparison",
+        "feature comparison",
+        "market positioning",
+        "cost analysis"
+      ],
+      [
+        "competitive pricing analysis",
+        "market positioning",
+        "pricing benchmarking",
+        "competitor comparison",
+        "market rates"
+      ]
+    ],
+    "q_negative_009": [
+      [
+        "quarterly revenue results",
+        "last quarter earnings",
+        "quarterly financial results",
+        "revenue figures quarterly",
+        "earnings report last quarter",
+        "quarterly revenue total",
+        "financial metrics quarterly",
+        "revenue performance quarter"
+      ],
+      [
+        "financial performance",
+        "earnings report",
+        "business metrics",
+        "sales figures",
+        "income statement",
+        "performance metrics",
+        "financial results",
+        "earnings data"
+      ],
+      [
+        "quarterly earnings",
+        "financial performance",
+        "business metrics",
+        "revenue figures",
+        "earnings data"
+      ]
+    ],
+    "q_negative_010": [
+      [
+        "open job positions",
+        "hiring opportunities current",
+        "recruitment open roles",
+        "team hiring needs",
+        "career opportunities available",
+        "staff expansion hiring",
+        "job openings currently",
+        "employment opportunities now"
+      ],
+      [
+        "job openings",
+        "career opportunities",
+        "recruitment",
+        "employment opportunities",
+        "staffing needs",
+        "personnel expansion",
+        "talent acquisition",
+        "open positions"
+      ],
+      [
+        "recruitment",
+        "job openings",
+        "open positions",
+        "career opportunities",
+        "staffing",
+        "team expansion"
+      ]
+    ],
+    "q_negative_011": [
+      [
+        "privacy policy content",
+        "data deletion procedures",
+        "GDPR compliance rules",
+        "user data lifecycle",
+        "retention period policies",
+        "data governance framework"
+      ],
+      [
+        "privacy policy storage",
+        "GDPR compliance obligations",
+        "user data deletion",
+        "retention period requirements",
+        "data lifecycle management",
+        "compliance retention windows",
+        "PII data disposal",
+        "legal document review"
+      ],
+      [
+        "legal compliance framework",
+        "GDPR retention requirements",
+        "privacy policy terms",
+        "data protection standards",
+        "retention period limits"
+      ]
+    ],
+    "q_negative_012": [
+      [
+        "weather forecast data",
+        "meteorological prediction",
+        "climate conditions",
+        "atmospheric forecast"
+      ],
+      [],
+      [
+        "meteorological forecast",
+        "climate prediction",
+        "weather conditions",
+        "temperature data",
+        "atmospheric conditions"
+      ]
+    ],
+    "q_negative_013": [
+      [
+        "pasta recipe instructions",
+        "Italian cooking method",
+        "meal preparation guide"
+      ],
+      [],
+      [
+        "Italian cooking techniques",
+        "pasta preparation",
+        "ingredient measurements",
+        "baking instructions",
+        "recipe methodology"
+      ]
+    ],
+    "q_negative_014": [
+      [
+        "basketball game results",
+        "sports score outcome",
+        "team performance statistics"
+      ],
+      [],
+      [
+        "game statistics",
+        "sports league standings",
+        "tournament results",
+        "player performance",
+        "championship games"
+      ]
+    ],
+    "q_negative_015": [
+      [
+        "marketplace revenue sharing",
+        "developer commission structure",
+        "plugin monetization model",
+        "third-party payment terms",
+        "developer earnings split"
+      ],
+      [
+        "marketplace payout structure",
+        "developer monetization policy",
+        "commission percentage",
+        "partner revenue model",
+        "developer earnings",
+        "compensation structure",
+        "API revenue sharing",
+        "marketplace economics"
+      ],
+      [
+        "developer earnings model",
+        "commission structure",
+        "monetization payout terms",
+        "marketplace economics",
+        "revenue sharing arrangement"
+      ]
+    ],
+    "q_negative_016": [
+      [
+        "mobile app typeface",
+        "default font selection",
+        "typography system",
+        "design system fonts"
+      ],
+      [
+        "typography defaults mobile",
+        "system font stack",
+        "typeface configuration",
+        "design system fonts",
+        "iOS Android fonts",
+        "font family defaults",
+        "mobile typography settings",
+        "app design fonts"
+      ],
+      [
+        "typography design specs",
+        "typeface selection",
+        "UI design system",
+        "font family choice",
+        "app styling guidelines"
+      ]
+    ],
+    "q_negative_017": [
+      [
+        "mobile onboarding permission",
+        "push notification opt-in",
+        "signup notification preferences",
+        "notification permission flow"
+      ],
+      [
+        "permission enrollment flow",
+        "iOS Android permissions",
+        "onboarding feature checklist",
+        "consent management",
+        "alert settings",
+        "user permissions signup",
+        "alerts enrollment process",
+        "permission request timing"
+      ],
+      [
+        "notification preferences",
+        "user opt-in flow",
+        "mobile permissions",
+        "notification settings",
+        "onboarding feature"
+      ]
+    ],
+    "q_negative_018": [
+      [
+        "user onboarding questionnaire",
+        "new user survey",
+        "signup feedback questions",
+        "onboarding user research"
+      ],
+      [
+        "survey content items",
+        "user feedback survey",
+        "new user research",
+        "signup experience questions",
+        "product comprehension",
+        "retention survey",
+        "NPS metrics",
+        "feedback categories"
+      ],
+      [
+        "survey questionnaire",
+        "user feedback questions",
+        "onboarding research",
+        "new user experience",
+        "feedback collection process"
+      ]
+    ],
+    "q_negative_019": [
+      [
+        "customer success story",
+        "user testimonial quote",
+        "client endorsement",
+        "product praise"
+      ],
+      [
+        "customer success stories",
+        "client feedback quotes",
+        "Luna case study",
+        "testimonial quotes",
+        "customer review",
+        "client success metrics",
+        "satisfaction evidence",
+        "customer feedback"
+      ],
+      [
+        "customer success story",
+        "user testimonial",
+        "case study",
+        "product review",
+        "customer endorsement"
+      ]
+    ],
+    "q_negative_020": [
+      [
+        "competitor stock price",
+        "financial market data",
+        "company valuation metrics"
+      ],
+      [
+        "competitor financial metrics",
+        "stock market valuation",
+        "competitive analysis",
+        "publicly traded competitors",
+        "market cap",
+        "investor relations",
+        "financial landscape",
+        "competitor market analysis"
+      ],
+      [
+        "market valuation",
+        "financial data",
+        "stock ticker",
+        "company valuation",
+        "trading performance"
+      ]
+    ],
+    "q_negative_031": [
+      [
+        "IRS deadline",
+        "April 15",
+        "federal tax return",
+        "annual filing deadline",
+        "2026 tax deadline",
+        "tax submission date",
+        "filing schedule",
+        "federal taxes annual"
+      ],
+      [
+        "IRS deadline",
+        "April 15",
+        "annual tax return",
+        "2026 filing dates",
+        "tax season timeline",
+        "financial reporting deadline"
+      ],
+      [
+        "IRS federal deadline",
+        "annual tax return date",
+        "tax filing season",
+        "tax compliance deadline",
+        "last filing date",
+        "estimated tax deadline"
+      ]
+    ],
+    "q_negative_032": [
+      [
+        "chess game",
+        "interactive chess opponent",
+        "game playing",
+        "chess match",
+        "interactive games",
+        "game features",
+        "chess engine",
+        "can play games"
+      ],
+      [
+        "chess engine",
+        "game AI support",
+        "interactive opponent",
+        "Claude features",
+        "move validation",
+        "game rules"
+      ],
+      [
+        "chess AI opponent",
+        "board game capabilities",
+        "game playing features",
+        "recreational activity support",
+        "AI entertainment ability",
+        "chess engine"
+      ]
+    ],
+    "q_negative_033": [
+      [
+        "weather forecast",
+        "storm prediction",
+        "weather conditions",
+        "precipitation forecast",
+        "severe weather",
+        "meteorological forecast",
+        "weather outlook",
+        "storm alert"
+      ],
+      [
+        "weather prediction",
+        "storm warning",
+        "precipitation data",
+        "severe weather alert",
+        "meteorological service",
+        "weather report"
+      ],
+      [
+        "weather prediction model",
+        "severe storm warning",
+        "meteorological forecast",
+        "precipitation prediction",
+        "weather alert system",
+        "seven day outlook"
+      ]
+    ],
+    "q_negative_034": [
+      [
+        "this day in history",
+        "1920 events",
+        "historical occurrences",
+        "historical milestones",
+        "century-old events",
+        "historic anniversaries",
+        "past events",
+        "1920s history"
+      ],
+      [
+        "1920s timeline",
+        "century-old event",
+        "significant historical date",
+        "historical record",
+        "milestone date",
+        "temporal events"
+      ],
+      [
+        "1920s historical events",
+        "historical archive data",
+        "century old events",
+        "significant date history",
+        "historical timeline records",
+        "past notable occurrences"
+      ]
+    ],
+    "q_negative_035": [
+      [
+        "CEO pets",
+        "executive personal life",
+        "CEO family",
+        "leadership pets",
+        "personal information",
+        "executive details",
+        "leadership personal details",
+        "CEO personal details"
+      ],
+      [
+        "personal details",
+        "leadership personal info",
+        "private information",
+        "executive pet",
+        "pet ownership"
+      ],
+      [
+        "CEO personal background",
+        "executive personal life",
+        "leadership team biography",
+        "executive pet ownership",
+        "company leadership details",
+        "biographical information"
+      ]
+    ],
+    "q_negative_036": [
+      [
+        "company holidays",
+        "holiday schedule",
+        "PTO policy",
+        "time off schedule",
+        "paid holidays",
+        "holiday list",
+        "company calendar",
+        "team time off"
+      ],
+      [
+        "company holidays",
+        "paid leave policy",
+        "employee benefits",
+        "annual vacation days",
+        "company time off"
+      ],
+      [
+        "company holiday schedule",
+        "HR paid time off",
+        "employee holiday policy",
+        "annual observance calendar",
+        "PTO benefits schedule",
+        "holiday benefits list"
+      ]
+    ],
+    "q_negative_037": [
+      [
+        "insurance coverage",
+        "health benefits",
+        "medical coverage",
+        "benefits plan",
+        "coverage details",
+        "employee benefits",
+        "health plan details",
+        "insurance benefits"
+      ],
+      [
+        "medical coverage",
+        "policy details",
+        "health benefits",
+        "medical procedures",
+        "coverage exclusions",
+        "deductible amount"
+      ],
+      [
+        "health benefits coverage",
+        "medical plan details",
+        "insurance policy terms",
+        "employee health coverage",
+        "plan benefits documentation",
+        "healthcare coverage terms"
+      ]
+    ],
+    "q_negative_038": [
+      [
+        "forex rates",
+        "currency conversion",
+        "daily rates",
+        "foreign exchange",
+        "currency pair",
+        "conversion rate",
+        "exchange rates today",
+        "currency values"
+      ],
+      [
+        "forex rates",
+        "market exchange",
+        "currency pairs",
+        "conversion rates",
+        "daily currency values"
+      ],
+      [
+        "currency conversion rate",
+        "forex market data",
+        "currency pair rate",
+        "daily exchange rate",
+        "financial currency value",
+        "real-time conversion"
+      ]
+    ],
+    "q_negative_039": [
+      [
+        "referral incentives",
+        "reward program",
+        "cash incentives",
+        "affiliate program",
+        "referral bonus",
+        "cash back",
+        "incentive program",
+        "referral promotion"
+      ],
+      [
+        "referral bonus",
+        "incentive program",
+        "affiliate system",
+        "bonus structure",
+        "promotional incentive",
+        "reward structure"
+      ],
+      [
+        "referral bonus structure",
+        "affiliate reward program",
+        "customer referral incentive",
+        "incentive program details",
+        "referral commission system",
+        "reward program terms"
+      ]
+    ],
+    "q_negative_040": [
+      [
+        "bootcamp education",
+        "coding bootcamp",
+        "engineer background",
+        "bootcamp graduate",
+        "programming training",
+        "developer education",
+        "bootcamp training",
+        "code academy"
+      ],
+      [
+        "coding training",
+        "technical education",
+        "engineering background",
+        "developer education",
+        "training program background",
+        "bootcamp education"
+      ],
+      [
+        "technical education background",
+        "engineering bootcamp school",
+        "software engineer training",
+        "coding education institution",
+        "technical school history",
+        "engineering educational path"
+      ]
+    ],
+    "q_negative_021": [
+      [
+        "daily exercise plan",
+        "swimming routines",
+        "lap swimming",
+        "workout schedule",
+        "fitness training",
+        "athletic training",
+        "training recommendations"
+      ],
+      [
+        "exercise routine",
+        "daily fitness plan",
+        "cardio training",
+        "pool exercise",
+        "athletic activities",
+        "training schedule"
+      ],
+      [
+        "fitness routine recommendations",
+        "swimming exercise suggestions",
+        "daily workout programming",
+        "personalized training plans",
+        "athletic conditioning advice"
+      ]
+    ],
+    "q_negative_022": [
+      [
+        "localization support",
+        "multilingual interface",
+        "internationalization features",
+        "translation capability",
+        "language pack",
+        "locale settings",
+        "UI translation"
+      ],
+      [
+        "internationalization",
+        "localization",
+        "multilingual support",
+        "i18n features",
+        "language packs",
+        "locale support"
+      ],
+      [
+        "internationalization features",
+        "localization support",
+        "multilingual capabilities",
+        "language translation features",
+        "UI language options"
+      ]
+    ],
+    "q_negative_023": [
+      [
+        "compliance documentation",
+        "regulatory approval",
+        "privacy standards",
+        "certification status",
+        "data protection requirements",
+        "regulatory compliance"
+      ],
+      [
+        "compliance status",
+        "privacy standards",
+        "regulatory approval",
+        "data protection laws",
+        "compliance audit"
+      ],
+      [
+        "GDPR compliance status",
+        "data protection certification",
+        "regulatory certifications achieved",
+        "privacy compliance standards"
+      ]
+    ],
+    "q_negative_024": [
+      [
+        "personal residence",
+        "staff directory",
+        "employee contact",
+        "physical location",
+        "private information",
+        "home location",
+        "contact details"
+      ],
+      [
+        "personal contact information",
+        "residential location",
+        "private employee details",
+        "staff directory"
+      ],
+      [
+        "residential address",
+        "home location information",
+        "personal address details",
+        "operator residence"
+      ]
+    ],
+    "q_negative_025": [
+      [
+        "legal judgment",
+        "judicial decision",
+        "litigation outcome",
+        "case resolution",
+        "trial verdict",
+        "legal ruling",
+        "settlement outcome"
+      ],
+      [
+        "legal proceeding",
+        "litigation result",
+        "case decision",
+        "judicial ruling",
+        "lawsuit outcome"
+      ],
+      [
+        "court case outcomes",
+        "litigation results",
+        "legal proceedings outcomes",
+        "judicial decisions"
+      ]
+    ],
+    "q_negative_026": [
+      [
+        "electoral opinion",
+        "voting position",
+        "policy stance",
+        "political commentary",
+        "campaign opinion",
+        "political engagement",
+        "political position"
+      ],
+      [
+        "political views",
+        "candidate preferences",
+        "political stance",
+        "editorial position"
+      ],
+      [
+        "political opinion statements",
+        "electoral position views",
+        "political stance",
+        "election commentary"
+      ]
+    ],
+    "q_negative_027": [
+      [
+        "licensing costs",
+        "market pricing",
+        "cost per user",
+        "subscription rates",
+        "competitive pricing",
+        "fee structure",
+        "pricing model"
+      ],
+      [
+        "competitor pricing",
+        "subscription cost",
+        "pricing model",
+        "licensing fees",
+        "competitor rates"
+      ],
+      [
+        "competitor pricing information",
+        "rival product costs",
+        "note-taking app pricing",
+        "competitive pricing analysis"
+      ]
+    ],
+    "q_negative_028": [
+      [
+        "server specifications",
+        "infrastructure configuration",
+        "processor model",
+        "hardware details",
+        "system architecture",
+        "internal infrastructure",
+        "technical specifications"
+      ],
+      [
+        "hardware specification",
+        "infrastructure details",
+        "processor type",
+        "server hardware specs"
+      ],
+      [
+        "server hardware specifications",
+        "CPU model information",
+        "production infrastructure details",
+        "hardware configuration specs"
+      ]
+    ],
+    "q_negative_029": [
+      [
+        "company inception",
+        "founding timeline",
+        "establishment date",
+        "competitor background",
+        "company origin",
+        "historical founding",
+        "business founding"
+      ],
+      [
+        "competitor history",
+        "company background",
+        "incorporation date",
+        "company profile"
+      ],
+      [
+        "competitor founding dates",
+        "rival company history",
+        "company establishment timeline",
+        "competitor origin information"
+      ]
+    ],
+    "q_negative_030": [
+      [
+        "reading suggestions",
+        "literary recommendations",
+        "book selection",
+        "leisure reading",
+        "book discovery",
+        "personal preferences",
+        "reading choice"
+      ],
+      [
+        "reading recommendation",
+        "literature suggestion",
+        "reading list",
+        "book choice"
+      ],
+      [
+        "book recommendations",
+        "reading suggestions",
+        "literature recommendations",
+        "book selection advice"
+      ]
+    ]
+  }
+}

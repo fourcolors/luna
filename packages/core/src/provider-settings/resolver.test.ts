@@ -15,6 +15,11 @@ import {
   resolveRoleModel,
   validateAndPrepare,
   ProviderSettingsValidationError,
+  boundMemoryRerankerEngine,
+  isMemoryRerankerEngine,
+  memoryRerankerEnvFromStore,
+  nextMemoryReranker,
+  resolveMemoryRerankerEngine,
 } from "./resolver.js"
 import type { ProviderSettingsPayload } from "./types.js"
 
@@ -353,5 +358,51 @@ describe("validateAndPrepare", () => {
       expect(Array.isArray(err.findings)).toBe(true)
       expect(err.findings.length).toBeGreaterThan(0)
     }
+  })
+})
+
+describe("memory reranker engine", () => {
+  const withEngine = (engine: unknown): ProviderSettingsPayload =>
+    ({ version: 1, providers: [], roleBindings: [], memoryReranker: { engine } }) as unknown as ProviderSettingsPayload
+
+  it("the operator's saved choice wins over LUNA_RERANK_ENGINE (store overrides env)", () => {
+    expect(resolveMemoryRerankerEngine(withEngine("jev"), { LUNA_RERANK_ENGINE: "cross-encoder" })).toBe("jev")
+    expect(resolveMemoryRerankerEngine(withEngine("cross-encoder"), { LUNA_RERANK_ENGINE: "jev" })).toBe("cross-encoder")
+  })
+
+  it("with no saved choice (or an invalid one), the environment decides, else the local cross-encoder", () => {
+    expect(resolveMemoryRerankerEngine(null, { LUNA_RERANK_ENGINE: " jev " })).toBe("jev")
+    expect(resolveMemoryRerankerEngine({ version: 1, providers: [], roleBindings: [] }, {})).toBe("cross-encoder")
+    expect(resolveMemoryRerankerEngine(withEngine("gpt"), { LUNA_RERANK_ENGINE: "jev" })).toBe("jev")
+    expect(resolveMemoryRerankerEngine(null, {})).toBe("cross-encoder")
+  })
+
+  it("a bad LUNA_RERANK_ENGINE (typo, wrong case) resolves to the cross-encoder the server actually binds, never to itself", () => {
+    expect(resolveMemoryRerankerEngine(null, { LUNA_RERANK_ENGINE: "Jev" })).toBe("cross-encoder")
+    expect(boundMemoryRerankerEngine({ LUNA_RERANK_ENGINE: "typo" })).toBe("cross-encoder")
+    expect(boundMemoryRerankerEngine({ LUNA_RERANK_ENGINE: "jev" })).toBe("jev")
+    expect(boundMemoryRerankerEngine({})).toBe("cross-encoder")
+  })
+
+  it("nextMemoryReranker: a sent choice is validated; an absent one keeps the stored choice; an invalid stored one is dropped", () => {
+    expect(nextMemoryReranker({ engine: "jev" }, null)).toEqual({ ok: true, value: { engine: "jev" } })
+    expect(nextMemoryReranker({ engine: "gpt" }, withEngine("jev"))).toEqual({ ok: false, message: "Unknown memory reranker: gpt" })
+    expect(nextMemoryReranker(undefined, withEngine("jev"))).toEqual({ ok: true, value: { engine: "jev" } })
+    expect(nextMemoryReranker(undefined, null)).toEqual({ ok: true, value: undefined })
+    expect(nextMemoryReranker(undefined, withEngine("hand-edited"))).toEqual({ ok: true, value: undefined })
+  })
+
+  it("memoryRerankerEnvFromStore: only a valid saved choice sets LUNA_RERANK_ENGINE at boot", () => {
+    expect(memoryRerankerEnvFromStore(withEngine("jev"))).toBe("jev")
+    expect(memoryRerankerEnvFromStore(withEngine("gpt"))).toBeUndefined()
+    expect(memoryRerankerEnvFromStore({ version: 1, providers: [], roleBindings: [] })).toBeUndefined()
+    expect(memoryRerankerEnvFromStore(null)).toBeUndefined()
+  })
+
+  it("isMemoryRerankerEngine accepts exactly the bindable engines", () => {
+    expect(isMemoryRerankerEngine("jev")).toBe(true)
+    expect(isMemoryRerankerEngine("cross-encoder")).toBe(true)
+    expect(isMemoryRerankerEngine("Jev")).toBe(false)
+    expect(isMemoryRerankerEngine(undefined)).toBe(false)
   })
 })

@@ -36,11 +36,23 @@ export interface RoleBinding {
   readonly preferenceList: ReadonlyArray<{ readonly provider: ProviderKind; readonly model: string }>
 }
 
+/** Memory reranker engines (the MemoryReranker Luna's server binds; see
+ *  packages/memory/bench/README.md "Choosing the rerank engine"). */
+export const MEMORY_RERANKER_ENGINES = ["cross-encoder", "jev"] as const
+export type MemoryRerankerEngine = (typeof MEMORY_RERANKER_ENGINES)[number]
+
 /** The full persisted settings payload stored as a single JSON blob
  *  in provider_settings(key='config', value=<json>). */
 export interface ProviderSettingsPayload {
   readonly providers: ReadonlyArray<ProviderConfig>
   readonly roleBindings: ReadonlyArray<RoleBinding>
+  /**
+   * Operator-chosen memory reranker, applied at boot as LUNA_RERANK_ENGINE
+   * (store wins over env, like every setting here). Absent = never chosen in
+   * the UI: the environment decides (default cross-encoder). Additive; older
+   * payloads simply lack it.
+   */
+  readonly memoryReranker?: { readonly engine: MemoryRerankerEngine }
   /** Schema version for forward compat (always 1 for now). */
   readonly version: 1
 }

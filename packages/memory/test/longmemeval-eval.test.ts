@@ -5,7 +5,7 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import type { MemoryRecord, MemoryRouter } from "@luna/memory"
-import { probAnyDrawn, randomRetrievalBaseline } from "../src/adapters/longmemeval-eval/baselines.js"
+import { probAnyDrawn, randomRetrievalBaseline, signTestP } from "../src/adapters/longmemeval-eval/baselines.js"
 import {
   flattenTurns,
   isAbstentionId,
@@ -13,7 +13,7 @@ import {
   selectSubset,
   SPLIT_URLS,
 } from "../src/adapters/longmemeval-eval/dataset.js"
-import { ingestInstance, namespaceFor } from "../src/adapters/longmemeval-eval/ingest.js"
+import { ingestInstance, namespaceFor, parseLmeDate } from "../src/adapters/longmemeval-eval/ingest.js"
 import { resolveOllamaBaseUrl } from "../src/adapters/eval-common/ollama.js"
 import {
   ALWAYS_ABSTAIN_PREDICTION,
@@ -33,9 +33,9 @@ function sample(over: Partial<LmeInstance> = {}): LmeInstance {
     question_type: "single-session-user",
     question: "What is my dog's name?",
     answer: "Buddy",
-    question_date: "2023/05/08",
+    question_date: "2023/05/08 (Mon) 09:00",
     haystack_session_ids: ["sess-b", "sess-a"],
-    haystack_dates: ["2023/05/01", "2023/04/01"],
+    haystack_dates: ["2023/05/01 (Mon) 10:30", "2023/04/01 (Sat) 08:00"],
     haystack_sessions: [
       [
         { role: "user", content: "I got a dog named Buddy", has_answer: true },
@@ -94,7 +94,7 @@ describe("longmemeval-eval dataset helpers", () => {
       questionId: "q-1",
       sessionId: "sess-b",
       sessionIdx: 0,
-      sessionDate: "2023/05/01",
+      sessionDate: "2023/05/01 (Mon) 10:30",
       role: "user",
       text: "I got a dog named Buddy",
       hasAnswer: true,
@@ -132,6 +132,20 @@ describe("longmemeval-eval ingest", () => {
     expect(puts.map((r) => r.id)).toEqual(["lme_q-1_s0_t0", "lme_q-1_s0_t1", "lme_q-1_s1_t0"])
   })
 
+  it("stamps each record with its session's date, as if saved when the conversation happened", async () => {
+    const { router, puts } = fakeRouter()
+    await Effect.runPromise(ingestInstance(router, flattenTurns(sample())))
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 16)
+    expect(puts.map((r) => day(r.updatedAt))).toEqual(["2023-05-01T10:30", "2023-05-01T10:30", "2023-04-01T08:00"])
+    expect(puts[0]!.createdAt).toBe(puts[0]!.updatedAt)
+  })
+
+  it("parseLmeDate reads the dataset's form as UTC and rejects anything else", () => {
+    expect(parseLmeDate("2023/05/20 (Sat) 02:21")).toBe(Date.UTC(2023, 4, 20, 2, 21))
+    expect(() => parseLmeDate("2023/05/20")).toThrow(/unparseable/)
+    expect(() => parseLmeDate("May 20, 2023")).toThrow(/unparseable/)
+  })
+
   it("fails the ingest when a put fails instead of scoring a partial haystack", async () => {
     const { router } = fakeRouter(true)
     await expect(Effect.runPromise(ingestInstance(router, flattenTurns(sample())))).rejects.toThrow()
@@ -139,6 +153,16 @@ describe("longmemeval-eval ingest", () => {
 })
 
 describe("longmemeval-eval baselines", () => {
+  it("signTestP: exact two-sided sign test (ties excluded)", () => {
+    expect(signTestP(13, 2)).toBeCloseTo(0.00739, 4)
+    expect(signTestP(8, 2)).toBeCloseTo(0.1094, 4)
+    expect(signTestP(2, 8)).toBeCloseTo(signTestP(8, 2), 12)
+    expect(signTestP(5, 5)).toBe(1)
+    expect(signTestP(0, 0)).toBe(1)
+    expect(signTestP(540, 540)).toBe(1)
+    expect(signTestP(600, 480)).toBeGreaterThan(0)
+  })
+
   it("probAnyDrawn matches the closed form and its edge cases", () => {
     // 1 - C(8,2)/C(10,2) = 1 - 28/45
     expect(probAnyDrawn(10, 2, 2)).toBeCloseTo(1 - 28 / 45, 10)

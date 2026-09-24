@@ -20,6 +20,7 @@
  * change schemas in the same commit.
  */
 import { Schema } from "effect"
+import { MEMORY_SEARCH_MODES } from "../memory-search-mode.js"
 
 const Level = Schema.Literals(["info", "warn", "error"])
 
@@ -129,7 +130,7 @@ const RetrievalCallBase = {
   kind: Schema.Literal("RetrievalCall"),
   sessionId: Schema.optionalKey(Schema.String),
   namespace: Schema.optionalKey(Schema.String),
-  mode: Schema.Literals(["vec", "hybrid", "bm25", "hybrid-terms"]),
+  mode: Schema.Literals(MEMORY_SEARCH_MODES),
   candidateCount: Schema.Number,
   topScore: Schema.optionalKey(Schema.Number),
   durationMs: Schema.Number,

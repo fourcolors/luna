@@ -14,6 +14,7 @@
  * and a `kind` discriminant.
  */
 import type { Effect, Scope, Stream } from "effect"
+import type { MemorySearchMode } from "../memory-search-mode.js"
 
 export type ObsEventKind =
   | "SessionStart"
@@ -125,7 +126,7 @@ interface RetrievalCallEventBase extends ObsEventBase {
   readonly kind: "RetrievalCall"
   readonly sessionId?: string
   readonly namespace?: string
-  readonly mode: "vec" | "hybrid" | "bm25" | "hybrid-terms"
+  readonly mode: MemorySearchMode
   readonly candidateCount: number
   readonly topScore?: number
   readonly durationMs: number
@@ -144,7 +145,7 @@ export interface RetrievalCallFullEvent extends RetrievalCallEventBase {
 /**
  * Reranker widening (Phase 3 production reranker, PR #332 bench): the
  * SEPARATE event memory_search / recallForTurn emit after
- * LUNA_MEMORY_RERANK=1 / LUNA_RECALL_RERANK=1 actually reranks a result set -
+ * a rerank lane (LUNA_MEMORY_RERANK / LUNA_RECALL_RERANK, or the engine's default) actually reranks a result set -
  * AFTER the underlying retrieval already logged its own RetrievalCallFullEvent
  * above. A rerank step scores already-retrieved candidates and has no
  * embedder of its own to report, so those fields are simply absent rather

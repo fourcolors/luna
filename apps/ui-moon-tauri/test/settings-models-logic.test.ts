@@ -169,3 +169,52 @@ describe('buildSavePayload', () => {
     expect(payload.providers.find((p) => p.kind === 'anthropic')!.monthlyCapUsd).toBeUndefined()
   })
 })
+
+describe('memory reranker', () => {
+  it('server-list sets the engine when offered and null when not; set-reranker marks dirty; buildSavePayload includes it only when offered', () => {
+    let s = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [], memoryReranker: { engine: 'cross-encoder' } })
+    expect(s.draftReranker).toBe('cross-encoder')
+    expect(s.isDirty).toBe(false)
+    s = reduceModelRouting(s, { type: 'set-reranker', engine: 'jev' })
+    expect(s.draftReranker).toBe('jev')
+    expect(s.isDirty).toBe(true)
+    expect(buildSavePayload(s).memoryReranker).toEqual({ engine: 'jev' })
+    const old = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [] })
+    expect(old.draftReranker).toBeNull()
+    expect('memoryReranker' in buildSavePayload(old)).toBe(false)
+    // choosing on a server that does not offer the setting is a no-op
+    expect(reduceModelRouting(old, { type: 'set-reranker', engine: 'jev' })).toBe(old)
+  })
+
+  it('an untouched control is never saved (so an env-derived engine is not frozen into the store); changing it back is not saved either', () => {
+    let s = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [], memoryReranker: { engine: 'cross-encoder' } })
+    expect('memoryReranker' in buildSavePayload(s)).toBe(false)
+    s = reduceModelRouting(s, { type: 'set-reranker', engine: 'jev' })
+    s = reduceModelRouting(s, { type: 'set-reranker', engine: 'cross-encoder' })
+    expect('memoryReranker' in buildSavePayload(s)).toBe(false)
+  })
+
+  it('an unknown reported engine shows as the cross-encoder the server binds; the running engine is tracked for the restart note', () => {
+    const s = reduceModelRouting(initialModelRoutingState, {
+      type: 'server-list',
+      providers: [],
+      roleBindings: [],
+      memoryReranker: { engine: 'Jev', active: 'cross-encoder' },
+    })
+    expect(s.draftReranker).toBe('cross-encoder')
+    expect(s.activeReranker).toBe('cross-encoder')
+    const pending = reduceModelRouting(initialModelRoutingState, {
+      type: 'server-list',
+      providers: [],
+      roleBindings: [],
+      memoryReranker: { engine: 'jev', active: 'cross-encoder' },
+    })
+    expect(pending.serverReranker).toBe('jev')
+    expect(pending.activeReranker).toBe('cross-encoder')
+  })
+
+  it('re-selecting the current engine does not mark the panel dirty', () => {
+    const s = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [], memoryReranker: { engine: 'jev' } })
+    expect(reduceModelRouting(s, { type: 'set-reranker', engine: 'jev' })).toBe(s)
+  })
+})

@@ -25,6 +25,7 @@ import type {
   ServerFrame,
   ModelRoutingListFrame,
   ModelRoutingStatusFrame,
+  MemoryRerankerSettingsItem,
   ProviderSettingsItem,
   RoleBindingItem,
 } from "../src/protocol.js"
@@ -64,6 +65,8 @@ const makeFakeModelRoutingService = (
 ) => {
   let providers: ProviderSettingsItem[] = [...SEED_PROVIDERS]
   let roleBindings: RoleBindingItem[] = [...SEED_ROLE_BINDINGS]
+  let memoryReranker: MemoryRerankerSettingsItem = { engine: "cross-encoder" }
+  const saves: Array<Record<string, unknown>> = []
   const scheduleRestart = vi.fn()
 
   const svc = {
@@ -71,21 +74,25 @@ const makeFakeModelRoutingService = (
       type: "model-routing-list" as const,
       providers,
       roleBindings,
+      memoryReranker,
     }),
     save: (input: {
       readonly providers: ReadonlyArray<ProviderSettingsItem>
       readonly roleBindings: ReadonlyArray<RoleBindingItem>
+      readonly memoryReranker?: MemoryRerankerSettingsItem
     }): { readonly ok: boolean; readonly message: string } => {
+      saves.push({ ...input })
       if (opts.failOnSave) {
         return { ok: false, message: "validation failure for test" }
       }
       providers = [...input.providers]
       roleBindings = [...input.roleBindings]
+      if (input.memoryReranker !== undefined) memoryReranker = input.memoryReranker
       return { ok: true, message: "Model routing settings saved. Restart to apply." }
     },
     scheduleRestart,
   }
-  return { svc, scheduleRestart }
+  return { svc, scheduleRestart, saves }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -268,6 +275,34 @@ describe("model-routing server routing", () => {
     // scheduleRestart must be called after a successful save.
     expect(scheduleRestart).toHaveBeenCalledTimes(1)
 
+    client.close()
+  })
+
+  it("memory reranker: the list carries the engine; a save passes it through, and an older client's save omits it", async () => {
+    const { svc, saves } = makeFakeModelRoutingService()
+    rig = await startModelRoutingRig(svc)
+    const client = await openClient(rig.url)
+    const first = (await client.waitFor((f) => f.type === "model-routing-list")) as ModelRoutingListFrame
+    expect(first.memoryReranker).toEqual({ engine: "cross-encoder" })
+
+    client.send({
+      type: "model-routing-save",
+      requestId: "req-rr-1",
+      providers: SEED_PROVIDERS,
+      roleBindings: SEED_ROLE_BINDINGS,
+      memoryReranker: { engine: "jev" },
+    })
+    await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-rr-1")
+    const updated = (await client.waitFor(
+      (f) => f.type === "model-routing-list" && (f as ModelRoutingListFrame).memoryReranker?.engine === "jev",
+    )) as ModelRoutingListFrame
+    expect(updated.memoryReranker).toEqual({ engine: "jev" })
+    expect(saves[0]).toMatchObject({ memoryReranker: { engine: "jev" } })
+
+    // An older client never sends the field: the server must not invent one (the service keeps the stored choice).
+    client.send({ type: "model-routing-save", requestId: "req-rr-2", providers: SEED_PROVIDERS, roleBindings: SEED_ROLE_BINDINGS })
+    await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-rr-2")
+    expect("memoryReranker" in saves[1]!).toBe(false)
     client.close()
   })
 

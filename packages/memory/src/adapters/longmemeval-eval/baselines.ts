@@ -47,3 +47,22 @@ export function randomRetrievalBaseline(
   }, 0)
   return { evidenceHit, answerSessionHit }
 }
+
+/**
+ * Exact two-sided sign test: probability of a split at least as lopsided as
+ * `wins` vs `losses` under a fair coin (ties excluded). Used for paired
+ * per-question comparisons between two search configs.
+ */
+export function signTestP(wins: number, losses: number): number {
+  const n = wins + losses
+  if (n === 0) return 1
+  const k = Math.min(wins, losses)
+  // Log space: 0.5 ** n underflows to 0 for n > ~1074.
+  let logTerm = -n * Math.LN2 // log(C(n, 0) / 2^n)
+  let tail = 0
+  for (let i = 0; i <= k; i++) {
+    tail += Math.exp(logTerm)
+    logTerm += Math.log((n - i) / (i + 1))
+  }
+  return Math.min(1, 2 * tail)
+}

@@ -1,0 +1,5791 @@
+{
+ "judges": {
+  "haiku": {
+   "judge": "haiku",
+   "model": "haiku",
+   "servedModel": "claude-haiku-4-5-20251001",
+   "thinking": "disabled"
+  }
+ },
+ "corpus": {
+  "file": "memory-suite-corpus.json",
+  "records": 200,
+  "queries": 230
+ },
+ "embedder": "ollama",
+ "enrichment": null,
+ "configs": [
+  "hybrid",
+  "hybrid:rr=haiku@20",
+  "hybrid:rr=haiku@40"
+ ],
+ "modes": {
+  "hybrid": {
+   "bySlice": {
+    "verbatim": {
+     "slice": "verbatim",
+     "queries": 40,
+     "recallAt1": 1,
+     "recallAt5": 1,
+     "recallAt10": 1,
+     "mrr": 1,
+     "ndcg10": 1
+    },
+    "paraphrase": {
+     "slice": "paraphrase",
+     "queries": 60,
+     "recallAt1": 0.8666666666666667,
+     "recallAt5": 0.9666666666666667,
+     "recallAt10": 0.9666666666666667,
+     "mrr": 0.9097222222222221,
+     "ndcg10": 0.924239926205987
+    },
+    "vocab-mismatch": {
+     "slice": "vocab-mismatch",
+     "queries": 60,
+     "recallAt1": 0.48333333333333334,
+     "recallAt5": 0.6833333333333333,
+     "recallAt10": 0.85,
+     "mrr": 0.5729298941798943,
+     "ndcg10": 0.6371366626002334
+    },
+    "temporal": {
+     "slice": "temporal",
+     "queries": 30,
+     "recallAt1": 0.6166666666666667,
+     "recallAt5": 0.861111111111111,
+     "recallAt10": 0.9444444444444444,
+     "mrr": 0.7322619047619047,
+     "ndcg10": 0.7753949686218028
+    }
+   },
+   "overall": {
+    "slice": "OVERALL",
+    "queries": 190,
+    "recallAt1": 0.7342105263157894,
+    "recallAt5": 0.8675438596491228,
+    "recallAt10": 0.9333333333333333,
+    "mrr": 0.7943525480367586,
+    "ndcg10": 0.82602339151067
+   },
+   "macro": {
+    "slice": "MACRO",
+    "queries": 4,
+    "recallAt1": 0.7416666666666667,
+    "recallAt5": 0.8777777777777779,
+    "recallAt10": 0.9402777777777778,
+    "mrr": 0.8037285052910053,
+    "ndcg10": 0.8341928893570058
+   }
+  },
+  "hybrid:rr=haiku@20": {
+   "bySlice": {
+    "verbatim": {
+     "slice": "verbatim",
+     "queries": 40,
+     "recallAt1": 1,
+     "recallAt5": 1,
+     "recallAt10": 1,
+     "mrr": 1,
+     "ndcg10": 1
+    },
+    "paraphrase": {
+     "slice": "paraphrase",
+     "queries": 60,
+     "recallAt1": 0.8666666666666667,
+     "recallAt5": 0.9833333333333333,
+     "recallAt10": 0.9833333333333333,
+     "mrr": 0.925,
+     "ndcg10": 0.9402751379166701
+    },
+    "vocab-mismatch": {
+     "slice": "vocab-mismatch",
+     "queries": 60,
+     "recallAt1": 0.8,
+     "recallAt5": 0.8833333333333333,
+     "recallAt10": 0.8833333333333333,
+     "mrr": 0.8375,
+     "ndcg10": 0.8492399262059871
+    },
+    "temporal": {
+     "slice": "temporal",
+     "queries": 30,
+     "recallAt1": 0.861111111111111,
+     "recallAt5": 0.9444444444444444,
+     "recallAt10": 0.9444444444444444,
+     "mrr": 0.9333333333333333,
+     "ndcg10": 0.9243712744388558
+    }
+   },
+   "overall": {
+    "slice": "OVERALL",
+    "queries": 190,
+    "recallAt1": 0.8728070175438597,
+    "recallAt5": 0.9491228070175439,
+    "recallAt10": 0.9491228070175439,
+    "mrr": 0.9144736842105263,
+    "ndcg10": 0.921589695160658
+   },
+   "macro": {
+    "slice": "MACRO",
+    "queries": 4,
+    "recallAt1": 0.8819444444444445,
+    "recallAt5": 0.9527777777777777,
+    "recallAt10": 0.9527777777777777,
+    "mrr": 0.9239583333333334,
+    "ndcg10": 0.9284715846403783
+   }
+  },
+  "hybrid:rr=haiku@40": {
+   "bySlice": {
+    "verbatim": {
+     "slice": "verbatim",
+     "queries": 40,
+     "recallAt1": 1,
+     "recallAt5": 1,
+     "recallAt10": 1,
+     "mrr": 1,
+     "ndcg10": 1
+    },
+    "paraphrase": {
+     "slice": "paraphrase",
+     "queries": 60,
+     "recallAt1": 0.9166666666666666,
+     "recallAt5": 0.9833333333333333,
+     "recallAt10": 0.9833333333333333,
+     "mrr": 0.9472222222222223,
+     "ndcg10": 0.9565464876785729
+    },
+    "vocab-mismatch": {
+     "slice": "vocab-mismatch",
+     "queries": 60,
+     "recallAt1": 0.8333333333333334,
+     "recallAt5": 0.9666666666666667,
+     "recallAt10": 0.9666666666666667,
+     "mrr": 0.8888888888888888,
+     "ndcg10": 0.908600031400068
+    },
+    "temporal": {
+     "slice": "temporal",
+     "queries": 30,
+     "recallAt1": 0.8944444444444444,
+     "recallAt5": 0.9444444444444444,
+     "recallAt10": 0.9444444444444444,
+     "mrr": 0.9416666666666667,
+     "ndcg10": 0.9299985094698717
+    }
+   },
+   "overall": {
+    "slice": "OVERALL",
+    "queries": 190,
+    "recallAt1": 0.9043859649122807,
+    "recallAt5": 0.9754385964912281,
+    "recallAt10": 0.9754385964912281,
+    "mrr": 0.9390350877192983,
+    "ndcg10": 0.9463618233095504
+   },
+   "macro": {
+    "slice": "MACRO",
+    "queries": 4,
+    "recallAt1": 0.9111111111111111,
+    "recallAt5": 0.9736111111111112,
+    "recallAt10": 0.9736111111111112,
+    "mrr": 0.9444444444444444,
+    "ndcg10": 0.9487862571371282
+   }
+  }
+ },
+ "perQuery": {
+  "hybrid": {
+   "q_verbatim_001": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_002": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_003": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_004": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_005": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_006": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_007": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_008": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_009": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_010": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_011": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_012": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_013": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_014": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_015": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_016": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_017": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_018": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_019": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_020": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_021": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_022": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_023": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_024": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_025": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_026": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_027": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_028": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_029": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_030": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_031": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_032": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_033": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_034": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_035": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_036": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_037": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_038": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_039": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_verbatim_040": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_001": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_002": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_003": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_004": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_paraphrase_005": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_006": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3
+   },
+   "q_paraphrase_007": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_008": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_009": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_010": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_paraphrase_011": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_paraphrase_012": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_013": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_014": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_015": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_016": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_017": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_018": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_019": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_020": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_021": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_022": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_023": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_024": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_025": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4
+   },
+   "q_paraphrase_026": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_027": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_028": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_029": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_030": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_031": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_032": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_033": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_034": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_paraphrase_035": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_036": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_037": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_038": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_039": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_040": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_041": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_042": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_043": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_paraphrase_044": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_045": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_046": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_047": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_048": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_049": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_050": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_051": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_052": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_053": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_054": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_055": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_056": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_057": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_paraphrase_058": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_059": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_paraphrase_060": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_001": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 6
+   },
+   "q_vocab-mismatch_002": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3
+   },
+   "q_vocab-mismatch_003": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_004": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_005": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_006": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_007": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 5
+   },
+   "q_vocab-mismatch_008": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_009": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 9
+   },
+   "q_vocab-mismatch_010": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_011": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_012": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_vocab-mismatch_013": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_014": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_015": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_016": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_017": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4
+   },
+   "q_vocab-mismatch_018": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 5
+   },
+   "q_vocab-mismatch_019": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_020": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 6
+   },
+   "q_vocab-mismatch_021": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_022": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_023": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_024": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_025": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_026": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 8
+   },
+   "q_vocab-mismatch_027": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_028": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_029": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_030": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_031": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_032": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_033": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_034": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4
+   },
+   "q_vocab-mismatch_035": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_036": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_037": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_038": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_039": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_040": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_vocab-mismatch_041": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 10
+   },
+   "q_vocab-mismatch_042": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 7
+   },
+   "q_vocab-mismatch_043": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_044": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_045": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_vocab-mismatch_046": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 9
+   },
+   "q_vocab-mismatch_047": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 10
+   },
+   "q_vocab-mismatch_048": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_049": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4
+   },
+   "q_vocab-mismatch_050": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_vocab-mismatch_051": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3
+   },
+   "q_vocab-mismatch_052": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_053": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_054": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 7
+   },
+   "q_vocab-mismatch_055": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 7
+   },
+   "q_vocab-mismatch_056": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4
+   },
+   "q_vocab-mismatch_057": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_vocab-mismatch_058": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_059": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_vocab-mismatch_060": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_001": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_temporal_002": {
+    "slice": "temporal",
+    "recallAt1": 0.5,
+    "recallAt5": 0.5,
+    "rank": 1
+   },
+   "q_temporal_003": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 0.3333333333333333,
+    "rank": 4
+   },
+   "q_temporal_004": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_005": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 7
+   },
+   "q_temporal_006": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3
+   },
+   "q_temporal_007": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": 8
+   },
+   "q_temporal_008": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3
+   },
+   "q_temporal_009": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3
+   },
+   "q_temporal_010": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 5
+   },
+   "q_temporal_011": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_012": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_013": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_014": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_015": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_016": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_017": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_018": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_019": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_020": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_021": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_022": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_temporal_023": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_024": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4
+   },
+   "q_temporal_025": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_026": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_027": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2
+   },
+   "q_temporal_028": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_029": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_temporal_030": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1
+   },
+   "q_negative_001": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_002": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_003": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_004": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_005": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_006": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_007": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_008": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_009": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_010": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_011": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_012": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_013": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_014": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_015": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_016": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_017": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_018": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_019": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_020": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_021": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_022": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_023": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_024": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_025": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_026": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_027": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_028": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_029": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_030": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_031": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_032": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_033": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_034": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_035": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_036": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_037": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_038": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_039": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   },
+   "q_negative_040": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null
+   }
+  },
+  "hybrid:rr=haiku@20": {
+   "q_verbatim_001": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2247,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_002": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1962,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_003": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1792,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_004": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1898,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_005": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2112,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_006": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2008,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_007": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2083,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_008": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3292,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_009": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1760,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_010": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1955,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_011": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1783,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_012": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1654,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_013": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1495,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_014": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1931,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_015": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1840,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_016": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2002,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_017": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1881,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_018": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1838,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_019": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1831,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_020": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1891,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_021": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 4301,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_022": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1936,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_023": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 5010,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_024": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2520,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_025": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1781,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_026": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1820,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_027": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1780,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_028": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1646,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_029": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1795,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_030": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1818,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_031": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1984,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_032": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1860,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_033": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1705,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_034": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1781,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_035": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1616,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_036": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2119,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_037": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1977,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_038": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1818,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_039": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1877,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_040": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1769,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_001": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2007,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_002": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2078,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_003": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2112,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_004": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2002,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_005": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1711,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_006": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1809,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_007": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1681,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_008": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1774,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_009": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1784,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_010": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1517,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_011": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1913,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_012": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1735,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_013": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1741,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_014": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1693,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_015": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1769,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_016": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1836,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_017": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1843,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_018": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1761,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_019": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2066,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_020": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1733,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_021": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1528,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_022": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1755,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_023": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1392,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_024": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1847,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_025": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1743,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_026": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1343,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_027": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1801,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_028": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1699,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_029": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2130,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_030": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1772,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_031": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1443,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_032": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1714,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_033": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1730,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_034": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1764,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_035": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1680,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_036": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1877,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_037": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1726,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_038": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1632,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_039": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1685,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_040": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1593,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_041": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1698,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_042": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1710,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_043": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2002,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_044": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1870,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_045": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1762,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_046": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1746,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_047": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1698,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_048": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1698,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_049": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1500,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_050": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1857,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_051": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1702,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_052": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1746,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_053": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1666,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_054": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1848,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_055": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1942,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_056": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1682,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_057": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1423,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_058": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1983,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_059": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1372,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_060": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1746,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_001": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1841,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_002": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1676,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_003": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1806,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_004": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2172,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_005": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1808,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_006": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1932,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_007": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1956,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_008": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1769,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_009": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1759,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_010": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1827,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_011": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1681,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_012": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1808,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_013": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1778,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_014": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1882,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_015": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1804,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_016": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1746,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_017": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1723,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_018": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1748,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_019": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1795,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_020": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2015,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_021": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1684,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_022": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1731,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_023": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1922,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_024": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1509,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_025": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1419,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_026": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1788,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_027": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1851,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_028": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1728,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_029": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1694,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_030": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2206,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_031": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 2218,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_032": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1883,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_033": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 2047,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_034": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4,
+    "judgeMs": 1562,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_035": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2002,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_036": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1566,
+    "judgeWaitMs": 4,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_037": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2268,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_038": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1721,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_039": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1760,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_040": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2144,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_041": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1738,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_042": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2099,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_043": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2062,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_044": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1752,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_045": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1938,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_046": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1442,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_047": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1706,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_048": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1835,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_049": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1804,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_050": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1810,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_051": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2125,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_052": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2014,
+    "judgeWaitMs": 4,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_053": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1453,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_054": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1801,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_055": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1795,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_056": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1722,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_057": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1708,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_058": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2210,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_059": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1958,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_060": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2062,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_001": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1761,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_002": {
+    "slice": "temporal",
+    "recallAt1": 0.5,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2023,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_003": {
+    "slice": "temporal",
+    "recallAt1": 0.3333333333333333,
+    "recallAt5": 0.3333333333333333,
+    "rank": 1,
+    "judgeMs": 1728,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_004": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1740,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_005": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1798,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_006": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2080,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_007": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3430,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_008": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1781,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_009": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1964,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_010": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1772,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_011": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1736,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_012": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1876,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_013": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2329,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_014": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1737,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_015": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1811,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_016": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1686,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_017": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1721,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_018": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1796,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_019": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1778,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_020": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2011,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_021": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2113,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_022": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1894,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_023": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1938,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_024": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1961,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_025": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1805,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_temporal_026": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1802,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_027": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 2065,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_028": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1792,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_029": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1958,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_030": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1362,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_001": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1642,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_002": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1902,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_003": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1620,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_004": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1702,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_005": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1802,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_006": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1856,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_007": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1741,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_008": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1813,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_009": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1699,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_010": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1692,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_011": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1679,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_012": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2151,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_013": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1704,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_014": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1868,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_015": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1810,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_016": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1951,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_017": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2148,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_018": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2226,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_019": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1846,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_020": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1789,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_021": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1774,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_022": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1685,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_023": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1742,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_024": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1661,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_025": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1634,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_026": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2016,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_027": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2198,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_028": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1459,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_029": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1879,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_030": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1778,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_031": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1574,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_032": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1753,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_033": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1655,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_034": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1697,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_035": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1362,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_036": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1525,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_037": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1550,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_038": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1817,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_039": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1837,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_040": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1874,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   }
+  },
+  "hybrid:rr=haiku@40": {
+   "q_verbatim_001": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3149,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_002": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1785,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_003": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1898,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_004": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2755,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_005": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2623,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_006": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2640,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_007": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3050,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_008": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2505,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_009": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2843,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_010": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2665,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_011": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2649,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_012": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2530,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_013": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3166,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_014": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2589,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_015": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2096,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_016": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2290,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_017": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 5521,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_018": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2716,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_019": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2060,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_020": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2486,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_021": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2585,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_022": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2595,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_023": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3188,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_024": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2375,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_025": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2643,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_026": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 6031,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_027": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2451,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_028": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2608,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_029": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2491,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_030": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2668,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_031": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2639,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_032": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2839,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_033": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1994,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_034": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2506,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_035": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3031,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_036": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2017,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_037": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2227,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_038": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3105,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_039": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2782,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_verbatim_040": {
+    "slice": "verbatim",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3048,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_001": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2464,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_002": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2620,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_003": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2649,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_004": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2699,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_005": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3071,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_006": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3319,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_007": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2593,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_008": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2580,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_009": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2549,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_010": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2847,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_011": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2620,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_012": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3,
+    "judgeMs": 3147,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_013": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2616,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_014": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3031,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_015": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1973,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_016": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2580,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_017": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2623,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_018": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3038,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_019": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1718,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_020": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3153,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_021": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 3219,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_022": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3008,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_023": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 5338,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_024": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3067,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_025": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3109,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_026": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2393,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_027": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2097,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_028": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3141,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_029": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2640,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_030": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1940,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_031": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2130,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_032": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2487,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_033": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2689,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_034": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2272,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_035": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2722,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_036": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2426,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_037": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1784,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_038": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2096,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_039": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1886,
+    "judgeWaitMs": 4,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_040": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 2114,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_041": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 3096,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_042": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3126,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_043": {
+    "slice": "paraphrase",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3263,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_044": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2152,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_045": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3117,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_046": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3116,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_047": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2414,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_048": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2507,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_049": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2627,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_050": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3013,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_051": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2533,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_052": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2705,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_053": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1727,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_054": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1837,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_055": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3008,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_056": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3165,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_057": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2398,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_058": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3150,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_059": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3256,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_paraphrase_060": {
+    "slice": "paraphrase",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2441,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_001": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3044,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_002": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 4149,
+    "judgeWaitMs": 1271,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_003": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2479,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_004": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2459,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_005": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2468,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_006": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2534,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_007": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2684,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_008": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2979,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_009": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3037,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_010": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2040,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_011": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3220,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_012": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 2115,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_013": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2753,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_014": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3049,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_015": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2443,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_016": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2608,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_017": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2631,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_018": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2423,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_019": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3032,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_020": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2676,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_021": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3136,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_022": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2431,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_023": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 3319,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_024": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2516,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_025": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2108,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_026": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2551,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_027": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2823,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_028": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2477,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_029": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2486,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_030": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2211,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_031": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 3098,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_032": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3443,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_033": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 3,
+    "judgeMs": 3120,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_034": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4,
+    "judgeMs": 2626,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_035": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2790,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_036": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2139,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_037": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3134,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_038": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2664,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_039": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2521,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_040": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2781,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_041": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3221,
+    "judgeWaitMs": 8,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_042": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2583,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_043": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4,
+    "judgeMs": 3130,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_044": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2467,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_045": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3120,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_046": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3091,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_047": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3105,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_048": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1788,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_049": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 2736,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_050": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2589,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_051": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2084,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_052": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2666,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_053": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2469,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_054": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 2,
+    "judgeMs": 1942,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_055": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3126,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_056": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2541,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_057": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3046,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_058": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3112,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_059": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3054,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_vocab-mismatch_060": {
+    "slice": "vocab-mismatch",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3172,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_001": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2442,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_002": {
+    "slice": "temporal",
+    "recallAt1": 0.5,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2858,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_003": {
+    "slice": "temporal",
+    "recallAt1": 0.3333333333333333,
+    "recallAt5": 0.3333333333333333,
+    "rank": 1,
+    "judgeMs": 2645,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_004": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3290,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_005": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2742,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_006": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3146,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_007": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2600,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_008": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2518,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_009": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2588,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_010": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2531,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_011": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2580,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_012": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2600,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_013": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2575,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_014": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2490,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_015": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3089,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_016": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2654,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_017": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3436,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_018": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1793,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_019": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2625,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_020": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2605,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_temporal_021": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3071,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_022": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2169,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_023": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2520,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_024": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2376,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_temporal_025": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3209,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_026": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 3184,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_027": {
+    "slice": "temporal",
+    "recallAt1": 0,
+    "recallAt5": 1,
+    "rank": 4,
+    "judgeMs": 3211,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_028": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2593,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_temporal_029": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 2574,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_temporal_030": {
+    "slice": "temporal",
+    "recallAt1": 1,
+    "recallAt5": 1,
+    "rank": 1,
+    "judgeMs": 1868,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_001": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3073,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_002": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2642,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_003": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2516,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_004": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2529,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_005": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1983,
+    "judgeWaitMs": 3,
+    "judgeAttempts": 1
+   },
+   "q_negative_006": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3128,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_007": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2538,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_008": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2500,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_009": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1917,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_010": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2415,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_011": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2649,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_012": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3086,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_013": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2413,
+    "judgeWaitMs": 4,
+    "judgeAttempts": 1
+   },
+   "q_negative_014": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2450,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_015": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2436,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_016": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2610,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_017": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2493,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_018": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2457,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_019": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1772,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_020": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2669,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_021": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2603,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_022": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2473,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_023": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2655,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_024": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2727,
+    "judgeWaitMs": 2,
+    "judgeAttempts": 1
+   },
+   "q_negative_025": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3148,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_026": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2572,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_027": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2513,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_028": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2496,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_029": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1792,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_030": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2535,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_031": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2104,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_032": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3144,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_033": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2056,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_034": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2512,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_035": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2569,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_036": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2506,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_037": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2620,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_038": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 3258,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_039": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 2535,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   },
+   "q_negative_040": {
+    "slice": "negative",
+    "recallAt1": 0,
+    "recallAt5": 0,
+    "rank": null,
+    "judgeMs": 1970,
+    "judgeWaitMs": 1,
+    "judgeAttempts": 1
+   }
+  }
+ },
+ "latency": {
+  "hybrid": {
+   "label": "hybrid",
+   "mean": 33.98984404347417,
+   "p50": 34.45441699997173,
+   "p95": 56.26235815002582
+  },
+  "hybrid:rr=haiku@20": {
+   "label": "hybrid:rr=haiku@20",
+   "mean": 1878.6862201304352,
+   "p50": 1816.9865835000528,
+   "p95": 2239.704533150012
+  },
+  "hybrid:rr=haiku@40": {
+   "label": "hybrid:rr=haiku@40",
+   "mean": 2719.391015600004,
+   "p50": 2645.775249999977,
+   "p95": 3278.389831400016
+  }
+ },
+ "judgeLatency": {
+  "hybrid:rr=haiku@20": {
+   "calls": 230,
+   "p50": 1792.496374999988,
+   "p95": 2203.7526249999646,
+   "max": 5008.810291000002,
+   "over2500": 5,
+   "waited": 0,
+   "maxWaitMs": 3.846750000026077,
+   "retried": 0
+  },
+  "hybrid:rr=haiku@40": {
+   "calls": 230,
+   "p50": 2606.8293750000303,
+   "p95": 3218.9635420000413,
+   "max": 6030.308874999988,
+   "over2500": 158,
+   "waited": 1,
+   "maxWaitMs": 1270.657375000068,
+   "retried": 0
+  }
+ },
+ "negativeSeparation": {
+  "hybrid": {
+   "label": "hybrid",
+   "negMedian": 0.01639344262295082,
+   "negP90": 0.01639344262295082,
+   "posMedian": 0.01639344262295082,
+   "posP90": 0.03278688524590164
+  },
+  "hybrid:rr=haiku@20": {
+   "label": "hybrid:rr=haiku@20",
+   "negMedian": 0,
+   "negP90": 25,
+   "posMedian": 92,
+   "posP90": 95
+  },
+  "hybrid:rr=haiku@40": {
+   "label": "hybrid:rr=haiku@40",
+   "negMedian": 0,
+   "negP90": 36.000000000000014,
+   "posMedian": 95,
+   "posP90": 100
+  }
+ }
+}

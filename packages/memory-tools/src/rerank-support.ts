@@ -27,11 +27,13 @@ export const DEFAULT_RERANK_THRESHOLD = 40
 
 export function resolveRerankThreshold(
   env: Record<string, string | undefined> = process.env,
+  /** The engine's own calibrated threshold (MemoryRerankerApi.defaults.threshold). */
+  engineDefault: number = DEFAULT_RERANK_THRESHOLD,
 ): number {
   const raw = env["LUNA_RERANK_THRESHOLD"]?.trim()
-  if (raw === undefined || raw === "") return DEFAULT_RERANK_THRESHOLD
+  if (raw === undefined || raw === "") return engineDefault
   const n = Number(raw)
-  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : DEFAULT_RERANK_THRESHOLD
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : engineDefault
 }
 
 /**
@@ -54,20 +56,29 @@ export const DEFAULT_RERANK_MAX_CANDIDATES = 8
 
 export function resolveRerankMaxCandidates(
   env: Record<string, string | undefined> = process.env,
+  /** The engine's own latency-validated depth (MemoryRerankerApi.defaults.maxCandidates). */
+  engineDefault: number = DEFAULT_RERANK_MAX_CANDIDATES,
 ): number {
   const raw = env["LUNA_RERANK_MAX_CANDIDATES"]?.trim()
-  const n = raw ? Number(raw) : DEFAULT_RERANK_MAX_CANDIDATES
-  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : DEFAULT_RERANK_MAX_CANDIDATES
+  const n = raw ? Number(raw) : engineDefault
+  return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : engineDefault
 }
 
-/** Both lanes are DEFAULT OFF, gated by their own env flag (separate flags -
- * per-turn recall's latency budget is unproven independent of the MCP tool
- * path). A flag is "on" only for the literal value "1". */
-export function rerankFlagEnabled(
+/**
+ * Whether a lane reranks: "1" forces it on, "0" forces it off, and unset
+ * follows the engine (MemoryRerankerApi.defaults.enabled) - on for an engine
+ * the operator explicitly configured (LUNA_RERANK_ENGINE=jev), off for the
+ * always-bound default cross-encoder, which keeps today's opt-in behavior.
+ */
+export function rerankLaneEnabled(
   varName: string,
+  engineEnabledByDefault: boolean | undefined,
   env: Record<string, string | undefined> = process.env,
 ): boolean {
-  return env[varName]?.trim() === "1"
+  const raw = env[varName]?.trim()
+  if (raw === "1") return true
+  if (raw === "0") return false
+  return engineEnabledByDefault === true
 }
 
 /**
@@ -77,10 +88,10 @@ export function rerankFlagEnabled(
  * fires - it never reaches our degrade-to-un-reranked fallback (Codex
  * review finding). So the rerank call must give up comfortably inside that
  * budget: fail fast, degrade to the plain pack, keep recall alive. 1500ms
- * default leaves ~1s for retrieval + packing. Note: the Phase 3 Haiku
- * engine (~30s/call) can never finish inside this budget - per-turn rerank
- * only becomes functional with a fast engine (Phase 4 cross-encoder);
- * until then the flag degrades safely instead of nulling recall.
+ * default leaves ~1s for retrieval + packing. Only a fast engine fits: on
+ * laptop measurements Jev at depth 40 (~0.2 s warm) does, the cross-encoder
+ * at depth 40 (~2.2 s) does not (the removed Haiku engine took ~30 s); a
+ * slow engine degrades to the plain pack instead of nulling recall.
  * memory_search (explicit tool call, no 2.5s outer bound) is unaffected
  * and uses the engine's own default timeout.
  */
@@ -119,12 +130,13 @@ export const RECALL_RERANK_SAFETY_MARGIN_MS = 400
 export const RECALL_RERANK_MIN_USEFUL_MS = 250
 
 /**
- * "Log once per process" failure policy, keyed by a caller-supplied lane
- * name so memory_search's first failure doesn't suppress recallForTurn's
- * (and vice versa). A module-level Set is intentional here - this process
- * may serve MANY requests, and repeating an identical rerank-unavailable
- * warning on every single one would just be log noise once the operator has
- * seen it.
+ * "Log once per process" failure policy, keyed by lane AND error type, so
+ * memory_search's first failure doesn't suppress recallForTurn's (and vice
+ * versa), and one kind of failure doesn't hide another (a hosted engine's
+ * first-call cold-start timeout must not swallow a later auth or rate-limit
+ * error). A module-level Set is intentional here - this process may serve
+ * MANY requests, and repeating an identical rerank-unavailable warning on
+ * every single one would just be log noise once the operator has seen it.
  */
 const loggedLanes = new Set<string>()
 
@@ -132,8 +144,9 @@ export function logRerankFailureOnce(
   lane: string,
   failure: RerankError | Cause.Cause<RerankError>,
 ): Effect.Effect<void> {
-  if (loggedLanes.has(lane)) return Effect.void
-  loggedLanes.add(lane)
+  const key = `${lane}\u0000${Cause.isCause(failure) ? "cause" : failure.op}`
+  if (loggedLanes.has(key)) return Effect.void
+  loggedLanes.add(key)
   // Accepts a bare RerankError or a full Cause for flexibility. Both call
   // sites now convert defects to RerankError via catchAllDefect (so
   // interrupts propagate), but a Cause-shaped failure still formats sanely
@@ -143,8 +156,8 @@ export function logRerankFailureOnce(
     : `${failure.op}: ${failure.message}`
   return Effect.logWarning(
     `[luna/memory] ${lane}: rerank failed (${detail}) - ` +
-      "falling back to un-reranked order. Further rerank failures on this " +
-      "lane are suppressed for the rest of this process.",
+      "falling back to un-reranked order. Further rerank failures of this " +
+      "kind on this lane are suppressed for the rest of this process.",
   )
 }
 

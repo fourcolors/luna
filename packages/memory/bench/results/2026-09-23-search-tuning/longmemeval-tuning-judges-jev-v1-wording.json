@@ -1,0 +1,3896 @@
+{
+ "config": {
+  "split": "s",
+  "file": "longmemeval_s_cleaned.json",
+  "offset": 0,
+  "limit": 60,
+  "seed": 42,
+  "embedModel": "nomic-embed-text",
+  "ollamaVersion": "0.34.3",
+  "configs": [
+   "hybrid",
+   "hybrid:rr=jev@20",
+   "hybrid:rr=jev@40",
+   "hybrid:rr=jevpair@20",
+   "hybrid:rr=jevpair@40"
+  ],
+  "judges": {
+   "jev": {
+    "judge": "jev",
+    "model": "jev-latest",
+    "servedModel": "jev-1.13.0"
+   },
+   "jevpair": {
+    "judge": "jevpair",
+    "model": "jev-latest",
+    "servedModel": "jev-1.13.0",
+    "rateLimit": "1000 requests / 60 s"
+   }
+  },
+  "servedModelsSeen": {
+   "jev": [
+    "jev-1.13.0"
+   ],
+   "jevpair": [
+    "jev-1.13.0"
+   ]
+  }
+ },
+ "runId": "6caa5719cb549320",
+ "resumedQuestions": 0,
+ "wallClockSec": 749.595,
+ "summary": [
+  {
+   "label": "hybrid",
+   "ev5": 49,
+   "ev10": 67,
+   "sess5": 78,
+   "wins": 0,
+   "losses": 0,
+   "p": 1
+  },
+  {
+   "label": "hybrid:rr=jev@20",
+   "ev5": 77,
+   "ev10": 83,
+   "sess5": 89,
+   "wins": 23,
+   "losses": 3,
+   "p": 8.797645568847668e-05,
+   "judgeLatency": {
+    "calls": 60,
+    "p50": 360.55112499999814,
+    "p95": 534.5005830000009,
+    "max": 1005.1965840000194,
+    "over2500": 0,
+    "waited": 0,
+    "maxWaitMs": 0,
+    "retried": 0
+   }
+  },
+  {
+   "label": "hybrid:rr=jev@40",
+   "ev5": 85,
+   "ev10": 96,
+   "sess5": 96,
+   "wins": 27,
+   "losses": 3,
+   "p": 8.430331945419306e-06,
+   "judgeLatency": {
+    "calls": 60,
+    "p50": 414.00687499996275,
+    "p95": 573.4128329999512,
+    "max": 746.4666250000009,
+    "over2500": 0,
+    "waited": 0,
+    "maxWaitMs": 0,
+    "retried": 0
+   }
+  },
+  {
+   "label": "hybrid:rr=jevpair@20",
+   "ev5": 77,
+   "ev10": 83,
+   "sess5": 90,
+   "wins": 23,
+   "losses": 3,
+   "p": 8.797645568847668e-05,
+   "judgeLatency": {
+    "calls": 60,
+    "p50": 368.69570799998473,
+    "p95": 682.3999160000822,
+    "max": 11349.894792000065,
+    "over2500": 2,
+    "waited": 0,
+    "maxWaitMs": 1.7866659999708645,
+    "retried": 1
+   }
+  },
+  {
+   "label": "hybrid:rr=jevpair@40",
+   "ev5": 83,
+   "ev10": 96,
+   "sess5": 96,
+   "wins": 27,
+   "losses": 4,
+   "p": 3.395322710275644e-05,
+   "judgeLatency": {
+    "calls": 60,
+    "p50": 511.21129100001417,
+    "p95": 1505.4275409999827,
+    "max": 61232.61279199994,
+    "over2500": 3,
+    "waited": 0,
+    "maxWaitMs": 2.4372500000172295,
+    "retried": 2
+   }
+  }
+ ],
+ "rankBuckets": {
+  "1-10": 0,
+  "11-50": 31,
+  ">50": 0
+ },
+ "questions": [
+  {
+   "questionId": "945e3d21",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 489,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 255.94558300000062,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 327.4857499999998,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3206.5899580000005,
+      "waitMs": 0.15262500000062573,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3339.067916,
+      "waitMs": 0.33183400000052643,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_945e3d21_s3_t4": 4,
+    "lme_945e3d21_s19_t2": 15
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_59149c78",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 497,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 287.88574999999764,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 351.9285000000018,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 345.2769999999982,
+      "waitMs": 0.2730840000003809,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 438.783875000001,
+      "waitMs": 0.21987500000250293,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_59149c78_s29_t6": 34
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "726462e0",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 501,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 207.26333399999567,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 231.3504580000008,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 314.46733400000085,
+      "waitMs": 0.2371670000065933,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 545.9313330000004,
+      "waitMs": 0.47950000000128057,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_726462e0_s11_t2": 4
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_468eb063",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 498,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0,
+     "judge": {
+      "ms": 104.11037500000384,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 273.01550000000134,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0,
+     "judge": {
+      "ms": 426.99166700000205,
+      "waitMs": 0.11204200000065612,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 374.13400000000547,
+      "waitMs": 0.18504199999733828,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_468eb063_s10_t0": null
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "001be529",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 514,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 181.73704200000066,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 265.62112499999785,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 292.6958750000049,
+      "waitMs": 0.17541699999856064,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 389.85558299999684,
+      "waitMs": 0.28650000000197906,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_001be529_s42_t4": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "577d4d32",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 487,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0,
+     "judge": {
+      "ms": 205.72400000000198,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 238.02387499999895,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0,
+     "judge": {
+      "ms": 186.9857090000005,
+      "waitMs": 0.18929100000241306,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 241.65208300000086,
+      "waitMs": 0.31529199999931734,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_577d4d32_s41_t4": 21
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "561fabcd",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 495,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 155.7930839999899,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 156.21641700000328,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 281.2042499999952,
+      "waitMs": 0.590583000011975,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 245.87675000001036,
+      "waitMs": 0.20054099999833852,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_561fabcd_s46_t5": 10
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_2655b836",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 465,
+   "evidenceCount": 2,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 258.65899999999965,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 3,
+     "judge": {
+      "ms": 269.95637500000885,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 192.93729200000234,
+      "waitMs": 0.1517089999979362,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 3,
+     "judge": {
+      "ms": 231.27137499999662,
+      "waitMs": 0.34141700000327546,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_2655b836_s12_t0": 5,
+    "lme_gpt4_2655b836_s17_t2": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "ba61f0b9",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 454,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 534.5005830000009,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 238.7527090000076,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 403.2024160000001,
+      "waitMs": 0.3914589999913005,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 562.8975000000064,
+      "waitMs": 0.2355000000097789,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_ba61f0b9_s13_t2": 2,
+    "lme_ba61f0b9_s40_t0": 7
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "c14c00dd",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 492,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 260.1117499999964,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 251.63474999999744,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 237.95316699999967,
+      "waitMs": 0.32666699998662807,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 435.9410840000055,
+      "waitMs": 0.45737499999813735,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_c14c00dd_s10_t4": 2
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "b759caee",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 516,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 158.07875000000058,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 208.3693340000027,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 199.49979100000928,
+      "waitMs": 0.16554200000246055,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 562.0436669999908,
+      "waitMs": 0.2232910000020638,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_b759caee_s35_t1": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "d905b33f",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 504,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 241.99745800001256,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 206.7509999999893,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 259.893167000002,
+      "waitMs": 0.1316250000090804,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 301.4802079999936,
+      "waitMs": 0.2087080000055721,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_d905b33f_s18_t2": 8,
+    "lme_d905b33f_s33_t6": 4
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "e4e14d04",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 461,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 206.04912499999045,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 262.9219999999914,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 275.54683400000795,
+      "waitMs": 0.20904200000222772,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 588.03033400001,
+      "waitMs": 0.19529100001091138,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_e4e14d04_s11_t0": 5,
+    "lme_e4e14d04_s40_t0": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_2f91af09",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 515,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 459.59104200001457,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 369.0871249999909,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 394.8040000000037,
+      "waitMs": 0.346417000022484,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 643.0297500000161,
+      "waitMs": 2.1697080000012647,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_2f91af09_s7_t0": 6,
+    "lme_gpt4_2f91af09_s39_t0": 7,
+    "lme_gpt4_2f91af09_s51_t0": 15
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "4fd1909e",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 554,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 201.88979200000176,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 293.8469160000095,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 630.1865830000024,
+      "waitMs": 0.1608330000017304,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 555.4304580000171,
+      "waitMs": 0.3074170000036247,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_4fd1909e_s23_t2": 2
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "2133c1b5_abs",
+   "questionType": "knowledge-update",
+   "abstention": true,
+   "haystackTurns": 476,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 249.86625000002095,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 261.90466699999524,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 375.50570899999,
+      "waitMs": 0.26033300001290627,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 391.8379169999971,
+      "waitMs": 0.1889579999842681,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_0a05b494",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 506,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 314.6747500000056,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 333.6373329999915,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 334.9765409999818,
+      "waitMs": 0.12491700000828132,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 267.0528329999943,
+      "waitMs": 0.1704170000157319,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_0a05b494_s7_t2": 1,
+    "lme_gpt4_0a05b494_s36_t2": 7
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "982b5123_abs",
+   "questionType": "temporal-reasoning",
+   "abstention": true,
+   "haystackTurns": 505,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 410.02174999998533,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 746.4666250000009,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 541.4204169999866,
+      "waitMs": 0.18674999999348074,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 578.1083340000187,
+      "waitMs": 0.3266660000081174,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_982b5123_abs_s39_t0": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "8cf4d046",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 468,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 213.58720899999025,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 274.02183400001377,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 359.7125840000226,
+      "waitMs": 0.13137499999720603,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1507.864791,
+      "waitMs": 2.4372500000172295,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_8cf4d046_s15_t0": 5,
+    "lme_8cf4d046_s43_t10": 18
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "edced276",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 482,
+   "evidenceCount": 3,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 360.55112499999814,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 549.0673330000136,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 563.8999999999942,
+      "waitMs": 0.11499999999068677,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 534.5050000000047,
+      "waitMs": 0.3513329999987036,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_edced276_s1_t0": 3,
+    "lme_edced276_s20_t0": 4,
+    "lme_edced276_s20_t2": 5
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "00ca467f",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 486,
+   "evidenceCount": 2,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 321.092874999973,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 421.8997500000114,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 233.58075000002282,
+      "waitMs": 0.13224999999511056,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 434.8176669999957,
+      "waitMs": 0.410875000001397,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_00ca467f_s1_t0": null,
+    "lme_00ca467f_s40_t0": null
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_59c863d7",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 481,
+   "evidenceCount": 5,
+   "answerSessionCount": 4,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 3
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 4,
+     "ev10": 4,
+     "sess5": 4,
+     "judge": {
+      "ms": 285.82520900000236,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 4,
+     "ev10": 5,
+     "sess5": 4,
+     "judge": {
+      "ms": 512.6736670000246,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 4,
+     "ev10": 4,
+     "sess5": 4,
+     "judge": {
+      "ms": 502.8177910000086,
+      "waitMs": 0.13587500000721775,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 4,
+     "ev10": 5,
+     "sess5": 4,
+     "judge": {
+      "ms": 653.9414580000157,
+      "waitMs": 0.23870799998985603,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_59c863d7_s1_t0": 7,
+    "lme_gpt4_59c863d7_s32_t0": 4,
+    "lme_gpt4_59c863d7_s40_t0": 17,
+    "lme_gpt4_59c863d7_s43_t0": 9,
+    "lme_gpt4_59c863d7_s43_t8": 26
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "488d3006",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 509,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 333.54054100002395,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 412.03833299997495,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 437.0903330000001,
+      "waitMs": 0.12216699999407865,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 511.4235000000044,
+      "waitMs": 0.21220899999025278,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_488d3006_s44_t5": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "27016adc",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 491,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 316.4896670000162,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 430.53900000001886,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 302.824500000017,
+      "waitMs": 0.7476660000102129,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 727.3848749999888,
+      "waitMs": 0.19766599999275059,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_27016adc_s11_t0": 15,
+    "lme_27016adc_s31_t2": 13
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "f0853d11",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 500,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 305.5310410000093,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 290.9446659999958,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 433.8990829999966,
+      "waitMs": 0.9262499999895226,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 10512.17408300002,
+      "waitMs": 1.4269590000039898,
+      "attempts": 2
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_f0853d11_s18_t0": 35,
+    "lme_f0853d11_s22_t0": 10
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "eeda8a6d_abs",
+   "questionType": "multi-session",
+   "abstention": true,
+   "haystackTurns": 477,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 235.8522079999675,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 301.5131249999977,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 374.1724169999943,
+      "waitMs": 0.1311250000144355,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 571.8596249999828,
+      "waitMs": 0.36395899998024106,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "8fb83627",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 485,
+   "evidenceCount": 3,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 366.38945800001966,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 332.5212500000489,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 383.35349999996834,
+      "waitMs": 0.4026249999878928,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 61234.328541999974,
+      "waitMs": 1.7157500000321306,
+      "attempts": 2
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_8fb83627_s24_t2": 4,
+    "lme_8fb83627_s24_t10": 2,
+    "lme_8fb83627_s42_t6": null
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "4f54b7c9",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 491,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 414.4084589999984,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 420.84862499998417,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 330.39883299998473,
+      "waitMs": 0.15537499997299165,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 548.2317909999983,
+      "waitMs": 0.45750000001862645,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_4f54b7c9_s21_t0": 4,
+    "lme_4f54b7c9_s42_t0": 17
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "0ddfec37_abs",
+   "questionType": "knowledge-update",
+   "abstention": true,
+   "haystackTurns": 447,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 327.2266669999808,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 325.1806669999496,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 323.265625,
+      "waitMs": 0.12900000001536682,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 284.1929169999785,
+      "waitMs": 0.2199160000309348,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_6dc9b45b",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 565,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 433.3487080000341,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 441.73983299999963,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 589.8712090000045,
+      "waitMs": 0.379625000001397,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 500.29770800005645,
+      "waitMs": 0.15712500002700835,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_6dc9b45b_s41_t0": 28
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "e66b632c",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 506,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 400.02833299996564,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 488.194749999966,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 319.2504159999662,
+      "waitMs": 0.4026249999878928,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 417.5136250000214,
+      "waitMs": 0.16375000000698492,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_e66b632c_s4_t2": 10,
+    "lme_e66b632c_s45_t8": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "46a3abf7",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 503,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 3,
+     "judge": {
+      "ms": 398.57695800001966,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 514.4699170000385,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 3,
+     "judge": {
+      "ms": 491.8611669999664,
+      "waitMs": 0.23658399999840185,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 3,
+     "judge": {
+      "ms": 435.59974999999395,
+      "waitMs": 1.498542000015732,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_46a3abf7_s8_t0": 28,
+    "lme_46a3abf7_s17_t0": 22,
+    "lme_46a3abf7_s36_t0": 15
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_5501fe77",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 516,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 471.6318329999922,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 474.7287500000093,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 3,
+     "judge": {
+      "ms": 347.9983749999665,
+      "waitMs": 0.17358399997465312,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 319.9527920000255,
+      "waitMs": 0.23058299999684095,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_5501fe77_s36_t0": 4,
+    "lme_gpt4_5501fe77_s39_t0": 29,
+    "lme_gpt4_5501fe77_s40_t0": 5
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "3f1e9474",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 515,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 344.7317500000354,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 436.98345900001004,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 551.4648750000051,
+      "waitMs": 1.7866659999708645,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 669.0766670000157,
+      "waitMs": 0.16800000000512227,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_3f1e9474_s11_t8": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "5a4f22c0",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 487,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 199.5125409999746,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 344.259458000015,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 336.7859999999637,
+      "waitMs": 0.1163749999832362,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 403.3865839999635,
+      "waitMs": 0.21412499999860302,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_5a4f22c0_s7_t2": 4,
+    "lme_5a4f22c0_s40_t0": 17
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "3d86fd0a",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 526,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 325.9861669999664,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 395.0874579999945,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 331.265832999954,
+      "waitMs": 0.24516599997878075,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 321.43291699996917,
+      "waitMs": 0.16920800000661984,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_3d86fd0a_s8_t2": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "caf03d32",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 493,
+   "evidenceCount": 2,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 350.025083000015,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 447.5335419999901,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 339.4892080000136,
+      "waitMs": 0.17674999998416752,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 402.70845800003735,
+      "waitMs": 0.19312499999068677,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_caf03d32_s50_t0": 5,
+    "lme_caf03d32_s50_t2": 4
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "f685340e_abs",
+   "questionType": "knowledge-update",
+   "abstention": true,
+   "haystackTurns": 456,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 403.36362499999814,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 353.6733330000425,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 408.0518329999759,
+      "waitMs": 0.24187500000698492,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 286.8931670000311,
+      "waitMs": 0.21208299999125302,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_d12ceb0e",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 477,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 343.4731669999892,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 340.7023749999935,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 279.37308399996255,
+      "waitMs": 0.23170899995602667,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 480.92633300001035,
+      "waitMs": 0.35091699997428805,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_d12ceb0e_s6_t0": 10,
+    "lme_gpt4_d12ceb0e_s16_t0": 1,
+    "lme_gpt4_d12ceb0e_s25_t0": 14
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_93159ced_abs",
+   "questionType": "temporal-reasoning",
+   "abstention": true,
+   "haystackTurns": 608,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 363.5524999999907,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 471.8577079999959,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 281.67445799999405,
+      "waitMs": 0.24200000002747402,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 616.171417000005,
+      "waitMs": 0.2279160000034608,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "195a1a1b",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 515,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 460.52525000000605,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 444.6988329999731,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 383.7623330000206,
+      "waitMs": 0.17195799999171868,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 614.5089589999989,
+      "waitMs": 0.30554099997971207,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_195a1a1b_s45_t4": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "6ade9755",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 513,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 438.42249999998603,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 539.6001659999602,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 294.4634579999838,
+      "waitMs": 0.12304199999198318,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 321.01283399993554,
+      "waitMs": 0.1790000000037253,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_6ade9755_s50_t4": 13
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_fe651585",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 471,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 258.79462499998044,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 414.00687499996275,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 430.0600829999894,
+      "waitMs": 0.2654999999795109,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 557.7462910000468,
+      "waitMs": 1.0977079999865964,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_fe651585_s40_t0": 13,
+    "lme_gpt4_fe651585_s46_t8": 4
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "f4f1d8a4",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 585,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 526.6781249999767,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 608.3798330000136,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 740.1196250000503,
+      "waitMs": 0.8645839999662712,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 423.2288329999428,
+      "waitMs": 1.780667000100948,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_f4f1d8a4_s50_t4": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "3fdac837",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 453,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 433.89729100000113,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 494.8262500000419,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 11350.164792000083,
+      "waitMs": 0.27000000001862645,
+      "attempts": 2
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 386.93512499995995,
+      "waitMs": 0.4085839999606833,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_3fdac837_s16_t2": 11,
+    "lme_3fdac837_s38_t0": 5
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "eace081b",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 489,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 872.6394579999615,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 597.4568339999532,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 492.96658399992157,
+      "waitMs": 1.4492919999174774,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 542.2444169999799,
+      "waitMs": 0.18158299999777228,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_eace081b_s39_t2": 7
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "1da05512",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 462,
+   "evidenceCount": 2,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 406.19087499997113,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 467.05112499999814,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 491.2687089999672,
+      "waitMs": 0.4114999999292195,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 353.78666699992027,
+      "waitMs": 0.696750000002794,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_1da05512_s38_t0": 3,
+    "lme_1da05512_s38_t4": 6
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "eac54add",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 476,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 1005.1965840000194,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 550.0891250000568,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 394.7200840000296,
+      "waitMs": 0.13837499998044223,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 569.1965830000117,
+      "waitMs": 0.8199170000152662,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_eac54add_s35_t0": null
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "61f8c8f8",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 459,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 505.3765419999836,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 512.080040999921,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 594.5853750000242,
+      "waitMs": 0.3330420000711456,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 601.4932089999784,
+      "waitMs": 0.23183299996890128,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_61f8c8f8_s23_t0": 38,
+    "lme_61f8c8f8_s31_t2": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "afdc33df",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 502,
+   "evidenceCount": 3,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 1,
+     "judge": {
+      "ms": 421.1125839999877,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 1,
+     "judge": {
+      "ms": 441.2384580000071,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 1,
+     "judge": {
+      "ms": 576.9806249999674,
+      "waitMs": 0.16204199998173863,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 1,
+     "judge": {
+      "ms": 645.6180840000743,
+      "waitMs": 0.27745799999684095,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_afdc33df_s8_t2": 3,
+    "lme_afdc33df_s8_t4": 6,
+    "lme_afdc33df_s8_t6": 5
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "28dc39ac",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 431,
+   "evidenceCount": 5,
+   "answerSessionCount": 5,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 4
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 464.38495900004636,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 4,
+     "ev10": 5,
+     "sess5": 4,
+     "judge": {
+      "ms": 573.4128329999512,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 329.2347080000909,
+      "waitMs": 0.2701670000096783,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 3,
+     "ev10": 5,
+     "sess5": 5,
+     "judge": {
+      "ms": 553.3970410000766,
+      "waitMs": 1.834374999976717,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_28dc39ac_s1_t6": 36,
+    "lme_28dc39ac_s11_t0": 22,
+    "lme_28dc39ac_s19_t0": 1,
+    "lme_28dc39ac_s23_t0": 6,
+    "lme_28dc39ac_s27_t0": 2
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "8c18457d",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 434,
+   "evidenceCount": 3,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 465.5576669999864,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 452.61383400007617,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 600.5551249999553,
+      "waitMs": 0.32400000002235174,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 737.1811250000028,
+      "waitMs": 0.8213749999413267,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_8c18457d_s9_t4": 7,
+    "lme_8c18457d_s9_t10": 6,
+    "lme_8c18457d_s30_t0": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "gpt4_31ff4165",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 457,
+   "evidenceCount": 6,
+   "answerSessionCount": 5,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 4
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 3,
+     "judge": {
+      "ms": 482.22387499990873,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 3,
+     "ev10": 4,
+     "sess5": 3,
+     "judge": {
+      "ms": 489.3215419999324,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 3,
+     "judge": {
+      "ms": 314.7885419999948,
+      "waitMs": 0.12512499990407377,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 3,
+     "ev10": 5,
+     "sess5": 3,
+     "judge": {
+      "ms": 548.096332999994,
+      "waitMs": 0.1757079999661073,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_31ff4165_s13_t0": 15,
+    "lme_gpt4_31ff4165_s14_t0": 32,
+    "lme_gpt4_31ff4165_s14_t2": 31,
+    "lme_gpt4_31ff4165_s28_t0": 12,
+    "lme_gpt4_31ff4165_s30_t0": 34,
+    "lme_gpt4_31ff4165_s40_t0": null
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "982b5123",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 473,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 459.8041249999078,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 408.58379200007766,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 415.12945800006855,
+      "waitMs": 0.15691699995659292,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 467.2691669999622,
+      "waitMs": 0.3298750000540167,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_982b5123_s25_t0": 1,
+    "lme_982b5123_s34_t0": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "1903aded",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 486,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 427.5343329999596,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 518.6475840000203,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 472.079875000054,
+      "waitMs": 0.2267080000601709,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 463.1455829999177,
+      "waitMs": 0.2662090000230819,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_1903aded_s29_t1": 11
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "06db6396",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 479,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 490.64554199995473,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 499.5131250000559,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 682.5419580000453,
+      "waitMs": 0.14204199996311218,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 401.2461249999469,
+      "waitMs": 0.32295800000429153,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_06db6396_s3_t4": 2,
+    "lme_06db6396_s31_t0": 1
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "7527f7e2",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 490,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 447.1368749999674,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 563.4356249999255,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 331.0417080000043,
+      "waitMs": 0.13379200000781566,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 517.6125840001041,
+      "waitMs": 0.22133400000166148,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_7527f7e2_s15_t2": 2
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "c5e8278d",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 469,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 441.93766700010747,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 395.7368339999812,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 353.0027499999851,
+      "waitMs": 0.23200000007636845,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 571.5235419999808,
+      "waitMs": 0.34987500007264316,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_c5e8278d_s36_t0": 6
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "5e1b23de",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 445,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 578.6696249999804,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 537.7592500000028,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 369.06387499999255,
+      "waitMs": 0.36816700000781566,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 644.6308750000317,
+      "waitMs": 0.3029170000227168,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_5e1b23de_s14_t6": 16
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  },
+  {
+   "questionId": "72e3ee87",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 496,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=jev@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 486.4956249999814,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jev@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 435.67270799994003,
+      "waitMs": 0,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 343.62791599996854,
+      "waitMs": 0.20849999994970858,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=jevpair@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 385.5850410000421,
+      "waitMs": 0.31225000007543713,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_72e3ee87_s19_t0": 4,
+    "lme_72e3ee87_s45_t8": 3
+   },
+   "servedModels": {
+    "jev": "jev-1.13.0",
+    "jevpair": "jev-1.13.0"
+   }
+  }
+ ]
+}

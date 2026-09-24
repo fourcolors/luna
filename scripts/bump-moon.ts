@@ -43,6 +43,7 @@ export interface VersionFile {
   readonly pkg?: string
 }
 
+// TODO(#718): bun.lock also records the Moon workspace version and is never bumped here.
 /** The four files that carry the Moon version and MUST stay in lockstep. */
 export const VERSION_FILES: readonly VersionFile[] = [
   { path: "apps/ui-moon-tauri/package.json", kind: "json" },

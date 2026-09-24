@@ -5,8 +5,10 @@ import {
   DEFAULT_RERANK_THRESHOLD,
   emitRerankObservability,
   logRerankFailureOnce,
-  rerankFlagEnabled,
+  DEFAULT_RERANK_MAX_CANDIDATES,
+  rerankLaneEnabled,
   resetRerankFailureLogState,
+  resolveRerankMaxCandidates,
   resolveRerankThreshold,
 } from "../src/rerank-support.js"
 
@@ -40,16 +42,29 @@ describe("resolveRerankThreshold", () => {
   })
 })
 
-describe("rerankFlagEnabled", () => {
-  it("is false when unset", () => {
-    expect(rerankFlagEnabled("LUNA_MEMORY_RERANK", {})).toBe(false)
+describe("rerankLaneEnabled", () => {
+  it("with no engine default, is on only for the literal '1' (today's opt-in cross-encoder)", () => {
+    expect(rerankLaneEnabled("LUNA_MEMORY_RERANK", undefined, {})).toBe(false)
+    expect(rerankLaneEnabled("LUNA_MEMORY_RERANK", undefined, { LUNA_MEMORY_RERANK: "1" })).toBe(true)
+    expect(rerankLaneEnabled("LUNA_MEMORY_RERANK", undefined, { LUNA_MEMORY_RERANK: "true" })).toBe(false)
+    expect(rerankLaneEnabled("LUNA_MEMORY_RERANK", false, { LUNA_MEMORY_RERANK: "yes" })).toBe(false)
   })
 
-  it("is true only for the literal '1'", () => {
-    expect(rerankFlagEnabled("LUNA_MEMORY_RERANK", { LUNA_MEMORY_RERANK: "1" })).toBe(true)
-    expect(rerankFlagEnabled("LUNA_MEMORY_RERANK", { LUNA_MEMORY_RERANK: "true" })).toBe(false)
-    expect(rerankFlagEnabled("LUNA_MEMORY_RERANK", { LUNA_MEMORY_RERANK: "yes" })).toBe(false)
-    expect(rerankFlagEnabled("LUNA_MEMORY_RERANK", { LUNA_MEMORY_RERANK: "0" })).toBe(false)
+  it("follows an engine that is on by default, and '0' still turns the lane off", () => {
+    expect(rerankLaneEnabled("LUNA_RECALL_RERANK", true, {})).toBe(true)
+    expect(rerankLaneEnabled("LUNA_RECALL_RERANK", true, { LUNA_RECALL_RERANK: "0" })).toBe(false)
+    expect(rerankLaneEnabled("LUNA_RECALL_RERANK", true, { LUNA_RECALL_RERANK: " 0 " })).toBe(false)
+  })
+})
+
+describe("engine defaults", () => {
+  it("resolveRerankMaxCandidates and resolveRerankThreshold use the engine's value unless env overrides it", () => {
+    expect(resolveRerankMaxCandidates({})).toBe(DEFAULT_RERANK_MAX_CANDIDATES)
+    expect(resolveRerankMaxCandidates({}, 40)).toBe(40)
+    expect(resolveRerankMaxCandidates({ LUNA_RERANK_MAX_CANDIDATES: "12" }, 40)).toBe(12)
+    expect(resolveRerankMaxCandidates({ LUNA_RERANK_MAX_CANDIDATES: "junk" }, 40)).toBe(40)
+    expect(resolveRerankThreshold({}, 25)).toBe(25)
+    expect(resolveRerankThreshold({ LUNA_RERANK_THRESHOLD: "60" }, 25)).toBe(60)
   })
 })
 

@@ -28,7 +28,7 @@
  * role model options by lane, matching the vanilla module's shipped
  * behavior (see its render() role loop).
  */
-import type { ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
+import type { MemoryRerankerSettingsItem, ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
 
 export const ROLES = ["advisor", "daily-driver", "wake", "dream", "classifier"] as const
 export type Role = (typeof ROLES)[number]
@@ -97,6 +97,25 @@ export const ANTHROPIC_MODELS: readonly ModelOption[] = [
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 — fastest" },
 ]
 
+/**
+ * Memory reranker engines, in display order (see packages/memory/bench/README.md
+ * "Choosing the rerank engine"). The server validates against the same set.
+ */
+export const RERANKERS = [
+  { engine: "cross-encoder", label: "Local cross-encoder" },
+  { engine: "jev", label: "Jev (TypeSafe)" },
+] as const
+
+/** A reported engine the panel can show; anything unknown is shown as the local cross-encoder, which is what the server binds for it. */
+function knownReranker(engine: string): string {
+  return RERANKERS.some((r) => r.engine === engine) ? engine : "cross-encoder"
+}
+
+/** Display label for an engine id. */
+export function rerankerLabel(engine: string): string {
+  return RERANKERS.find((r) => r.engine === engine)?.label ?? engine
+}
+
 export interface ProviderDraft {
   enabled: boolean
   credentialRef: string
@@ -117,6 +136,13 @@ export interface ModelRoutingState {
   readonly isDirty: boolean
   readonly draftProviders: ProvidersDraft
   readonly draftRoleModel: RoleModelDraft
+  /** Memory reranker engine; null = the server does not offer the setting (older server: hide it). */
+  readonly draftReranker: string | null
+  /** The engine the server reported for its next start: a save sends the reranker only when the draft differs,
+   *  so an untouched control never freezes today's (possibly env-derived) engine into the store. */
+  readonly serverReranker: string | null
+  /** The engine the running server bound; differs from serverReranker until a restart. */
+  readonly activeReranker: string | null
   readonly reqId: string | null
   readonly status: StatusMessage | null
 }
@@ -142,6 +168,9 @@ export const initialModelRoutingState: ModelRoutingState = {
   isDirty: false,
   draftProviders: defaultDraftProviders(),
   draftRoleModel: defaultDraftRoleModel(),
+  draftReranker: null,
+  serverReranker: null,
+  activeReranker: null,
   reqId: null,
   status: null,
 }
@@ -191,6 +220,8 @@ export function providerForModel(model: string): string {
 export interface ModelRoutingSavePayload {
   providers: ProviderSettingsItem[]
   roleBindings: RoleBindingItem[]
+  /** Only when the server offers the setting: an older server must not receive a field it would ignore. */
+  memoryReranker?: MemoryRerankerSettingsItem
 }
 
 /** Ported from the vanilla module's buildPayload(). */
@@ -210,12 +241,24 @@ export function buildSavePayload(state: ModelRoutingState): ModelRoutingSavePayl
     const provider = providerForModel(model)
     return { role: r, preferenceList: [{ provider, model }] }
   })
-  return { providers: payProviders, roleBindings: payBindings }
+  return {
+    providers: payProviders,
+    roleBindings: payBindings,
+    ...(state.draftReranker !== null && state.draftReranker !== state.serverReranker
+      ? { memoryReranker: { engine: state.draftReranker } }
+      : {}),
+  }
 }
 
 export type ModelRoutingAction =
   | { type: "hello"; modelRouting: boolean }
-  | { type: "server-list"; providers: ReadonlyArray<ProviderSettingsItem>; roleBindings: ReadonlyArray<RoleBindingItem> }
+  | {
+      type: "server-list"
+      providers: ReadonlyArray<ProviderSettingsItem>
+      roleBindings: ReadonlyArray<RoleBindingItem>
+      memoryReranker?: MemoryRerankerSettingsItem
+    }
+  | { type: "set-reranker"; engine: string }
   | { type: "toggle-provider"; kind: string; enabled: boolean }
   | { type: "set-credential-ref"; kind: string; value: string }
   | { type: "set-monthly-cap"; kind: string; value: number | "" }
@@ -240,8 +283,14 @@ export function reduceModelRouting(state: ModelRoutingState, action: ModelRoutin
       // arrays - ported from the vanilla module's applyServerState().
       if (state.isDirty) return state
       const { draftProviders, draftRoleModel } = draftsFromServerState(action.providers, action.roleBindings)
-      return { ...state, draftProviders, draftRoleModel }
+      const reported = action.memoryReranker === undefined ? null : knownReranker(action.memoryReranker.engine)
+      const active = action.memoryReranker?.active === undefined ? null : knownReranker(action.memoryReranker.active)
+      return { ...state, draftProviders, draftRoleModel, draftReranker: reported, serverReranker: reported, activeReranker: active }
     }
+
+    case "set-reranker":
+      if (state.draftReranker === null || action.engine === state.draftReranker) return state
+      return { ...state, isDirty: true, draftReranker: action.engine }
 
     case "toggle-provider":
       return {

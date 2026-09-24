@@ -482,7 +482,7 @@ export function CrossEncoderRerankerLayer(
         })
       }
 
-      return { rerank }
+      return { rerank, engine: "cross-encoder" }
     }),
   )
 }

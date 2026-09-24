@@ -1903,6 +1903,171 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       initMod._resetVectorliteInitForTests()
     }
   })
+  // ─────────────── hybrid-weighted + query expansion (#702) ───────────────
+
+  const seedWeighted = (ns: string) =>
+    Effect.gen(function* () {
+      const b = yield* SqliteVectorBackend
+      const recs: Array<[string, string]> = [
+        ["dog", "Buddy the golden retriever loves the lake"],
+        ["cafe", "Met Ana at the café on Rua Augusta"],
+        ["tax", "Filed the quarterly tax return with the accountant"],
+        ["filler", "the and of to in it is was"],
+      ]
+      for (const [id, text] of recs) {
+        yield* b.put(makeRecord({ id, namespace: ns, kind: "note", content: { text } }))
+      }
+      return b
+    })
+
+  const ids = (hits: Iterable<{ record: { id: string } }>) => Array.from(hits).map((h) => h.record.id)
+
+  it("hybrid-weighted: expansion keywords retrieve a record the query words miss", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw1")
+        const search = (expansionTerms?: string[]) =>
+          Stream.runCollect(
+            b.search({
+              queryText: "what is my pet called",
+              namespace: "hw1",
+              topK: 1,
+              mode: "hybrid-weighted",
+              // The stub embedder's vectors carry no meaning, so the
+              // keyword arm is what can lift the right record to rank 1.
+              fusion: { lexicalWeight: 1, expansionWeight: 1 },
+              ...(expansionTerms ? { expansionTerms } : {}),
+            }),
+          )
+        return { expanded: ids(yield* search(["golden retriever", "dog"])) }
+      }),
+    )
+    expect(out.expanded).toEqual(["dog"])
+  })
+
+  it("hybrid-weighted: a stopword-only query leaves the lexical arms empty (vector order wins)", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw2")
+        const q = { queryText: "the and of it", namespace: "hw2", topK: 4 } as const
+        const vec = ids(yield* Stream.runCollect(b.search({ ...q, mode: "vec" })))
+        const weighted = ids(yield* Stream.runCollect(b.search({ ...q, mode: "hybrid-weighted" })))
+        const terms = ids(yield* Stream.runCollect(b.search({ ...q, mode: "hybrid-terms" })))
+        return { vec, weighted, terms }
+      }),
+    )
+    // The all-stopword "filler" record is a strong bag-of-words hit, so plain
+    // hybrid-terms promotes it; hybrid-weighted drops every word as a stopword.
+    expect(out.weighted).toEqual(out.vec)
+    expect(out.terms[0]).toBe("filler")
+  })
+
+  it("hybrid-weighted: lexicalWeight 0 and no keywords reproduces vec ranking", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw3")
+        const q = { queryText: "quarterly tax accountant", namespace: "hw3", topK: 4 } as const
+        return {
+          vec: ids(yield* Stream.runCollect(b.search({ ...q, mode: "vec" }))),
+          weighted: ids(
+            yield* Stream.runCollect(
+              b.search({ ...q, mode: "hybrid-weighted", fusion: { lexicalWeight: 0 } }),
+            ),
+          ),
+        }
+      }),
+    )
+    expect(out.weighted).toEqual(out.vec)
+  })
+
+  it("lexical arm: non-ASCII words match (unicode61) and FTS5 syntax in user text is inert", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw4")
+        const bm = (queryText: string, expansionTerms?: string[]) =>
+          Stream.runCollect(
+            b.search({
+              queryText,
+              namespace: "hw4",
+              topK: 3,
+              // hybrid-weighted is the only mode that feeds expansionTerms to FTS5.
+              mode: expansionTerms ? "hybrid-weighted" : "bm25",
+              ...(expansionTerms ? { expansionTerms, fusion: { lexicalWeight: 1, expansionWeight: 1 } } : {}),
+            }),
+          )
+        return {
+          cafe: ids(yield* bm("café")),
+          hostile: ids(yield* bm('tax" OR * NEAR( "x', ['") AND NOT dog*', 'return:"'])),
+        }
+      }),
+    )
+    expect(out.cafe).toContain("cafe")
+    expect(out.hostile).toContain("tax")
+  })
+
+  it("hybrid-weighted m=2: one shared word is not a lexical hit, two are", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw6")
+        const lex = (queryText: string, minMatch: number) =>
+          Stream.runCollect(
+            b.search({
+              queryText,
+              namespace: "hw6",
+              topK: 1,
+              mode: "hybrid-weighted",
+              fusion: { lexicalWeight: 50, minMatch },
+            }),
+          )
+        return {
+          oneWordM1: ids(yield* lex("quarterly weather", 1)),
+          oneWordM2: ids(yield* lex("quarterly weather", 2)),
+          twoWordsM2: ids(yield* lex("quarterly accountant", 2)),
+        }
+      }),
+    )
+    // lexicalWeight 50 makes the lexical arm decide rank 1 whenever it has a hit.
+    expect(out.oneWordM1).toEqual(["tax"])
+    expect(out.oneWordM2).not.toEqual(["tax"])
+    expect(out.twoWordsM2).toEqual(["tax"])
+  })
+
+  it("hybrid: a message cut mid-emoji or containing NUL still searches (per-turn recall slices at 2000 chars)", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw7")
+        const cutEmoji = "x".repeat(1999) + "\u{1F600}".slice(0, 1) // lone high surrogate, as slice(0, 2000) produces
+        const withNul = "golden retriever\u0000 lake"
+        const one = (queryText: string) =>
+          Stream.runCollect(b.search({ queryText, namespace: "hw7", topK: 2, mode: "hybrid" }))
+        return { cut: ids(yield* one(cutEmoji)).length, nul: ids(yield* one(withNul)).length }
+      }),
+    )
+    expect(out.cut).toBeGreaterThan(0)
+    expect(out.nul).toBeGreaterThan(0)
+  })
+
+  it("expansionTerms are ignored by every mode except hybrid-weighted (production hybrid unchanged)", async () => {
+    const out = await run(
+      Effect.gen(function* () {
+        const b = yield* seedWeighted("hw5")
+        const q = { queryText: "Rua Augusta coffee", namespace: "hw5", topK: 4 } as const
+        const both = (mode: "hybrid" | "hybrid-terms" | "bm25" | "vec") =>
+          Effect.gen(function* () {
+            const plain = ids(yield* Stream.runCollect(b.search({ ...q, mode })))
+            const kw = ids(yield* Stream.runCollect(b.search({ ...q, mode, expansionTerms: ["tax return", "dog"] })))
+            return { plain, kw }
+          })
+        return {
+          hybrid: yield* both("hybrid"),
+          terms: yield* both("hybrid-terms"),
+          bm25: yield* both("bm25"),
+          vec: yield* both("vec"),
+        }
+      }),
+    )
+    for (const m of [out.hybrid, out.terms, out.bm25, out.vec]) expect(m.kw).toEqual(m.plain)
+  })
 })
 
 // Side test: prove the BLOB roundtrip helper doesn't drift bytes.
@@ -1920,4 +2085,5 @@ describe("Float32 ↔ BLOB roundtrip helper", () => {
       expect(back[i]).toBe(orig[i])
     }
   })
+
 })

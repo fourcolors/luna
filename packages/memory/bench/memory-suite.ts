@@ -1,12 +1,13 @@
 /**
- * memory-suite - cross-mode retrieval quality bench.
+ * memory-suite - cross-config retrieval quality bench.
  *
  * Seeds a fresh sqlite-vector backend with the corpus records, then runs
- * every query against all three search modes ("bm25", "vec", "hybrid") and
- * reports recall@1/5/10, MRR, and nDCG@10 per slice, plus latency and
- * negative-query score separation. Unlike paraphrase-recall.ts (single mode,
- * single "does this beat a threshold" question), this is a comparison
- * harness across modes and query difficulty slices - report-only by default.
+ * every query against a configurable sweep of search configs (see
+ * `LUNA_BENCH_CONFIGS` below) and reports recall@1/5/10, MRR, and nDCG@10
+ * per slice, plus latency and negative-query score separation. Unlike
+ * paraphrase-recall.ts (single mode, single "does this beat a threshold"
+ * question), this is a comparison harness across configs and query
+ * difficulty slices - report-only by default.
  *
  * NOT a vitest. Run via:
  *   bun packages/memory/bench/memory-suite.ts --sample        (stub embedder, tiny fixture)
@@ -19,8 +20,24 @@
  * Env:
  *   LUNA_BENCH_CORPUS            path to a corpus JSON file (default: sibling
  *                                memory-suite-corpus.json)
+ *   LUNA_BENCH_CONFIGS           comma-separated search-config labels (see
+ *                                src/search-config.ts's `<mode>[:w=][:e=][:s=][:kw=<model>#<n>]`
+ *                                grammar); default "bm25,vec,hybrid,hybrid-terms"
+ *                                (identical to the sweep this bench ran before
+ *                                configs were sweepable). A config with a
+ *                                `kw=<model>#<n>` term loads the expansion
+ *                                sidecar at the sibling path
+ *                                bench/expansion/memory-suite-<model>.json
+ *                                (see expand-queries.ts); every query is
+ *                                validated against that sidecar up front,
+ *                                before any timing, so a missing file or
+ *                                missing sample fails fast instead of
+ *                                silently running without keywords.
  *   LUNA_BENCH_JSON              if set, write full structured results here
- *   LUNA_BENCH_ENFORCE           "1" to gate on hybrid recall@5 (default "0", report-only)
+ *   LUNA_BENCH_ENFORCE           "1" to gate on the "hybrid" config's recall@5
+ *                                (default "0", report-only); requires a config
+ *                                labelled exactly "hybrid" among
+ *                                LUNA_BENCH_CONFIGS
  *   LUNA_BENCH_RECALL_THRESHOLD  hybrid OVERALL recall@5 floor when enforcing (default 0.85)
  *   LUNA_BENCH_ENRICHMENT        path to an enrichment sidecar (see enrich-corpus.ts);
  *                                overrides --enriched's default path when set
@@ -34,13 +51,15 @@
  *   0  ran to completion (report-only, or enforce passed)
  *   1  LUNA_BENCH_ENFORCE=1 and hybrid OVERALL recall@5 < threshold
  *   2  Ollama unreachable (skip - daemon not running)
- *   3  corpus invalid, load error, or invalid configuration
+ *   3  corpus invalid, load error, or invalid configuration (incl. a bad
+ *      LUNA_BENCH_CONFIGS label, a missing/mismatched expansion sidecar, or
+ *      ENFORCE=1 with no "hybrid" config)
  *   4  runtime failure (backend/embedder error mid-run)
  */
 import { readFileSync, writeFileSync } from "node:fs"
 import { basename, resolve, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer } from "effect"
 import {
   Clock,
   ObservabilityService,
@@ -52,6 +71,14 @@ import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js
 import { MemoryLayer } from "../src/layer.js"
 import { MemoryRouterTag } from "../src/router.js"
 import { makeRecord } from "../src/types.js"
+import {
+  expansionFor,
+  parseSearchConfigs,
+  type ExpansionSidecar,
+  type SearchConfig,
+} from "../src/search-config.js"
+import { makeJudges, type Judge, type JudgeName } from "../src/adapters/eval-common/judge.js"
+import { judgeLatency, searchWithConfig, type JudgeTiming } from "../src/adapters/eval-common/search.js"
 
 type RecordKind = "project" | "preference" | "episodic" | "distractor"
 type QuerySlice =
@@ -101,8 +128,7 @@ const POSITIVE_SLICE_ORDER: ReadonlyArray<QuerySlice> = [
   "temporal",
 ]
 
-const MODES = ["bm25", "vec", "hybrid", "hybrid-terms"] as const
-type Mode = (typeof MODES)[number]
+const DEFAULT_CONFIGS = "bm25,vec,hybrid,hybrid-terms"
 
 const TOP_K = 10
 const NAMESPACE = "bench"
@@ -282,6 +308,39 @@ function buildEmbedderLayer() {
   return StubEmbedderLayer
 }
 
+/**
+ * Expansion-keyword sidecars (bench/expansion/memory-suite-<model>.json,
+ * written by bench/expand-queries.ts) for every model the configs name.
+ * A missing or mismatched file is an error: a config asking for keywords
+ * must never silently run without them.
+ */
+function loadExpansionSidecars(
+  configs: ReadonlyArray<SearchConfig>,
+): ReadonlyMap<string, ExpansionSidecar> {
+  const here = dirname(fileURLToPath(import.meta.url))
+  const out = new Map<string, ExpansionSidecar>()
+  for (const c of configs) {
+    const model = c.expansion?.model
+    if (model === undefined || out.has(model)) continue
+    const path = resolve(here, "expansion", `memory-suite-${model}.json`)
+    let parsed: ExpansionSidecar
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8")) as ExpansionSidecar
+    } catch (e) {
+      throw new Error(
+        `expansion sidecar load failed (${path}): ${e instanceof Error ? e.message : String(e)}`,
+      )
+    }
+    if (parsed.source !== "memory-suite" || parsed.model !== model) {
+      throw new Error(
+        `${path}: expected source "memory-suite" and model "${model}", got source=${JSON.stringify(parsed.source)} model=${JSON.stringify(parsed.model)}`,
+      )
+    }
+    out.set(model, parsed)
+  }
+  return out
+}
+
 interface QueryResult {
   readonly queryId: string
   readonly slice: QuerySlice
@@ -289,6 +348,8 @@ interface QueryResult {
   readonly rankedIds: ReadonlyArray<string>
   readonly scores: ReadonlyArray<number>
   readonly tookMs: number
+  /** The rr= judge call's timing and attempts (tookMs includes it); absent without rr=. */
+  readonly judge?: JudgeTiming
 }
 
 /** 1-indexed ranks (in emission order) of every relevant hit. */
@@ -401,34 +462,42 @@ function percentile(sorted: ReadonlyArray<number>, p: number): number {
 }
 
 interface LatencyMetrics {
-  readonly mode: Mode
+  readonly label: string
   readonly mean: number
   readonly p50: number
   readonly p95: number
 }
 
-function latencyFor(mode: Mode, tookMsList: ReadonlyArray<number>): LatencyMetrics {
+function latencyFor(label: string, tookMsList: ReadonlyArray<number>): LatencyMetrics {
   const sorted = [...tookMsList].sort((a, b) => a - b)
   const mean = sorted.length > 0 ? sorted.reduce((a, b) => a + b, 0) / sorted.length : 0
-  return { mode, mean, p50: percentile(sorted, 50), p95: percentile(sorted, 95) }
+  return { label, mean, p50: percentile(sorted, 50), p95: percentile(sorted, 95) }
 }
 
 function fmtMs(n: number): string {
   return Number.isNaN(n) ? "n/a" : n.toFixed(2)
 }
 
+/** Config labels can run much longer than the old fixed mode names
+ * (e.g. "hybrid-weighted:w=0.25:s=extended:kw=haiku#0"), so table columns
+ * size to the widest label instead of a hardcoded width. */
+function padWidth(labels: ReadonlyArray<string>, min: number): number {
+  return Math.max(min, ...labels.map((l) => l.length))
+}
+
 function tabulateLatency(rows: ReadonlyArray<LatencyMetrics>): string {
-  const header = `| mode         | mean (ms) | p50 (ms) | p95 (ms) |`
+  const w = padWidth(rows.map((r) => r.label), 12)
+  const header = `| ${"config".padEnd(w)} | mean (ms) | p50 (ms) | p95 (ms) |`
   const sep = `|:---|---:|---:|---:|`
   const body = rows.map(
     (r) =>
-      `| ${r.mode.padEnd(12)} | ${fmtMs(r.mean).padStart(9)} | ${fmtMs(r.p50).padStart(8)} | ${fmtMs(r.p95).padStart(8)} |`,
+      `| ${r.label.padEnd(w)} | ${fmtMs(r.mean).padStart(9)} | ${fmtMs(r.p50).padStart(8)} | ${fmtMs(r.p95).padStart(8)} |`,
   )
   return [header, sep, ...body].join("\n")
 }
 
 interface SeparationMetrics {
-  readonly mode: Mode
+  readonly label: string
   readonly negMedian: number
   readonly negP90: number
   readonly posMedian: number
@@ -440,7 +509,7 @@ function fmtScore(n: number): string {
 }
 
 function separationFor(
-  mode: Mode,
+  label: string,
   results: ReadonlyArray<QueryResult>,
 ): SeparationMetrics {
   const top1 = (r: QueryResult) => r.scores[0] ?? 0
@@ -453,7 +522,7 @@ function separationFor(
     .map(top1)
     .sort((a, b) => a - b)
   return {
-    mode,
+    label,
     negMedian: percentile(negSorted, 50),
     negP90: percentile(negSorted, 90),
     posMedian: percentile(posSorted, 50),
@@ -462,11 +531,12 @@ function separationFor(
 }
 
 function tabulateSeparation(rows: ReadonlyArray<SeparationMetrics>): string {
-  const header = `| mode         | neg median | neg p90 | pos median | pos p90 |`
+  const w = padWidth(rows.map((r) => r.label), 12)
+  const header = `| ${"config".padEnd(w)} | neg median | neg p90 | pos median | pos p90 |`
   const sep = `|:---|---:|---:|---:|---:|`
   const body = rows.map(
     (r) =>
-      `| ${r.mode.padEnd(12)} | ${fmtScore(r.negMedian).padStart(10)} | ${fmtScore(r.negP90).padStart(7)} | ${fmtScore(r.posMedian).padStart(10)} | ${fmtScore(r.posP90).padStart(7)} |`,
+      `| ${r.label.padEnd(w)} | ${fmtScore(r.negMedian).padStart(10)} | ${fmtScore(r.negP90).padStart(7)} | ${fmtScore(r.posMedian).padStart(10)} | ${fmtScore(r.posP90).padStart(7)} |`,
   )
   return [header, sep, ...body].join("\n")
 }
@@ -484,6 +554,22 @@ async function main(): Promise<void> {
     process.exit(3)
   }
 
+  let configs: ReadonlyArray<SearchConfig>
+  try {
+    configs = parseSearchConfigs(process.env["LUNA_BENCH_CONFIGS"] ?? DEFAULT_CONFIGS)
+  } catch (e) {
+    console.error(
+      `[bench] invalid LUNA_BENCH_CONFIGS: ${e instanceof Error ? e.message : String(e)}`,
+    )
+    process.exit(3)
+  }
+  if (ENFORCE && !configs.some((c) => c.label === "hybrid")) {
+    console.error(
+      `[bench] LUNA_BENCH_ENFORCE=1 requires a config labelled exactly "hybrid" among LUNA_BENCH_CONFIGS (got: ${configs.map((c) => c.label).join(", ")})`,
+    )
+    process.exit(3)
+  }
+
   let corpus: Corpus
   try {
     corpus = loadCorpus(corpusPath)
@@ -492,6 +578,41 @@ async function main(): Promise<void> {
       `[bench] corpus load failed (${corpusPath}): ${e instanceof Error ? e.message : String(e)}`,
     )
     process.exit(3)
+  }
+
+  let sidecars: ReadonlyMap<string, ExpansionSidecar>
+  try {
+    sidecars = loadExpansionSidecars(configs)
+  } catch (e) {
+    console.error(
+      `[bench] invalid config: expansion keywords: ${e instanceof Error ? e.message : String(e)}`,
+    )
+    process.exit(3)
+  }
+  // Relevance judges for rr=<judge>@<n> configs (adapters/eval-common/judge.ts).
+  let judges: ReadonlyMap<JudgeName, Judge>
+  try {
+    judges = makeJudges(
+      configs.flatMap((c) => (c.rerank !== undefined ? [c.rerank.judge] : [])),
+      process.env,
+    )
+  } catch (e) {
+    console.error(`[bench] invalid config: ${e instanceof Error ? e.message : String(e)}`)
+    process.exit(3)
+  }
+  // Validate every query against every config's expansion needs up front,
+  // before any timing, so a missing sample fails fast instead of mid-sweep.
+  for (const q of corpus.queries) {
+    for (const c of configs) {
+      try {
+        expansionFor(c, q.id, sidecars)
+      } catch (e) {
+        console.error(
+          `[bench] invalid config: ${e instanceof Error ? e.message : String(e)}`,
+        )
+        process.exit(3)
+      }
+    }
   }
 
   const enrichmentPath = resolveEnrichmentPath()
@@ -558,12 +679,9 @@ async function main(): Promise<void> {
   }
   console.log(``)
 
-  const allResults: Record<Mode, QueryResult[]> = {
-    bm25: [],
-    vec: [],
-    hybrid: [],
-    "hybrid-terms": [],
-  }
+  const allResults: Record<string, QueryResult[]> = Object.fromEntries(
+    configs.map((c) => [c.label, [] as QueryResult[]]),
+  )
 
   await Effect.runPromise(
     Effect.scoped(
@@ -588,51 +706,65 @@ async function main(): Promise<void> {
           )
         }
         // Untimed warmup pass: absorbs JIT, cold FTS/HNSW caches, and
-        // first-call embedder setup so no mode pays first-run cost in the
-        // timed pass (running one mode's block first previously inflated
+        // first-call embedder setup so no config pays first-run cost in the
+        // timed pass (running one config's block first previously inflated
         // its latency ~2x - an execution-order artifact, not a real cost).
         for (const q of corpus.queries.slice(0, 25)) {
-          for (const mode of MODES) {
-            yield* Stream.runCollect(
-              router.search({
+          for (const config of configs) {
+            const expansionTerms = expansionFor(config, q.id, sidecars)
+            yield* searchWithConfig(
+              router,
+              config,
+              {
                 queryText: q.text,
                 namespace: NAMESPACE,
                 topK: TOP_K,
-                mode,
-              }),
+                ...(expansionTerms !== undefined ? { expansionTerms } : {}),
+              },
+              judges,
             )
           }
         }
-        // Timed pass, mode-interleaved per query so drift (GC, machine
-        // load) spreads evenly across modes instead of biasing one block.
+        // Timed pass, config-interleaved per query so drift (GC, machine
+        // load) spreads evenly across configs instead of biasing one block.
         for (const q of corpus.queries) {
-          for (const mode of MODES) {
+          for (const config of configs) {
+            const expansionTerms = expansionFor(config, q.id, sidecars)
+            let judge: JudgeTiming | undefined
             const t0 = performance.now()
-            const hits = yield* Stream.runCollect(
-              router.search({
+            const hits = yield* searchWithConfig(
+              router,
+              config,
+              {
                 queryText: q.text,
                 namespace: NAMESPACE,
                 topK: TOP_K,
-                mode,
-              }),
+                ...(expansionTerms !== undefined ? { expansionTerms } : {}),
+                onJudgeCall: (t) => (judge = t),
+              },
+              judges,
             )
             const tookMs = performance.now() - t0
             const arr = Array.from(hits)
-            allResults[mode].push({
+            allResults[config.label]!.push({
               queryId: q.id,
               slice: q.slice,
               relevantIds: new Set(q.relevantIds),
               rankedIds: arr.map((h) => h.record.id),
               scores: arr.map((h) => h.score),
               tookMs,
+              ...(judge !== undefined ? { judge } : {}),
             })
           }
         }
       }),
     ).pipe(Effect.provide(layer)),
   )
+  const judgeSettings = Object.fromEntries([...judges].map(([name, j]) => [name, j.describe()]))
+  for (const j of judges.values()) j.close?.()
 
   const jsonOut: Record<string, unknown> = {
+    judges: judgeSettings,
     // basename only: absolute paths are machine-specific noise in a
     // committed baseline file.
     corpus: { file: basename(corpusPath), records: corpus.records.length, queries: corpus.queries.length },
@@ -645,14 +777,17 @@ async function main(): Promise<void> {
             coverage: enrichedCount / corpus.records.length,
           }
         : null,
+    configs: configs.map((c) => c.label),
     modes: {} as Record<string, unknown>,
   }
   const jsonModes = jsonOut["modes"] as Record<string, unknown>
+  const jsonPerQuery: Record<string, Record<string, unknown>> = {}
 
   let hybridOverallRecall5: number | null = null
 
-  for (const mode of MODES) {
-    const results = allResults[mode]
+  for (const config of configs) {
+    const label = config.label
+    const results = allResults[label]!
     const positiveResults = results.filter((r) => r.slice !== "negative")
     const presentSlices = POSITIVE_SLICE_ORDER.filter((s) =>
       positiveResults.some((r) => r.slice === s),
@@ -677,7 +812,7 @@ async function main(): Promise<void> {
       ndcg10: sliceRows.reduce((a, r) => a + r.ndcg10, 0) / sliceRows.length,
     }
 
-    console.log(`## mode: ${mode}`)
+    console.log(`## config: ${label}`)
     console.log(``)
     console.log(tabulateSlices([...sliceRows, overallRow, macroRow]))
     console.log(
@@ -685,21 +820,55 @@ async function main(): Promise<void> {
     )
     console.log(``)
 
-    if (mode === "hybrid") hybridOverallRecall5 = overallRow.recallAt5
+    if (label === "hybrid") hybridOverallRecall5 = overallRow.recallAt5
 
-    jsonModes[mode] = {
+    jsonModes[label] = {
       bySlice: Object.fromEntries(sliceRows.map((r) => [r.slice, r])),
       overall: overallRow,
       macro: macroRow,
     }
+
+    const perQueryForConfig: Record<string, unknown> = {}
+    for (const r of results) {
+      const ranks = relevantRanks(r.rankedIds, r.relevantIds)
+      perQueryForConfig[r.queryId] = {
+        slice: r.slice,
+        recallAt1: recallAtK(ranks, 1, r.relevantIds.size),
+        recallAt5: recallAtK(ranks, 5, r.relevantIds.size),
+        rank: ranks.length > 0 ? Math.min(...ranks) : null,
+        // For offline gate analysis: every relevant rank, and the top 5 scores (judge scores under rr=).
+        ranks,
+        scores5: r.scores.slice(0, 5).map((s) => Math.round(s * 1000) / 1000),
+        ...(r.judge !== undefined
+          ? { judgeMs: Math.round(r.judge.ms), judgeWaitMs: Math.round(r.judge.waitMs), judgeAttempts: r.judge.attempts }
+          : {}),
+      }
+    }
+    jsonPerQuery[label] = perQueryForConfig
   }
+  jsonOut["perQuery"] = jsonPerQuery
 
   console.log(`## latency`)
   console.log(``)
-  const latencyRows = MODES.map((mode) => latencyFor(mode, allResults[mode].map((r) => r.tookMs)))
+  const latencyRows = configs.map((c) => latencyFor(c.label, allResults[c.label]!.map((r) => r.tookMs)))
   console.log(tabulateLatency(latencyRows))
   console.log(``)
-  jsonOut["latency"] = Object.fromEntries(latencyRows.map((r) => [r.mode, r]))
+  jsonOut["latency"] = Object.fromEntries(latencyRows.map((r) => [r.label, r]))
+  const judgeRows = configs.flatMap((c) => {
+    const l = judgeLatency(allResults[c.label]!.flatMap((r) => r.judge ?? []))
+    return l !== undefined ? [{ label: c.label, ...l }] : []
+  })
+  if (judgeRows.length > 0) {
+    console.log(`| config | judge calls | judge p50 ms | judge p95 ms | judge max ms | over 2.5 s | waited (max ms) | retried |`)
+    console.log(`|:---|---:|---:|---:|---:|---:|---:|---:|`)
+    for (const r of judgeRows) {
+      console.log(
+        `| ${r.label} | ${r.calls} | ${r.p50.toFixed(0)} | ${r.p95.toFixed(0)} | ${r.max.toFixed(0)} | ${r.over2500} | ${r.waited} (${r.maxWaitMs.toFixed(0)}) | ${r.retried} |`,
+      )
+    }
+    console.log(``)
+    jsonOut["judgeLatency"] = Object.fromEntries(judgeRows.map(({ label, ...l }) => [label, l]))
+  }
 
   console.log(
     `## score separation (no injection threshold exists today - negative-query hits WOULD be injected)`,
@@ -710,15 +879,15 @@ async function main(): Promise<void> {
   // can never separate negatives from positives. hybrid RRF scores are also
   // rank-derived but vary with cross-arm agreement, so they stay (read them
   // as fusion agreement, not match confidence).
-  const sepRows = MODES.filter((m) => m !== "bm25").map((mode) =>
-    separationFor(mode, allResults[mode]),
-  )
+  const sepRows = configs
+    .filter((c) => c.mode !== "bm25")
+    .map((c) => separationFor(c.label, allResults[c.label]!))
   console.log(tabulateSeparation(sepRows))
   console.log(
     `(bm25 omitted: rank-derived scores carry no match magnitude. hybrid/hybrid-terms RRF scores measure cross-arm agreement, not match confidence.)`,
   )
   console.log(``)
-  jsonOut["negativeSeparation"] = Object.fromEntries(sepRows.map((r) => [r.mode, r]))
+  jsonOut["negativeSeparation"] = Object.fromEntries(sepRows.map((r) => [r.label, r]))
 
   const jsonPath = process.env["LUNA_BENCH_JSON"]
   if (jsonPath !== undefined) {

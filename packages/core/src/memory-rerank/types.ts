@@ -53,6 +53,24 @@ export interface MemoryRerankerApi {
   readonly rerank: (
     args: RerankArgs,
   ) => Effect.Effect<ReadonlyArray<RerankScore>, RerankError>
+  /** Engine name for logs ("cross-encoder", "jev"). */
+  readonly engine?: string
+  /**
+   * The engine's own defaults, each validated for that engine (its latency
+   * at the depth, its score calibration at the threshold) and each still
+   * overridable by env (LUNA_RERANK_MAX_CANDIDATES, LUNA_RERANK_THRESHOLD,
+   * LUNA_MEMORY_RERANK / LUNA_RECALL_RERANK = "0" | "1"). Absent fields fall
+   * back to memory-tools' historical defaults (8 candidates, threshold 40,
+   * lanes off).
+   */
+  readonly defaults?: {
+    /** How many retrieval candidates memory_search sends it. */
+    readonly maxCandidates?: number
+    /** llmScore (0-100) below which a scored candidate is dropped. */
+    readonly threshold?: number
+    /** Whether memory_search and per-turn recall rerank unless their flag is "0" (true for an engine the operator explicitly configured). */
+    readonly enabled?: boolean
+  }
 }
 
 export class RerankError extends Data.TaggedError("RerankError")<{

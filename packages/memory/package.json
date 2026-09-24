@@ -25,6 +25,7 @@
     "vectorlite": "^0.2.0"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.280",
     "@luna/adapter-sdk": "workspace:*"
   }
 }
