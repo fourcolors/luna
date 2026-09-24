@@ -76,13 +76,18 @@ fn main() {
             // AppKit children only follow position changes, never size — then
             // the plan re-derives the graph from the new geometry: a child
             // the resize carried out of flush detaches, one flipped to a new
-            // edge stays parented.
+            // edge stays parented. AppKit also re-lays out the title bar on
+            // every resize tick, reverting the traffic-light cluster to its
+            // default inset — re-assert the card chrome on the resized window
+            // itself so no margin ever drifts (the children get theirs via
+            // reflush's frame writes).
             #[cfg(target_os = "macos")]
             if matches!(event, tauri::WindowEvent::Resized(_))
                 && windows::is_dock_label(window.label())
             {
                 if let Some(w) = window.app_handle().get_webview_window(window.label()) {
                     windows::reflush_snap_children(&w);
+                    let _ = windows::configure_native_window_chrome(&w);
                 }
                 windows::apply_attachment_plan(window.app_handle());
             }

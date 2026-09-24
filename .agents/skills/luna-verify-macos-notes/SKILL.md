@@ -167,3 +167,67 @@ window-open paths (`expand_from_moon`, `open_widget`, panels) work unpaired.
   bottom edge; `.resize-se` corner bracket). Native `startResizeDragging`
   is unimplemented on macOS — the JS loop owns resizing; grabs on the edge
   strips fire `Resized` events which drive `reflush_snap_children`.
+
+## Pixel-measuring native chrome (traffic lights) in T3
+
+`screencapture -x` writes at the real backing resolution — on this box the
+display is 1600x1200 at **1x** (PNG == logical pt), so a `pt` spec is a `px`
+expectation. Window rects come from Accessibility, which works out of the box:
+
+```bash
+osascript -e 'tell application "System Events" to tell process "luna-moon-ui" \
+  to get {name, position, size} of every window'
+# window title ("Luna", "Settings"), x, y, w, h — one flat CSV row per window.
+# Caveat: `item 1 of position of window i` fails on the posn class —
+# `set p to position of window i` into a var first, then `item 1 of p`.
+```
+
+The macOS traffic-light cluster: focused = red #FF5F57/yellow/green disks;
+**unfocused = near-black disks (~rgb(7,15,29)) DARKER than the card bg
+(~rgb(42,50,65)) — not mid-gray.** Scan for either in the strip
+x∈[win_x+4, win_x+90], y∈[win_y+2, win_y+44]: the leftmost disk's top edge
+sits ~12pt below the window top when the 36pt-container chrome layout holds,
+~4-8pt when it collapses. Only the key window shows colored buttons — measure
+right after interacting with that window, or detect the dark inactive disks.
+
+## Other desktop windows can cover the orb
+
+Simulator (iPhone Mirroring), notifications, etc. may sit over the orb or a
+card window. Move them aside instead of fighting z-order — Accessibility is
+already granted to the host terminal:
+
+```bash
+osascript -e 'tell application "System Events" to tell process "Simulator" \
+  to set position of every window to {1130, 100}'
+```
+
+## Cheap second dock window + attach/detach verification
+
+Cmd+K in any card opens the launcher; a row click spawns a `panel-*` window —
+and snap-on-open may **already attach it flush** to the neighbor (check the dev
+server stdout: `[snap] attach panel-settings -> panel-chat`). That exercises
+`set_snap_parent_ns` without crafting a drop. Tow-verify attach by dragging the
+PARENT (an attached child follows exactly); detach by dragging the child beyond
+SNAP_GAP (~13 tool px) — the log prints `[snap] detach <label>`.
+
+## `.resize-se` grab point is the exact corner
+
+The corner bracket GLYPH sits ~15px inside the card, but the 8px-straddling hit
+strip is AT the window edge — grabbing on the glyph (inside the card) selects
+text instead of resizing. Get the corner from the System Events rect
+(x+w, y+h → tool coords ×0.64) and grab within ~2-3 tool px of it.
+
+## Foreign windows falsify pixel measurements — clear the field first
+
+A "wrong margin" reading may be an OCCLUDER, not a bug. On this box the
+chronic offenders: the **iPhone Mirroring "iCloud Signed Out" card** (a
+separate `iPhone Mirroring` process window ~317x696 that reappears over the
+top-left of whatever you're measuring) and any app an accidental dock click
+launches (Chrome's first-run dialogs). Symptom in the PNG: lights-zone pixels
+are light gray/white (~233+) instead of card bg ~(42,50,65), or extra
+"disks" from dialog text. Enumerate owners before measuring:
+`osascript -e 'tell application "System Events" to get name of every process whose visible is true'`,
+then `set position of window X to {20, 120}` on the foreign process or
+`tell application "X" to quit`. Also note: card-panel miniaturize is a NO-OP
+(yellow button and Cmd+M do nothing) — re-show isn't a reachable reset path
+for these windows, so don't burn time trying to test it.

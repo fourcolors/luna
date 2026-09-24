@@ -25,9 +25,12 @@ export interface ModelRate {
  */
 export const RATE_TABLE: Record<string, ModelRate> = {
   // Anthropic Claude
-  // claude-opus-5: pricing not yet published (2026-07). Matches the
-  // "claude-opus" prefix below (5/25) as a best-effort proxy — override via
-  // LUNA_MODEL_RATES when official pricing is announced.
+  // claude-opus-5 / claude-opus-5-5: pricing not yet published (2026-09). Both
+  // match the "claude-opus" prefix below (5/25) as a best-effort proxy —
+  // override via LUNA_MODEL_RATES when official pricing is announced. Note that
+  // claude-opus-5-5 is now the recommended default model (chat-server
+  // BASE_MODELS[0]), so this proxy rate is on the DEFAULT cost path: if the
+  // real 5.5 rate differs, cost accounting is wrong for most threads.
   "claude-opus": { pricePerMInput: 5, pricePerMOutput: 25 },
   "claude-sonnet": { pricePerMInput: 3, pricePerMOutput: 15 },
   "claude-haiku": { pricePerMInput: 1, pricePerMOutput: 5 },

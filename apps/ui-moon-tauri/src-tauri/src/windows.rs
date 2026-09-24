@@ -343,9 +343,10 @@ pub(crate) fn spawn_panel_for_layout(
     }
 }
 
-/// Traffic-light inset shared by the window builders and the AppKit re-apply
-/// in `configure_native_window_chrome` — a single source of truth so the two
-/// placements cannot drift apart.
+/// Traffic-light inset for the card-window chrome — the single source of
+/// truth is `configure_native_window_chrome`, the ONLY placer of the cluster
+/// (see its doc for why the builder's `traffic_light_position` is deliberately
+/// NOT used).
 ///
 /// These are WINDOW coordinates, but the thing they must line up with is the
 /// CSS header inside the card — so they track the card's offset from the window
@@ -421,18 +422,19 @@ fn build_card_window(
     .maximizable(true)
     .inner_size(inner_size.0, inner_size.1)
     .min_inner_size(min_inner_size.0, min_inner_size.1);
-    // Tauri/Wry owns the native controls for the full window lifetime. A static
-    // builder position keeps them aligned with the CSS header without the old
-    // focus/resize/hover AppKit bridge.
+    // Native chrome, NOT a tao traffic-light inset. `traffic_light_position`
+    // looks static but isn't: tao re-applies the stored inset inside the
+    // content view's `drawRect`, so EVERY repaint of the window re-asserts
+    // tao's own container height + inset — silently undoing the centered
+    // cluster `configure_native_window_chrome` lays out (observed live: a
+    // drag/reorder repaint collapsed the lights' top margin). Leaving the
+    // inset unset keeps tao's re-apply a no-op so the finalize below is the
+    // single placer for the window's lifetime.
     #[cfg(target_os = "macos")]
     {
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true)
-            .traffic_light_position(tauri::LogicalPosition::new(
-                TRAFFIC_LIGHT_INSET_X,
-                TRAFFIC_LIGHT_INSET_Y,
-            ));
+            .hidden_title(true);
     }
     if let Some((px, py)) = position {
         builder = builder.position(px, py);
@@ -1236,80 +1238,96 @@ fn with_appkit_main_thread<R>(
 /// the current screen. A transparent, shadowless card on a fullscreen Space
 /// would sit on a black backdrop with dead transparent margins.
 #[cfg(target_os = "macos")]
-fn configure_native_window_chrome(window: &tauri::WebviewWindow) -> Result<(), String> {
+pub(crate) fn configure_native_window_chrome(
+    window: &tauri::WebviewWindow,
+) -> Result<(), String> {
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::{
-            NSTitlebarSeparatorStyle, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior,
-        };
-
+        use objc2_app_kit::NSWindow;
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
-        unsafe {
-            let ns_win: &NSWindow = &*ns_win_ptr.cast();
-            ns_win.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
-            ns_win.setCollectionBehavior(
-                ns_win.collectionBehavior() | NSWindowCollectionBehavior::FullScreenNone,
-            );
-
-            let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
-                return Ok(());
-            };
-            let Some(minimize) = ns_win.standardWindowButton(NSWindowButton::MiniaturizeButton)
-            else {
-                return Ok(());
-            };
-            let zoom = ns_win.standardWindowButton(NSWindowButton::ZoomButton);
-
-            // Revealing a standard button makes AppKit restore the cluster's
-            // default frame, so reapply the builder inset after the reveal.
-            // This is the same native hierarchy Tauri/Wry configures, finalized
-            // once after the transparent overlay window is actually alive.
-            let Some(group) = close.superview() else {
-                return Ok(());
-            };
-            let Some(container) = group.superview() else {
-                return Ok(());
-            };
-            group.setHidden(false);
-            group.setAlphaValue(1.0);
-            container.setHidden(false);
-            container.setAlphaValue(1.0);
-            let close_rect = NSView::frame(&close);
-            // Keep AppKit's natural inter-button spacing (never invent one).
-            let spacing = {
-                let raw = NSView::frame(&minimize).origin.x - close_rect.origin.x;
-                if raw > 1.0 {
-                    raw
-                } else {
-                    20.0
-                }
-            };
-            // Title-bar container tall enough for the button + breathing room
-            // above/below (matches CSS .title-bar min-height ~36).
-            let btn_h = close_rect.size.height.max(12.0);
-            let title_bar_height = (btn_h + TRAFFIC_LIGHT_INSET_Y * 2.0).max(36.0);
-            let mut container_rect = NSView::frame(&container);
-            container_rect.size.height = title_bar_height;
-            container_rect.origin.y = ns_win.frame().size.height - title_bar_height;
-            container.setFrame(container_rect);
-
-            let mut buttons = vec![close, minimize];
-            if let Some(zoom) = zoom {
-                buttons.push(zoom);
-            }
-            // Vertically center the cluster in the title-bar container; x is the
-            // window-content inset (builder traffic_light_position contract).
-            let btn_y = ((title_bar_height - btn_h) / 2.0).max(0.0);
-            for (index, button) in buttons.into_iter().enumerate() {
-                button.setHidden(false);
-                button.setAlphaValue(1.0);
-                let mut rect = NSView::frame(&button);
-                rect.origin.x = TRAFFIC_LIGHT_INSET_X + (index as f64) * spacing;
-                rect.origin.y = btn_y;
-                button.setFrameOrigin(rect.origin);
-            }
-        }
-        Ok(())
+        let ns_win: &NSWindow = unsafe { &*ns_win_ptr.cast() };
+        configure_native_chrome_ns(ns_win)
     })
+}
+
+/// The NSWindow-level body of `configure_native_window_chrome`, callable
+/// wherever the `&NSWindow` is already on the main thread
+/// (`set_frame_top_left_ns`, `set_snap_parent_ns`). AppKit re-lays out the
+/// title bar — reverting the container to its default height and the cluster
+/// to the default inset — on every resize and on re-show, and can queue a
+/// layout pass behind any of our mutations. So the finalize is re-asserted
+/// at each choke point, per Resized event in main.rs's macOS arm, and once
+/// more 250ms after a settle (mirroring the build-time retry) so a deferred
+/// pass cannot leave the cluster dropped.
+#[cfg(target_os = "macos")]
+fn configure_native_chrome_ns(ns_win: &objc2_app_kit::NSWindow) -> Result<(), String> {
+    use objc2_app_kit::{
+        NSTitlebarSeparatorStyle, NSView, NSWindowButton, NSWindowCollectionBehavior,
+    };
+    unsafe {
+        ns_win.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
+        ns_win.setCollectionBehavior(
+            ns_win.collectionBehavior() | NSWindowCollectionBehavior::FullScreenNone,
+        );
+
+        let Some(close) = ns_win.standardWindowButton(NSWindowButton::CloseButton) else {
+            return Ok(());
+        };
+        let Some(minimize) = ns_win.standardWindowButton(NSWindowButton::MiniaturizeButton)
+        else {
+            return Ok(());
+        };
+        let zoom = ns_win.standardWindowButton(NSWindowButton::ZoomButton);
+
+        // Revealing a standard button makes AppKit restore the cluster's
+        // default frame, so reapply the card inset after the reveal.
+        // This is the same native hierarchy Tauri/Wry configures, finalized
+        // once after the transparent overlay window is actually alive.
+        let Some(group) = close.superview() else {
+            return Ok(());
+        };
+        let Some(container) = group.superview() else {
+            return Ok(());
+        };
+        group.setHidden(false);
+        group.setAlphaValue(1.0);
+        container.setHidden(false);
+        container.setAlphaValue(1.0);
+        let close_rect = NSView::frame(&close);
+        // Keep AppKit's natural inter-button spacing (never invent one).
+        let spacing = {
+            let raw = NSView::frame(&minimize).origin.x - close_rect.origin.x;
+            if raw > 1.0 {
+                raw
+            } else {
+                20.0
+            }
+        };
+        // Title-bar container tall enough for the button + breathing room
+        // above/below (matches CSS .title-bar min-height ~36).
+        let btn_h = close_rect.size.height.max(12.0);
+        let title_bar_height = (btn_h + TRAFFIC_LIGHT_INSET_Y * 2.0).max(36.0);
+        let mut container_rect = NSView::frame(&container);
+        container_rect.size.height = title_bar_height;
+        container_rect.origin.y = ns_win.frame().size.height - title_bar_height;
+        container.setFrame(container_rect);
+
+        let mut buttons = vec![close, minimize];
+        if let Some(zoom) = zoom {
+            buttons.push(zoom);
+        }
+        // Vertically center the cluster in the title-bar container; x is the
+        // window-content inset (TRAFFIC_LIGHT_INSET_* above).
+        let btn_y = ((title_bar_height - btn_h) / 2.0).max(0.0);
+        for (index, button) in buttons.into_iter().enumerate() {
+            button.setHidden(false);
+            button.setAlphaValue(1.0);
+            let mut rect = NSView::frame(&button);
+            rect.origin.x = TRAFFIC_LIGHT_INSET_X + (index as f64) * spacing;
+            rect.origin.y = btn_y;
+            button.setFrameOrigin(rect.origin);
+        }
+    }
+    Ok(())
 }
 
 /// Wire payload for `capture_window_screenshot`: a base64-encoded PNG (no
@@ -2708,6 +2726,12 @@ unsafe fn set_frame_top_left_ns(
     };
     let height = primary.frame().size.height;
     win_ns.setFrameTopLeftPoint(CGPoint::new(x, height - y));
+    // A programmatic frame write can hand the title bar back to AppKit's
+    // layout; re-assert the card chrome immediately (best-effort, like the
+    // build-time pass — a missing button hierarchy is not an error).
+    if let Err(e) = configure_native_chrome_ns(win_ns) {
+        eprintln!("[moon] chrome re-apply after native move failed: {e}");
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -2749,6 +2773,12 @@ unsafe fn set_snap_parent_ns(
     }
     if let Some(p) = parent_ns {
         p.addChildWindow_ordered(child_ns, NSWindowOrderingMode::Above);
+    }
+    // Reordering a window re-lays out its title bar on the next pass; put the
+    // cluster back at the card inset now (the gesture-end settle also
+    // re-applies deferred, for any title-bar layout AppKit queues after this).
+    if let Err(e) = configure_native_chrome_ns(child_ns) {
+        eprintln!("[moon] chrome re-apply after attach/detach failed: {e}");
     }
 }
 
@@ -2954,7 +2984,7 @@ fn settle_changed_dock_frames(app: &tauri::AppHandle) {
     else {
         return;
     };
-    let mut changed = false;
+    let mut changed: Vec<tauri::WebviewWindow> = Vec::new();
     for (label, r) in dock_rects(app, "") {
         let unchanged = before
             .get(&label)
@@ -2963,13 +2993,23 @@ fn settle_changed_dock_frames(app: &tauri::AppHandle) {
         if unchanged {
             continue;
         }
-        changed = true;
         if let Some(w) = app.get_webview_window(&label) {
             snap_to_flush_edge(mtm, &w);
+            changed.push(w);
         }
     }
-    if changed {
+    if !changed.is_empty() {
         apply_attachment_plan(app);
+        // The move + attach/detach re-apply chrome synchronously where it
+        // happens, but any title-bar layout AppKit queued on those mutations
+        // lands after this unwind — mirror the build-time 250ms retry so a
+        // deferred pass cannot leave the cluster at the default inset.
+        for w in changed {
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let _ = configure_native_window_chrome(&w);
+            });
+        }
     }
 }
 

@@ -17,10 +17,11 @@
  * poke the DOM from transport callbacks" rule store.ts itself follows.
  *
  * Role defaults (v1):
- *   advisor      -> claude-opus-4-8   (most capable)
- *   daily-driver -> claude-sonnet-5   (balanced default)
- *   wake         -> claude-sonnet-4-6 (cheapest capable)
- *   dream        -> claude-haiku-4-5  (cheapest)
+ *   advisor      -> claude-opus-5-5   (most capable)
+ *   daily-driver -> claude-opus-5-5   (recommended default)
+ *   wake         -> claude-sonnet-5   (latest sonnet)
+ *   dream        -> claude-haiku-4-5  (cheapest; latest haiku — no 5.x yet)
+ *   classifier   -> claude-haiku-4-5  (cheap structured-output routing)
  *
  * OpenAI / Google are present-but-gated provider slots: shown with a
  * "validated when key + gateway present" notice; this port doesn't filter
@@ -29,35 +30,51 @@
  */
 import type { MemoryRerankerSettingsItem, ProviderSettingsItem, RoleBindingItem } from "@luna/ui-shared/core"
 
-export const ROLES = ["advisor", "daily-driver", "wake", "dream"] as const
+export const ROLES = ["advisor", "daily-driver", "wake", "dream", "classifier"] as const
 export type Role = (typeof ROLES)[number]
 
 export const ROLE_LABELS: Record<Role, string> = {
-  advisor: "Advisor (pro-level reasoning)",
-  "daily-driver": "Daily Driver (chat & tasks)",
-  wake: "Wake (morning brief)",
-  dream: "Dream (nightly synthesis)",
+  advisor: "Advisor",
+  "daily-driver": "Daily Driver",
+  wake: "Wake",
+  dream: "Dream",
+  classifier: "Classifier",
 }
 
+/** Plain-English one-liner under each role name in the panel. */
+export const ROLE_DESCRIPTIONS: Record<Role, string> = {
+  advisor: "Deepest reasoning for your hardest questions.",
+  "daily-driver": "Everyday chat and tasks.",
+  wake: "Your morning brief.",
+  dream: "Nightly memory work while you sleep.",
+  classifier: "Routes incoming messages and small jobs.",
+}
+
+// Mirror of DEFAULT_ROLE_MODELS in packages/core/src/provider-settings/resolver.ts.
+// These two tables MUST agree: the server one decides what actually runs, this
+// one decides what the settings panel shows as the role's default.
 export const DEFAULT_ROLE_MODEL: Record<Role, string> = {
-  advisor: "claude-opus-4-8",
-  "daily-driver": "claude-sonnet-5",
-  wake: "claude-sonnet-4-6",
+  advisor: "claude-opus-5-5",
+  "daily-driver": "claude-opus-5-5",
+  wake: "claude-sonnet-5",
   dream: "claude-haiku-4-5",
+  classifier: "claude-haiku-4-5",
 }
 
 export interface ProviderDef {
   readonly kind: string
   readonly label: string
+  /** Plain-English one-liner under the provider name in the panel. */
+  readonly description: string
   readonly gated: boolean
 }
 
 export const PROVIDERS: readonly ProviderDef[] = [
-  { kind: "anthropic", label: "Anthropic", gated: false },
-  { kind: "openai", label: "OpenAI", gated: true },
-  { kind: "google", label: "Google Gemini", gated: true },
-  { kind: "ollama-cloud", label: "Ollama Cloud", gated: false },
-  { kind: "ollama-local", label: "Ollama Local", gated: false },
+  { kind: "anthropic", label: "Anthropic", description: "Claude models — Luna's default.", gated: false },
+  { kind: "openai", label: "OpenAI", description: "GPT models via a LiteLLM gateway.", gated: true },
+  { kind: "google", label: "Google Gemini", description: "Gemini models via a LiteLLM gateway.", gated: true },
+  { kind: "ollama-cloud", label: "Ollama Cloud", description: "Open models hosted on Ollama.", gated: false },
+  { kind: "ollama-local", label: "Ollama Local", description: "Models running on this machine.", gated: false },
 ]
 
 export interface ModelOption {
@@ -66,17 +83,18 @@ export interface ModelOption {
 }
 
 export const ANTHROPIC_MODELS: readonly ModelOption[] = [
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5 - balanced default" },
-  { id: "claude-fable-5", label: "Claude Fable 5 - 1M context, xhigh reasoning" },
-  { id: "claude-fable-5-1", label: "Claude Fable 5.1 - 1M context, xhigh reasoning" },
-  { id: "claude-mythos-5", label: "Claude Mythos 5 - 1M context, first-party only" },
-  { id: "claude-opus-5", label: "Claude Opus 5 - 1M context, xhigh reasoning" },
-  { id: "claude-opus-4-8", label: "Claude Opus 4.8 - most capable" },
-  { id: "claude-opus-4-7", label: "Claude Opus 4.7 - prior gen" },
-  { id: "claude-opus-4-6", label: "Claude Opus 4.6 - prior gen" },
-  { id: "claude-opus-4-5", label: "Claude Opus 4.5 - prior gen" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 - prior gen" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 - fastest" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5 — smartest" },
+  { id: "claude-sonnet-5", label: "Claude Sonnet 5 — balanced" },
+  { id: "claude-fable-5", label: "Claude Fable 5 — 1M context" },
+  { id: "claude-fable-5-1", label: "Claude Fable 5.1 — 1M context" },
+  { id: "claude-mythos-5", label: "Claude Mythos 5 — 1M context" },
+  { id: "claude-opus-5", label: "Claude Opus 5 — 1M context" },
+  { id: "claude-opus-4-8", label: "Claude Opus 4.8 — previous gen" },
+  { id: "claude-opus-4-7", label: "Claude Opus 4.7 — previous gen" },
+  { id: "claude-opus-4-6", label: "Claude Opus 4.6 — previous gen" },
+  { id: "claude-opus-4-5", label: "Claude Opus 4.5 — previous gen" },
+  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 — previous gen" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5 — fastest" },
 ]
 
 /**

@@ -204,10 +204,15 @@ describe("resolveOverflowConfig", () => {
 
 describe("resolveRoleModel", () => {
   it("returns default when store is null", () => {
-    expect(resolveRoleModel("advisor", null)).toBe("claude-opus-4-8")
-    expect(resolveRoleModel("daily-driver", null)).toBe("claude-sonnet-5")
-    expect(resolveRoleModel("wake", null)).toBe("claude-sonnet-4-6")
+    expect(resolveRoleModel("advisor", null)).toBe("claude-opus-5-5")
+    // daily-driver is THE server-side default model for any thread created
+    // without an explicit one. It must stay in lockstep with chat-server's
+    // BASE_MODELS[0] and Moon's DEFAULT_ROLE_MODEL, or the UI advertises one
+    // model while the server runs another.
+    expect(resolveRoleModel("daily-driver", null)).toBe("claude-opus-5-5")
+    expect(resolveRoleModel("wake", null)).toBe("claude-sonnet-5")
     expect(resolveRoleModel("dream", null)).toBe("claude-haiku-4-5")
+    expect(resolveRoleModel("classifier", null)).toBe("claude-haiku-4-5")
   })
 
   it("returns default when store has no binding for the role", () => {
@@ -216,7 +221,7 @@ describe("resolveRoleModel", () => {
       providers: [],
       roleBindings: [], // no bindings
     }
-    expect(resolveRoleModel("advisor", store)).toBe("claude-opus-4-8")
+    expect(resolveRoleModel("advisor", store)).toBe("claude-opus-5-5")
   })
 
   it("returns first preference list model when binding exists", () => {
@@ -247,7 +252,7 @@ describe("resolveRoleModel", () => {
         },
       ],
     }
-    expect(resolveRoleModel("wake", store)).toBe("claude-sonnet-4-6")
+    expect(resolveRoleModel("wake", store)).toBe("claude-sonnet-5")
   })
 })
 
@@ -315,6 +320,23 @@ describe("validateAndPrepare", () => {
       const err = e as ProviderSettingsValidationError
       expect(err.findings.length).toBeGreaterThan(0)
     }
+  })
+
+  it("rejects classifier bindings to providers without structured output", () => {
+    // The classifier fills a structured type — same JSON-consumer gate as
+    // wake/dream. A structuredOutput="none" provider (openai via gateway)
+    // must fail write-time validation.
+    const payload: ProviderSettingsPayload = {
+      version: 1,
+      providers: [{ kind: "openai", enabled: true }],
+      roleBindings: [
+        {
+          role: "classifier",
+          preferenceList: [{ provider: "openai", model: "gpt-4o" }],
+        },
+      ],
+    }
+    expect(() => validateAndPrepare(payload, {})).toThrow(ProviderSettingsValidationError)
   })
 
   it("ProviderSettingsValidationError carries findings array", () => {

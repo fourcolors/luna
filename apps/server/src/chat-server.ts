@@ -642,12 +642,13 @@ export const parseUiModels = (raw: string | undefined): ReadonlyArray<UiModelEnt
  * via effortsForModel().
  */
 const BASE_MODELS: ReadonlyArray<{ readonly id: string; readonly label: string }> = [
-  { id: "claude-sonnet-5",     label: "Claude Sonnet 5 — balanced default" },
+  { id: "claude-opus-5-5",      label: "Claude Opus 5.5 — recommended default" },
+  { id: "claude-sonnet-5",     label: "Claude Sonnet 5 — balanced" },
   { id: "claude-fable-5",       label: "Fable 5 (1M context, xhigh reasoning)" },
   { id: "claude-fable-5-1",     label: "Fable 5.1 (1M context, xhigh reasoning)" },
   { id: "claude-mythos-5",      label: "Mythos 5 (1M context, first-party only)" },
   { id: "claude-opus-5",        label: "Opus 5 (1M context, xhigh reasoning)" },
-  { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — most capable" },
+  { id: "claude-opus-4-8",      label: "Claude Opus 4.8 — prior gen" },
   { id: "claude-sonnet-4-6",   label: "Claude Sonnet 4.6 — prior gen" },
   { id: "claude-haiku-4-5",     label: "Claude Haiku 4.5 — fastest" },
 ]
@@ -1691,14 +1692,16 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
       const savedRerankEngine = memoryRerankerEnvFromStore(storeConfig)
       if (savedRerankEngine !== undefined) process.env["LUNA_RERANK_ENGINE"] = savedRerankEngine
 
-      // Wire reasoner-lane model SELECTION: wake/dream resolve their model from
-      // LUNA_WAKE_MODEL / LUNA_DREAM_MODEL (brokered-turn resolveReasonerModel).
+      // Wire reasoner-lane model SELECTION: wake/dream/classifier resolve their
+      // model from LUNA_WAKE_MODEL / LUNA_DREAM_MODEL / LUNA_CLASSIFIER_MODEL
+      // (brokered-turn resolveReasonerModel).
       // Set them from the operator's role binding so the chosen model is actually
       // requested — and its failover chain (keyed by that model) fires. Only
       // override when the store has an explicit binding (never clobber operator env).
       for (const [role, varName] of [
         ["wake", "LUNA_WAKE_MODEL"],
         ["dream", "LUNA_DREAM_MODEL"],
+        ["classifier", "LUNA_CLASSIFIER_MODEL"],
       ] as const) {
         const hasBinding = (storeConfig.roleBindings ?? []).some(
           (b) => b.role === role && (b.preferenceList?.[0]?.model ?? "") !== "",
@@ -4641,7 +4644,7 @@ const buildServerLayer = (
                 const KNOWN_KINDS = new Set([
                   "anthropic", "openai", "google", "ollama-cloud", "ollama-local",
                 ])
-                const KNOWN_ROLES = new Set(["advisor", "daily-driver", "wake", "dream"])
+                const KNOWN_ROLES = new Set(["advisor", "daily-driver", "wake", "dream", "classifier"])
                 for (const p of input.providers) {
                   if (!KNOWN_KINDS.has(p.kind)) {
                     return { ok: false, message: `Unknown provider kind: ${String(p.kind)}` }

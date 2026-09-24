@@ -31,16 +31,25 @@ import { MEMORY_RERANKER_ENGINES, type MemoryRerankerEngine, type ProviderSettin
 /**
  * v1 default model per role when the store has no binding for it.
  *
- * advisor      → claude-opus-4-8    (most capable)
- * daily-driver → claude-sonnet-5    (balanced default)
- * wake         → claude-sonnet-4-6  (cheapest capable)
- * dream        → claude-haiku-4-5   (cheapest)
+ * advisor      → claude-opus-5-5    (most capable)
+ * daily-driver → claude-opus-5-5    (recommended default)
+ * wake         → claude-sonnet-5    (latest sonnet)
+ * dream        → claude-haiku-4-5   (cheapest; latest haiku — no 5.x yet)
+ * classifier   → claude-haiku-4-5   (cheap structured-output routing)
+ *
+ * NOTE: `daily-driver` is THE server-side default model. A thread created with
+ * no explicit model resolves through here (adapter.ts's
+ * DEFAULT_LANE_PREFERRED_MODEL), so this constant — not chat-server's
+ * BASE_MODELS[0], which only orders the UI list — is what actually runs. The
+ * two are kept pointing at the same id deliberately; if they drift, the UI
+ * advertises one model while the server runs another.
  */
 const DEFAULT_ROLE_MODELS: Record<RoleName, string> = {
-  advisor: "claude-opus-4-8",
-  "daily-driver": "claude-sonnet-5",
-  wake: "claude-sonnet-4-6",
+  advisor: "claude-opus-5-5",
+  "daily-driver": "claude-opus-5-5",
+  wake: "claude-sonnet-5",
   dream: "claude-haiku-4-5",
+  classifier: "claude-haiku-4-5",
 }
 
 /**
@@ -85,8 +94,8 @@ export const resolveProviderEnv = (
  * without store bindings keep their env-derived chains (or no chain if absent).
  *
  * STORE OVERRIDES ENV: a stored role binding REPLACES any env chain for that
- * lane (advisor/daily-driver/wake/dream). Non-role lanes from env are preserved
- * unchanged so existing overflow configs keep working.
+ * lane (advisor/daily-driver/wake/dream/classifier). Non-role lanes from env
+ * are preserved unchanged so existing overflow configs keep working.
  */
 export const resolveOverflowConfig = (
   storeConfig: ProviderSettingsPayload | null,
@@ -108,8 +117,9 @@ export const resolveOverflowConfig = (
     // broker resolves overflow chains by the requested model id
     // (account-broker-sql.ts: `const lane = o.model`), so a chain keyed by the
     // role string ("wake"/"advisor"/…) is never found. The primary model is
-    // what the lane requests (wake/dream via LUNA_WAKE_MODEL/LUNA_DREAM_MODEL,
-    // set in applyProviderSettingsToEnv) and is step 0 of its own failover chain.
+    // what the lane requests (wake/dream/classifier via
+    // LUNA_WAKE_MODEL/LUNA_DREAM_MODEL/LUNA_CLASSIFIER_MODEL, set in
+    // applyProviderSettingsToEnv) and is step 0 of its own failover chain.
     const primaryModel = binding.preferenceList[0]?.model
     if (primaryModel) chains[primaryModel] = steps
   }
@@ -171,11 +181,12 @@ export const validateAndPrepare = (
     throw new ProviderSettingsValidationError(findings)
   }
 
-  // Explicit structured-output check for wake/dream role bindings.
-  // validateOverflowConfig only audits chains keyed by lane names (wake/dream/reasoner),
-  // but after the model-keying fix, chains are keyed by model id — so it bypasses that
-  // audit. We replicate the check here for the roles that consume JSON.
-  const JSON_ROLES = new Set(["wake", "dream"])
+  // Explicit structured-output check for wake/dream/classifier role bindings.
+  // validateOverflowConfig only audits chains keyed by lane names
+  // (wake/dream/classifier/reasoner), but after the model-keying fix, chains are
+  // keyed by model id — so it bypasses that audit. We replicate the check here
+  // for the roles that consume JSON.
+  const JSON_ROLES = new Set(["wake", "dream", "classifier"])
   const roleFindings: string[] = []
   for (const binding of candidate.roleBindings ?? []) {
     if (!JSON_ROLES.has(binding.role)) continue
