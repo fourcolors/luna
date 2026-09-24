@@ -512,3 +512,88 @@ describe('SettingsModelsPanel - Memory reranker', () => {
     expect('memoryReranker' in (h.client.sent[0] as any)).toBe(false)
   })
 })
+
+describe('SettingsModelsPanel - Classifier engine', () => {
+  const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`)
+  const pushListWith = (h: Harness, classifierEngine?: { engine: string; active?: string }) =>
+    act(() => {
+      h.registry().dispatch({ type: 'model-routing-list', providers: [], roleBindings: [], ...(classifierEngine ? { classifierEngine } : {}) })
+    })
+
+  it('is hidden when the server does not report the setting (older server)', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h)
+    expect(byTestId('classifier-engine-section')).toBeNull()
+  })
+
+  it('shows the server\'s current engine, with the auto note describing what auto is doing now', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'auto', active: 'jev' })
+    expect(byTestId('classifier-engine-auto')!.getAttribute('aria-checked')).toBe('true')
+    expect(byTestId('classifier-engine-jev')!.getAttribute('aria-checked')).toBe('false')
+    expect(byTestId('classifier-engine-auto-note')!.textContent).toContain('Auto is using Jev')
+    expect(byTestId('classifier-engine-jev-notice')).toBeNull()
+  })
+
+  it('choosing Jev shows the privacy and key notice and saves the choice', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'auto' })
+    act(() => {
+      byTestId('classifier-engine-jev')!.click()
+    })
+    expect(byTestId('classifier-engine-jev')!.getAttribute('aria-checked')).toBe('true')
+    const notice = byTestId('classifier-engine-jev-notice')!
+    expect(notice.textContent).toContain('Sends message text to TypeSafe')
+    expect(notice.textContent).toContain('TYPESAFE_API_KEY')
+    act(() => {
+      byTestId('save-models-btn')!.click()
+    })
+    expect((h.client.sent[0] as any).classifierEngine).toEqual({ engine: 'jev' })
+  })
+
+  it('an untouched control is not sent on save, so an env-chosen engine stays env-chosen', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'auto', active: 'jev' })
+    act(() => {
+      byTestId('save-models-btn')!.click()
+    })
+    expect('classifierEngine' in (h.client.sent[0] as any)).toBe(false)
+  })
+
+  it('after a save that is not yet active, says which engine keeps running until the restart', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'model', active: 'jev' })
+    expect(byTestId('classifier-engine-pending')!.textContent).toBe('Luna keeps using Jev (TypeSafe) until the server restarts.')
+    pushListWith(h, { engine: 'model', active: 'model' })
+    expect(byTestId('classifier-engine-pending')).toBeNull()
+  })
+
+  it('an auto setting never shows a restart note (auto re-resolves; the bound engine is not "pending")', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'auto', active: 'model' })
+    expect(byTestId('classifier-engine-pending')).toBeNull()
+  })
+
+  it('never sends the field to a server that did not offer it', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h)
+    act(() => {
+      byTestId('save-models-btn')!.click()
+    })
+    expect('classifierEngine' in (h.client.sent[0] as any)).toBe(false)
+  })
+})

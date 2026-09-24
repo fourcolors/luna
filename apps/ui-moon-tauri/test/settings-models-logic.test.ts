@@ -218,3 +218,44 @@ describe('memory reranker', () => {
     expect(reduceModelRouting(s, { type: 'set-reranker', engine: 'jev' })).toBe(s)
   })
 })
+
+describe('classifier engine', () => {
+  it('server-list sets the engine when offered and null when not; set-classifier-engine marks dirty; buildSavePayload includes it only when offered', () => {
+    let s = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [], classifierEngine: { engine: 'auto' } })
+    expect(s.draftClassifierEngine).toBe('auto')
+    expect(s.isDirty).toBe(false)
+    s = reduceModelRouting(s, { type: 'set-classifier-engine', engine: 'jev' })
+    expect(s.draftClassifierEngine).toBe('jev')
+    expect(s.isDirty).toBe(true)
+    expect(buildSavePayload(s).classifierEngine).toEqual({ engine: 'jev' })
+    const old = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [] })
+    expect(old.draftClassifierEngine).toBeNull()
+    expect('classifierEngine' in buildSavePayload(old)).toBe(false)
+    // choosing on a server that does not offer the setting is a no-op
+    expect(reduceModelRouting(old, { type: 'set-classifier-engine', engine: 'jev' })).toBe(old)
+  })
+
+  it('an untouched control is never saved (so an env-derived engine is not frozen into the store); changing it back is not saved either', () => {
+    let s = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [], classifierEngine: { engine: 'auto' } })
+    expect('classifierEngine' in buildSavePayload(s)).toBe(false)
+    s = reduceModelRouting(s, { type: 'set-classifier-engine', engine: 'jev' })
+    s = reduceModelRouting(s, { type: 'set-classifier-engine', engine: 'auto' })
+    expect('classifierEngine' in buildSavePayload(s)).toBe(false)
+  })
+
+  it('an unknown reported engine shows as "auto"; an unknown active engine shows as "model"', () => {
+    const s = reduceModelRouting(initialModelRoutingState, {
+      type: 'server-list',
+      providers: [],
+      roleBindings: [],
+      classifierEngine: { engine: 'Jev', active: 'typo' },
+    })
+    expect(s.draftClassifierEngine).toBe('auto')
+    expect(s.activeClassifierEngine).toBe('model')
+  })
+
+  it('re-selecting the current engine does not mark the panel dirty', () => {
+    const s = reduceModelRouting(initialModelRoutingState, { type: 'server-list', providers: [], roleBindings: [], classifierEngine: { engine: 'auto' } })
+    expect(reduceModelRouting(s, { type: 'set-classifier-engine', engine: 'auto' })).toBe(s)
+  })
+})

@@ -32,6 +32,11 @@ export {
   type JevRerankerOptions,
 } from "./jev-reranker.js"
 export {
+  JevClassifierLayer,
+  DEFAULT_JEV_CLASSIFIER_TIMEOUT_MS,
+  type JevClassifierOptions,
+} from "./jev-classifier.js"
+export {
   WakeReasonerDefault,
   buildWakePrompt,
   parseDigest as parseWakeDigest,

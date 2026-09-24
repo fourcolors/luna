@@ -20,6 +20,12 @@ import {
   memoryRerankerEnvFromStore,
   nextMemoryReranker,
   resolveMemoryRerankerEngine,
+  boundClassifierEngine,
+  classifierEngineEnvFromStore,
+  isClassifierEngine,
+  nextClassifierEngine,
+  resolveActiveClassifierEngine,
+  resolveClassifierEngine,
 } from "./resolver.js"
 import type { ProviderSettingsPayload } from "./types.js"
 
@@ -404,5 +410,64 @@ describe("memory reranker engine", () => {
     expect(isMemoryRerankerEngine("cross-encoder")).toBe(true)
     expect(isMemoryRerankerEngine("Jev")).toBe(false)
     expect(isMemoryRerankerEngine(undefined)).toBe(false)
+  })
+})
+
+describe("classifier engine", () => {
+  const withEngine = (engine: unknown): ProviderSettingsPayload =>
+    ({ version: 1, providers: [], roleBindings: [], classifierEngine: { engine } }) as unknown as ProviderSettingsPayload
+
+  it("the operator's saved choice wins over LUNA_CLASSIFIER_ENGINE (store overrides env)", () => {
+    expect(resolveClassifierEngine(withEngine("jev"), { LUNA_CLASSIFIER_ENGINE: "model" })).toBe("jev")
+    expect(resolveClassifierEngine(withEngine("model"), { LUNA_CLASSIFIER_ENGINE: "jev" })).toBe("model")
+  })
+
+  it("with no saved choice (or an invalid one), the environment decides, else \"auto\"", () => {
+    expect(resolveClassifierEngine(null, { LUNA_CLASSIFIER_ENGINE: " jev " })).toBe("jev")
+    expect(resolveClassifierEngine({ version: 1, providers: [], roleBindings: [] }, {})).toBe("auto")
+    expect(resolveClassifierEngine(withEngine("gpt"), { LUNA_CLASSIFIER_ENGINE: "jev" })).toBe("jev")
+    expect(resolveClassifierEngine(null, {})).toBe("auto")
+  })
+
+  it("a bad LUNA_CLASSIFIER_ENGINE (typo, wrong case) resolves to \"auto\", never to itself", () => {
+    expect(resolveClassifierEngine(null, { LUNA_CLASSIFIER_ENGINE: "Jev" })).toBe("auto")
+    expect(boundClassifierEngine({ LUNA_CLASSIFIER_ENGINE: "typo" })).toBe("auto")
+    expect(boundClassifierEngine({ LUNA_CLASSIFIER_ENGINE: "jev" })).toBe("jev")
+    expect(boundClassifierEngine({})).toBe("auto")
+  })
+
+  it("auto picks jev when the key resolves and no explicit model is bound; an explicit binding overrides", () => {
+    // Jev is the go-to classifier: a resolvable TYPESAFE_API_KEY alone turns it on.
+    expect(resolveActiveClassifierEngine({ engine: "auto", hasTypeSafeKey: true, hasExplicitClassifierModel: false })).toBe("jev")
+    // The operator's explicit classifier model binding (env or store) is the override.
+    expect(resolveActiveClassifierEngine({ engine: "auto", hasTypeSafeKey: true, hasExplicitClassifierModel: true })).toBe("model")
+    // No key, nothing bound: the generative lane stays.
+    expect(resolveActiveClassifierEngine({ engine: "auto", hasTypeSafeKey: false, hasExplicitClassifierModel: false })).toBe("model")
+    // Explicit engine choices never look at the key.
+    expect(resolveActiveClassifierEngine({ engine: "jev", hasTypeSafeKey: false, hasExplicitClassifierModel: true })).toBe("jev")
+    expect(resolveActiveClassifierEngine({ engine: "model", hasTypeSafeKey: true, hasExplicitClassifierModel: false })).toBe("model")
+  })
+
+  it("nextClassifierEngine: a sent choice is validated; an absent one keeps the stored choice; an invalid stored one is dropped", () => {
+    expect(nextClassifierEngine({ engine: "jev" }, null)).toEqual({ ok: true, value: { engine: "jev" } })
+    expect(nextClassifierEngine({ engine: "gpt" }, withEngine("jev"))).toEqual({ ok: false, message: "Unknown classifier engine: gpt" })
+    expect(nextClassifierEngine(undefined, withEngine("auto"))).toEqual({ ok: true, value: { engine: "auto" } })
+    expect(nextClassifierEngine(undefined, null)).toEqual({ ok: true, value: undefined })
+    expect(nextClassifierEngine(undefined, withEngine("hand-edited"))).toEqual({ ok: true, value: undefined })
+  })
+
+  it("classifierEngineEnvFromStore: only a valid saved choice sets LUNA_CLASSIFIER_ENGINE at boot", () => {
+    expect(classifierEngineEnvFromStore(withEngine("jev"))).toBe("jev")
+    expect(classifierEngineEnvFromStore(withEngine("gpt"))).toBeUndefined()
+    expect(classifierEngineEnvFromStore({ version: 1, providers: [], roleBindings: [] })).toBeUndefined()
+    expect(classifierEngineEnvFromStore(null)).toBeUndefined()
+  })
+
+  it("isClassifierEngine accepts exactly the bindable engines", () => {
+    expect(isClassifierEngine("auto")).toBe(true)
+    expect(isClassifierEngine("model")).toBe(true)
+    expect(isClassifierEngine("jev")).toBe(true)
+    expect(isClassifierEngine("Jev")).toBe(false)
+    expect(isClassifierEngine(undefined)).toBe(false)
   })
 })
