@@ -836,6 +836,9 @@ async function main(): Promise<void> {
         recallAt1: recallAtK(ranks, 1, r.relevantIds.size),
         recallAt5: recallAtK(ranks, 5, r.relevantIds.size),
         rank: ranks.length > 0 ? Math.min(...ranks) : null,
+        // For offline gate analysis: every relevant rank, and the top 5 scores (judge scores under rr=).
+        ranks,
+        scores5: r.scores.slice(0, 5).map((s) => Math.round(s * 1000) / 1000),
         ...(r.judge !== undefined
           ? { judgeMs: Math.round(r.judge.ms), judgeWaitMs: Math.round(r.judge.waitMs), judgeAttempts: r.judge.attempts }
           : {}),

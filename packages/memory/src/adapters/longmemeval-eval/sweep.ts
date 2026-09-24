@@ -103,7 +103,7 @@ interface ConfigHits {
   /** The rr= judge call's timing and attempts; absent without rr=. */
   readonly judge?: JudgeTiming
   /** LUNA_LME_DUMP_TOP=1 only: the top-10 records in rank order. */
-  readonly top?: ReadonlyArray<{ readonly id: string; readonly text: string; readonly updatedAt: number }>
+  readonly top?: ReadonlyArray<{ readonly id: string; readonly text: string; readonly updatedAt: number; readonly score: number }>
 }
 
 interface QuestionResult {
@@ -167,7 +167,7 @@ function runQuestion(
         sess5: [...answerSessions].filter((s) => sessions5.has(s)).length,
         top10,
         ...(judge !== undefined ? { judge } : {}),
-        ...(DUMP_TOP ? { top: hits10.map((h) => ({ id: h.record.id, text: recordText(h.record), updatedAt: h.record.updatedAt })) } : {}),
+        ...(DUMP_TOP ? { top: hits10.map((h) => ({ id: h.record.id, text: recordText(h.record), updatedAt: h.record.updatedAt, score: h.score })) } : {}),
       }
     }
     const vecDeep = Array.from(

@@ -277,15 +277,64 @@ What the outcome decides (latency still has to fit, and sending memory text to a
 - Haiku beats Jev: recommend Haiku only if it fits the latency budget on the server; otherwise present the trade-off as a decision.
 - Neither beats `ce@40`: the local cross-encoder stays the judge, and its latency on the production GPU remains the blocker.
 
-## Rollout (separate PRs; revised 2026-09-23 after the judge result)
+## Which judge: held-out result (2026-09-23, run once on questions 261-460, locked commit 5c76619a)
 
-The evidence points at judging more candidates, not at changing lexical matching.
-Nothing in this PR changes production search; these are the next steps, in order:
+193 answerable questions, 366 evidence turns; one run, no resumes; served models `jev-1.13.0` and `claude-haiku-4-5-20251001`.
+Reproduction check: every `hybrid` and `ce` row reproduces the earlier held-out exactly (161 / 204 / 265 / 279).
 
-1. Measure judge latency where it would run, for depth 8 / 20 / 40, on real memories (a COPY of the stable memory DB, real `memory_search` queries): the local cross-encoder on the production server GPU, and Jev (hosted; needs `TYPESAFE_API_KEY` and an owner decision on sending memory text to a second vendor).
-2. `memory_search` (rerank already shipped behind `LUNA_MEMORY_RERANK`, cap `LUNA_RERANK_MAX_CANDIDATES=8`): raise the cap to 20-40 if step 1 fits its latency budget; this is an env change, not code.
-3. Per-turn recall (2.5 s budget, no rerank today): enable a judge only with a judge fast enough for that budget; this is the change with the largest user-visible effect (every turn) and the tightest constraint.
-4. Real-data check on the DB copy before any flag flips (merge auto-deploys).
+| config | evidence@5 | evidence@10 | vs `hybrid` |
+|---|---:|---:|---:|
+| `hybrid` (production recall) | 161/366 (44.0%) | 61.7% | - |
+| `hybrid:rr=ce@20` / `@40` | 265 (72.4%) / 279 (76.2%) | 78.7% / 85.0% | 86 / 1, 92 / 1 |
+| `hybrid:rr=haiku@20` / `@40` | 270 (73.8%) / 290 (79.2%) | 77.9% / 85.8% | 85 / 3, 93 / 3 |
+| **`hybrid:rr=jev@20` / `@40`** | **285 (77.9%) / 313 (85.5%)** | **80.9% / 91.8%** | **94 / 2, 107 / 2** |
+
+Primary comparisons (depth 40, bar p < 0.0167):
+
+1. `jev@40` vs `ce@40`: 31 / 6, p = 4.1e-5: **Jev beats the cross-encoder.**
+2. `haiku@40` vs `ce@40`: 23 / 19, p = 0.64: no detectable difference (+11 evidence turns).
+3. `jev@40` vs `haiku@40`: 28 / 7, p = 5.1e-4: **Jev beats Haiku.**
+
+Reported, not claimed: at depth 20, `jev` vs `ce` 22 / 5 (p = 0.0015), `haiku` vs `ce` 15 / 11 (p = 0.56), `jev` vs `haiku` 21 / 7 (p = 0.013); `jev@40` vs `jev@20` 28 / 5 (p = 6.6e-5).
+Haiku's tuning passes differed by 1-4 evidence turns, far less than its 23-turn gap to Jev here.
+
+By question type (evidence turns in the top 5, `hybrid` -> `ce@40` -> `haiku@40` -> `jev@40`): multi-session 52 -> 94 -> 104 -> 115 of 144; temporal-reasoning 39 -> 76 -> 79 -> 87 of 100; knowledge-update 24 -> 52 -> 50 -> 55 of 59; single-session-user 19 -> 25 -> 25 -> 25 of 26; single-session-assistant 21 -> 23 -> 24 -> 23 of 24; single-session-preference 6 -> 9 -> 8 -> 8 of 13.
+
+Per-call judge time on the laptop (indicative only; median / p95, depth 40): `jev` 0.21 / 0.33 s, `ce` 2.2 / 2.8 s, `haiku` 2.9 / 3.6 s; over the 2.5 s per-turn budget: `jev` 0 of 200, `ce` 33, `haiku` 167.
+One `jev@20` call took 61 s (a network hang, retried once, counted in the table above).
+
+Outcome against the locked rules: Jev beats Haiku, so the recommendation is Jev: better on quality than both, about 10x faster per call, and scores calibrated enough to gate on.
+Latency on the production server and the owner's decision on sending memory text to TypeSafe remain preconditions for turning it on anywhere.
+
+## Jev as a configurable engine, and its injection threshold (2026-09-23, tuning sets only)
+
+Shipped in this PR, opt-in (the owner: make Jev configurable; never put a key in the public repo):
+`LUNA_RERANK_ENGINE=jev` plus the operator's own `TYPESAFE_API_KEY` (resolved like every server secret: vault, Keychain or environment).
+The default is unchanged: the local cross-encoder, reranking off in both lanes unless `LUNA_MEMORY_RERANK=1` / `LUNA_RECALL_RERANK=1`.
+Configured, Jev reranks both `memory_search` and per-turn recall (flag `0` turns a lane off), judges the top 40, pins `jev-1.13.0`, and sends the exact held-out request (one builder in `@luna/core`, byte-identical to the benchmarked one).
+
+Threshold: production drops a scored candidate below `LUNA_RERANK_THRESHOLD` (the cross-encoder's calibrated default is 40), but the held-out run measured ordering only.
+Jev's probabilities are spread lower than the cross-encoder's: on LongMemEval tuning the evidence turns in the top 5 score a median 0.75, a tenth under 0.33.
+Gating the tuning sets offline (Jev at depth 40):
+
+| threshold | LongMemEval evidence@5 kept (of 85) | memories packed per abstention question | memory-suite relevant top-5 hits kept (of 186) | memory-suite negative queries still injecting |
+|---:|---:|---:|---:|---:|
+| 0 | 85 | 5.0 | 186 | 40 / 40 |
+| 5 | 85 | 4.2 | 186 | 22 / 40 |
+| 10 | 83 | 2.2 | 186 | 9 / 40 |
+| 20 | 79 | 0.8 | 186 | 4 / 40 |
+| 40 (the cross-encoder's) | 72 | 0.2 | 185 | 0 / 40 |
+
+Decision: Jev's default threshold is 0, the configuration the held-out run validated (reorder, never drop; also what production does today with no judge).
+The cross-encoder's 40 would have thrown away 13 of 85 evidence turns.
+Threshold 5 loses nothing on either tuning set and halves memory-suite's negative-query injections; it needs a held-out check before it becomes the default (`LUNA_RERANK_THRESHOLD=5` applies it now).
+
+## Rollout (revised 2026-09-23 after the judge result)
+
+1. Done in this PR: Jev as an opt-in engine (above); the default path is unchanged.
+2. Before enabling it on the owner's server (merge auto-deploys, but nothing changes until `LUNA_RERANK_ENGINE=jev` and a key are set there): measure Jev latency and recall on a COPY of the stable memory DB with real `memory_search` queries at depth 8 / 20 / 40, including the recall lane's 160-row backend fetch inside the 2.5 s budget and cold starts (the first call after idle measured 9-19 s; the layer sends one data-free warm-up call at boot).
+3. Held-out check of threshold 5 (fresh questions or a new split), then make it Jev's default if it holds.
+4. End-to-end QA like-for-like with published memory scores (running: LongMemEval S, all 500 questions, Claude Sonnet reading Luna's recall, official judge prompts graded by gpt-4o-2024-08-06 and grok-4.5).
 5. Agent keywords (`memory_search` `keywords` argument) stay out: safe but not proven, and the judge already delivers the vocabulary-mismatch gain they were meant to.
 
 ## Out of scope

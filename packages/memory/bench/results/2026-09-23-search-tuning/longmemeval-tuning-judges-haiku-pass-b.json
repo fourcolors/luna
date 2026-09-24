@@ -1,0 +1,2588 @@
+{
+ "config": {
+  "split": "s",
+  "file": "longmemeval_s_cleaned.json",
+  "offset": 0,
+  "limit": 60,
+  "seed": 42,
+  "embedModel": "nomic-embed-text",
+  "ollamaVersion": "0.34.3",
+  "configs": [
+   "hybrid",
+   "hybrid:rr=haiku@20",
+   "hybrid:rr=haiku@40"
+  ],
+  "judges": {
+   "haiku": {
+    "judge": "haiku",
+    "model": "haiku",
+    "servedModel": "claude-haiku-4-5-20251001",
+    "thinking": "disabled"
+   }
+  },
+  "servedModelsSeen": {
+   "haiku": [
+    "claude-haiku-4-5-20251001"
+   ]
+  }
+ },
+ "runId": "82ae76d73a0cda8e",
+ "resumedQuestions": 0,
+ "wallClockSec": 899.722,
+ "summary": [
+  {
+   "label": "hybrid",
+   "ev5": 49,
+   "ev10": 67,
+   "sess5": 78,
+   "wins": 0,
+   "losses": 0,
+   "p": 1
+  },
+  {
+   "label": "hybrid:rr=haiku@20",
+   "ev5": 72,
+   "ev10": 80,
+   "sess5": 86,
+   "wins": 22,
+   "losses": 2,
+   "p": 3.58819961547852e-05,
+   "judgeLatency": {
+    "calls": 60,
+    "p50": 1852.2474160001148,
+    "p95": 2114.1184169999906,
+    "max": 2251.4960830000928,
+    "over2500": 0,
+    "waited": 0,
+    "maxWaitMs": 3.191332999995211,
+    "retried": 0
+   }
+  },
+  {
+   "label": "hybrid:rr=haiku@40",
+   "ev5": 80,
+   "ev10": 87,
+   "sess5": 86,
+   "wins": 29,
+   "losses": 2,
+   "p": 4.628673195838922e-07,
+   "judgeLatency": {
+    "calls": 60,
+    "p50": 2858.064916000003,
+    "p95": 3300.5005840000085,
+    "max": 5455.722041000001,
+    "over2500": 49,
+    "waited": 0,
+    "maxWaitMs": 3.0833330000023125,
+    "retried": 0
+   }
+  }
+ ],
+ "rankBuckets": {
+  "1-10": 0,
+  "11-50": 25,
+  ">50": 0
+ },
+ "questions": [
+  {
+   "questionId": "945e3d21",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 489,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2097.264707999999,
+      "waitMs": 0.9055420000004233,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2793.4072909999995,
+      "waitMs": 0.9625000000014552,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_945e3d21_s3_t4": 4,
+    "lme_945e3d21_s19_t2": 15
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_59149c78",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 497,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 1542.1943749999991,
+      "waitMs": 1.4136250000010477,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 3331.3203749999993,
+      "waitMs": 3.0833330000023125,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_59149c78_s29_t6": 34
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "726462e0",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 501,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1869.1995000000024,
+      "waitMs": 2.1339999999981956,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3031.511250000003,
+      "waitMs": 1.3187079999988782,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_726462e0_s11_t2": 4
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_468eb063",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 498,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0,
+     "judge": {
+      "ms": 1850.4820000000036,
+      "waitMs": 2.2956669999985024,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 3100.8050409999996,
+      "waitMs": 1.8758749999979045,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_468eb063_s10_t0": null
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "001be529",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 514,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1613.352291999996,
+      "waitMs": 1.9729999999981374,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 5457.641415999999,
+      "waitMs": 1.9193749999976717,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_001be529_s42_t4": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "577d4d32",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 487,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 0
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 2029.5117500000051,
+      "waitMs": 3.191332999995211,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2044.3207910000056,
+      "waitMs": 1.0224170000001322,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_577d4d32_s41_t4": 21
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "561fabcd",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 495,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 1683.3981670000067,
+      "waitMs": 0.8352920000033919,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3124.5654169999907,
+      "waitMs": 1.751750000010361,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_561fabcd_s46_t5": 10
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_2655b836",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 465,
+   "evidenceCount": 2,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1711.4632920000004,
+      "waitMs": 2.1104170000035083,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3301.414042000004,
+      "waitMs": 0.913457999995444,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_2655b836_s12_t0": 5,
+    "lme_gpt4_2655b836_s17_t2": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "ba61f0b9",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 454,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1994.8684170000051,
+      "waitMs": 1.2689170000085142,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2829.091459000003,
+      "waitMs": 0.7831670000014128,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_ba61f0b9_s13_t2": 2,
+    "lme_ba61f0b9_s40_t0": 7
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "c14c00dd",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 492,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1749.024916000024,
+      "waitMs": 1.3499580000061542,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2509.6315829999803,
+      "waitMs": 0.8629579999833368,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_c14c00dd_s10_t4": 2
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "b759caee",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 516,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2029.7153749999998,
+      "waitMs": 0.8505000000004657,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3239.518041000003,
+      "waitMs": 0.7877499999885913,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_b759caee_s35_t1": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "d905b33f",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 504,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1712.6026249999995,
+      "waitMs": 1.4634169999917503,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2533.886166000011,
+      "waitMs": 1.813166000007186,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_d905b33f_s18_t2": 8,
+    "lme_d905b33f_s33_t6": 4
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "e4e14d04",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 461,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2115.0477919999976,
+      "waitMs": 0.9293750000069849,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3072.6758750000154,
+      "waitMs": 0.9450829999987036,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_e4e14d04_s11_t0": 5,
+    "lme_e4e14d04_s40_t0": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_2f91af09",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 515,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 1973.1949580000073,
+      "waitMs": 0.9324170000036247,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 2508.228624999989,
+      "waitMs": 0.8361659999936819,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_2f91af09_s7_t0": 6,
+    "lme_gpt4_2f91af09_s39_t0": 7,
+    "lme_gpt4_2f91af09_s51_t0": 15
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "4fd1909e",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 554,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1708.3710000000137,
+      "waitMs": 2.9292089999944437,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3194.991209,
+      "waitMs": 0.9229590000177268,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_4fd1909e_s23_t2": 2
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "2133c1b5_abs",
+   "questionType": "knowledge-update",
+   "abstention": true,
+   "haystackTurns": 476,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2005.1932500000112,
+      "waitMs": 1.3002919999998994,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 3020.523750000022,
+      "waitMs": 1.402124999993248,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_0a05b494",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 506,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1580.9707500000077,
+      "waitMs": 0.9040830000012647,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3043.9958749999932,
+      "waitMs": 1.0455000000074506,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_0a05b494_s7_t2": 1,
+    "lme_gpt4_0a05b494_s36_t2": 7
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "982b5123_abs",
+   "questionType": "temporal-reasoning",
+   "abstention": true,
+   "haystackTurns": 505,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 1829.9856670000008,
+      "waitMs": 0.7415420000324957,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 3280.176749999984,
+      "waitMs": 0.7989580000285059,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_982b5123_abs_s39_t0": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "8cf4d046",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 468,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2009.6615830000374,
+      "waitMs": 0.7935419999994338,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2722.2747499999823,
+      "waitMs": 1.2908750000060536,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_8cf4d046_s15_t0": 5,
+    "lme_8cf4d046_s43_t10": 18
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "edced276",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 482,
+   "evidenceCount": 3,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 1870.5132079999894,
+      "waitMs": 1.6220000000321306,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 3155.93316700001,
+      "waitMs": 1.324332999996841,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_edced276_s1_t0": 3,
+    "lme_edced276_s20_t0": 4,
+    "lme_edced276_s20_t2": 5
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "00ca467f",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 486,
+   "evidenceCount": 2,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 1907.5222080000094,
+      "waitMs": 0.8309170000138693,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2725.5341250000056,
+      "waitMs": 1.1567919999943115,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_00ca467f_s1_t0": null,
+    "lme_00ca467f_s40_t0": null
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_59c863d7",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 481,
+   "evidenceCount": 5,
+   "answerSessionCount": 4,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 3
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 4,
+     "sess5": 3,
+     "judge": {
+      "ms": 1949.6994159999886,
+      "waitMs": 0.7489169999607839,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 2967.8995410000207,
+      "waitMs": 0.7614159999648109,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_59c863d7_s1_t0": 7,
+    "lme_gpt4_59c863d7_s32_t0": 4,
+    "lme_gpt4_59c863d7_s40_t0": 17,
+    "lme_gpt4_59c863d7_s43_t0": 9,
+    "lme_gpt4_59c863d7_s43_t8": 26
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "488d3006",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 509,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1920.4435419999645,
+      "waitMs": 1.183459000021685,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2980.0469999999623,
+      "waitMs": 1.54891700000735,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_488d3006_s44_t5": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "27016adc",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 491,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1901.914625000034,
+      "waitMs": 0.8612079999875277,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 2789.362749999971,
+      "waitMs": 0.8410840000142343,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_27016adc_s11_t0": 15,
+    "lme_27016adc_s31_t2": 13
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "f0853d11",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 500,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2,
+     "judge": {
+      "ms": 1793.953790999949,
+      "waitMs": 0.8594579999917187,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2780.892792000028,
+      "waitMs": 0.8472079999628477,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_f0853d11_s18_t0": 35,
+    "lme_f0853d11_s22_t0": 10
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "eeda8a6d_abs",
+   "questionType": "multi-session",
+   "abstention": true,
+   "haystackTurns": 477,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 1603.829207999981,
+      "waitMs": 0.7998749999678694,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2628.9150839999784,
+      "waitMs": 1.6476670000120066,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "8fb83627",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 485,
+   "evidenceCount": 3,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 1857.3940839999705,
+      "waitMs": 0.8187500000349246,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 2289.498750000028,
+      "waitMs": 0.9682499999762513,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_8fb83627_s24_t2": 4,
+    "lme_8fb83627_s24_t10": 2,
+    "lme_8fb83627_s42_t6": null
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "4f54b7c9",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 491,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1860.8033330000471,
+      "waitMs": 0.7733340000268072,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3108.398083999986,
+      "waitMs": 0.7647500000311993,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_4f54b7c9_s21_t0": 4,
+    "lme_4f54b7c9_s42_t0": 17
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "0ddfec37_abs",
+   "questionType": "knowledge-update",
+   "abstention": true,
+   "haystackTurns": 447,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 1463.4942080000183,
+      "waitMs": 0.7889580000191927,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2166.527875000029,
+      "waitMs": 0.7472500000149012,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_6dc9b45b",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 565,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 2042.395458999963,
+      "waitMs": 0.7825409999932162,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2625.631208000006,
+      "waitMs": 0.9137910000281408,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_6dc9b45b_s41_t0": 28
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "e66b632c",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 506,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1841.3342079999857,
+      "waitMs": 1.1127500000293367,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3005.577874999959,
+      "waitMs": 0.839124999998603,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_e66b632c_s4_t2": 10,
+    "lme_e66b632c_s45_t8": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "46a3abf7",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 503,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 1736.9814999999944,
+      "waitMs": 0.9333750000223517,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 3,
+     "judge": {
+      "ms": 3116.8051250000135,
+      "waitMs": 1.2117919999873266,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_46a3abf7_s8_t0": 28,
+    "lme_46a3abf7_s17_t0": 22,
+    "lme_46a3abf7_s36_t0": 15
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_5501fe77",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 516,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1833.0149160000146,
+      "waitMs": 1.3264579999959096,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 2397.5212090000277,
+      "waitMs": 1.648209000006318,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_5501fe77_s36_t0": 4,
+    "lme_gpt4_5501fe77_s39_t0": 29,
+    "lme_gpt4_5501fe77_s40_t0": 5
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "3f1e9474",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 515,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1734.991457999975,
+      "waitMs": 0.9604580000159331,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3243.2779169999994,
+      "waitMs": 0.8149160000029951,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_3f1e9474_s11_t8": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "5a4f22c0",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 487,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1686.9937500000233,
+      "waitMs": 1.7396670000161976,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2720.0488340000156,
+      "waitMs": 1.8223340000258759,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_5a4f22c0_s7_t2": 4,
+    "lme_5a4f22c0_s40_t0": 17
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "3d86fd0a",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 526,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1571.4445410000626,
+      "waitMs": 1.5249580000527203,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2586.337959000026,
+      "waitMs": 0.8372910000616685,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_3d86fd0a_s8_t2": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "caf03d32",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 493,
+   "evidenceCount": 2,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 1629.4896660000086,
+      "waitMs": 1.0268330000108108,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3246.992542000022,
+      "waitMs": 1.3843339999439195,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_caf03d32_s50_t0": 5,
+    "lme_caf03d32_s50_t2": 4
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "f685340e_abs",
+   "questionType": "knowledge-update",
+   "abstention": true,
+   "haystackTurns": 456,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 1893.795291999937,
+      "waitMs": 0.8532499999273568,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2799.8791249999776,
+      "waitMs": 0.7914999999338761,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_d12ceb0e",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 477,
+   "evidenceCount": 3,
+   "answerSessionCount": 3,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 1637.247457999969,
+      "waitMs": 0.996999999973923,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 3251.6786670000292,
+      "waitMs": 1.4640829999698326,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_d12ceb0e_s6_t0": 10,
+    "lme_gpt4_d12ceb0e_s16_t0": 1,
+    "lme_gpt4_d12ceb0e_s25_t0": 14
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_93159ced_abs",
+   "questionType": "temporal-reasoning",
+   "abstention": true,
+   "haystackTurns": 608,
+   "evidenceCount": 0,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2079.3865000000224,
+      "waitMs": 1.2070410000160336,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 2298.1438339999877,
+      "waitMs": 1.4106250000186265,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {},
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "195a1a1b",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 515,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1515.2389170000097,
+      "waitMs": 1.2329590000445023,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2949.7513749999925,
+      "waitMs": 0.9111659999471158,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_195a1a1b_s45_t4": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "6ade9755",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 513,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2101.2287500000093,
+      "waitMs": 0.7590830000117421,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2795.275292000035,
+      "waitMs": 1.5289580000098795,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_6ade9755_s50_t4": 13
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_fe651585",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 471,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1853.439166000113,
+      "waitMs": 1.1917499999981374,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3185.1175839999923,
+      "waitMs": 1.8214589999988675,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_fe651585_s40_t0": 13,
+    "lme_gpt4_fe651585_s46_t8": 4
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "f4f1d8a4",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 585,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1902.0677079999587,
+      "waitMs": 0.815792000037618,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2428.6972090000054,
+      "waitMs": 1.3814580000471324,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_f4f1d8a4_s50_t4": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "3fdac837",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 453,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1808.1599579999456,
+      "waitMs": 1.2437090000603348,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2696.5379999999423,
+      "waitMs": 0.9614159999182448,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_3fdac837_s16_t2": 11,
+    "lme_3fdac837_s38_t0": 5
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "eace081b",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 489,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 2,
+     "judge": {
+      "ms": 1922.4313749999274,
+      "waitMs": 1.2079999999841675,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3134.2729579999577,
+      "waitMs": 1.3634999999776483,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_eace081b_s39_t2": 7
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "1da05512",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 462,
+   "evidenceCount": 2,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 1827.7599169999594,
+      "waitMs": 1.3247919999994338,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 1,
+     "judge": {
+      "ms": 3087.9299170000013,
+      "waitMs": 1.4795840000733733,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_1da05512_s38_t0": 3,
+    "lme_1da05512_s38_t4": 6
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "eac54add",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 476,
+   "evidenceCount": 1,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 1868.9643749999814,
+      "waitMs": 0.8842090000398457,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1,
+     "judge": {
+      "ms": 2200.8789579999866,
+      "waitMs": 1.625,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_eac54add_s35_t0": null
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "61f8c8f8",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 459,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2241.340082999901,
+      "waitMs": 1.125582999899052,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 3129.459707999951,
+      "waitMs": 0.9562500000465661,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_61f8c8f8_s23_t0": 38,
+    "lme_61f8c8f8_s31_t2": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "afdc33df",
+   "questionType": "single-session-preference",
+   "abstention": false,
+   "haystackTurns": 502,
+   "evidenceCount": 3,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 1,
+     "judge": {
+      "ms": 1976.9087500000605,
+      "waitMs": 1.2423750000307336,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3281.0723330000183,
+      "waitMs": 1.1174999999348074,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_afdc33df_s8_t2": 3,
+    "lme_afdc33df_s8_t4": 6,
+    "lme_afdc33df_s8_t6": 5
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "28dc39ac",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 431,
+   "evidenceCount": 5,
+   "answerSessionCount": 5,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 3,
+     "sess5": 4
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 3,
+     "judge": {
+      "ms": 2030.032707999926,
+      "waitMs": 0.9861659999005497,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 3,
+     "ev10": 5,
+     "sess5": 3,
+     "judge": {
+      "ms": 3075.05162500008,
+      "waitMs": 0.7040830000769347,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_28dc39ac_s1_t6": 36,
+    "lme_28dc39ac_s11_t0": 22,
+    "lme_28dc39ac_s19_t0": 1,
+    "lme_28dc39ac_s23_t0": 6,
+    "lme_28dc39ac_s27_t0": 2
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "8c18457d",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 434,
+   "evidenceCount": 3,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 3,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 1813.3519580001011,
+      "waitMs": 1.2839170000515878,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 3,
+     "ev10": 3,
+     "sess5": 2,
+     "judge": {
+      "ms": 2334.7057499999646,
+      "waitMs": 1.1789170000702143,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_8c18457d_s9_t4": 7,
+    "lme_8c18457d_s9_t10": 6,
+    "lme_8c18457d_s30_t0": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "gpt4_31ff4165",
+   "questionType": "multi-session",
+   "abstention": false,
+   "haystackTurns": 457,
+   "evidenceCount": 6,
+   "answerSessionCount": 5,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 4
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 3,
+     "judge": {
+      "ms": 1992.8401669999585,
+      "waitMs": 1.062999999965541,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2059.188582999981,
+      "waitMs": 0.9012920000823215,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_gpt4_31ff4165_s13_t0": 15,
+    "lme_gpt4_31ff4165_s14_t0": 32,
+    "lme_gpt4_31ff4165_s14_t2": 31,
+    "lme_gpt4_31ff4165_s28_t0": 12,
+    "lme_gpt4_31ff4165_s30_t0": 34,
+    "lme_gpt4_31ff4165_s40_t0": null
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "982b5123",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 473,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2168.0473749999655,
+      "waitMs": 0.6942920000292361,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2859.6900000000605,
+      "waitMs": 1.6250840000575408,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_982b5123_s25_t0": 1,
+    "lme_982b5123_s34_t0": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "1903aded",
+   "questionType": "single-session-assistant",
+   "abstention": false,
+   "haystackTurns": 486,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2252.8370830001077,
+      "waitMs": 1.3410000000149012,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2816.5661669999827,
+      "waitMs": 1.3763330000219867,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_1903aded_s29_t1": 11
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "06db6396",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 479,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1656.9268750000047,
+      "waitMs": 0.927458000020124,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2627.3680409999797,
+      "waitMs": 1.0541659999871626,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_06db6396_s3_t4": 2,
+    "lme_06db6396_s31_t0": 1
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "7527f7e2",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 490,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2113.679125000024,
+      "waitMs": 0.7973340000025928,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2871.118167000008,
+      "waitMs": 0.6747500000055879,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_7527f7e2_s15_t2": 2
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "c5e8278d",
+   "questionType": "single-session-user",
+   "abstention": false,
+   "haystackTurns": 469,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 1,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1755.3798330000136,
+      "waitMs": 1.056624999968335,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 2138.4950830000453,
+      "waitMs": 0.6987910000607371,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_c5e8278d_s36_t0": 6
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "5e1b23de",
+   "questionType": "temporal-reasoning",
+   "abstention": false,
+   "haystackTurns": 445,
+   "evidenceCount": 1,
+   "answerSessionCount": 1,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 0,
+     "ev10": 0,
+     "sess5": 1
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 1449.9577499999432,
+      "waitMs": 2.008333000005223,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 1,
+     "ev10": 1,
+     "sess5": 1,
+     "judge": {
+      "ms": 3341.949583000038,
+      "waitMs": 0.7640419999370351,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_5e1b23de_s14_t6": 16
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  },
+  {
+   "questionId": "72e3ee87",
+   "questionType": "knowledge-update",
+   "abstention": false,
+   "haystackTurns": 496,
+   "evidenceCount": 2,
+   "answerSessionCount": 2,
+   "perConfig": {
+    "hybrid": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2
+    },
+    "hybrid:rr=haiku@20": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 1838.9911249999423,
+      "waitMs": 1.8246659999713302,
+      "attempts": 1
+     }
+    },
+    "hybrid:rr=haiku@40": {
+     "ev5": 2,
+     "ev10": 2,
+     "sess5": 2,
+     "judge": {
+      "ms": 2480.9102079999866,
+      "waitMs": 2.0862500000512227,
+      "attempts": 1
+     }
+    }
+   },
+   "evidenceVecRank": {
+    "lme_72e3ee87_s19_t0": 4,
+    "lme_72e3ee87_s45_t8": 3
+   },
+   "servedModels": {
+    "haiku": "claude-haiku-4-5-20251001"
+   }
+  }
+ ]
+}
