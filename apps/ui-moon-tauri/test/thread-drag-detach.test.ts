@@ -327,10 +327,19 @@ describe("thread row drag-out (S17 detach path)", () => {
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
+      await Promise.resolve()
       expect(
         document.querySelector(".thread-drag-ghost"),
         "a failed spawn must not strand the ghost element on screen",
       ).toBeNull()
+      // The keep_floater retry also fails: the id must un-float AND re-paint -
+      // without a render after clearFloatedAway the row stays excluded by the
+      // last floated-away paint and silently vanishes from the strip.
+      const rowBack = document.querySelector(
+        '.thread-row[data-thread-id="thr-drag"]',
+      ) as HTMLElement | null
+      expect(rowBack, "a failed spawn must hand the row back to the strip").toBeTruthy()
+      expect(rowBack?.classList.contains("floated-away")).toBe(false)
     })
 
     it("returns the strip row when its floater closes without redocking", async () => {

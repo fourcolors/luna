@@ -357,6 +357,11 @@ export function wireThreadRow(
       .catch((err) => {
         spawnPromise = null;
         clearFloatedAway();
+        // The row must be painted back once the spawn can no longer produce a
+        // window - the last render ran while the id was still floated-away, so
+        // without this it stays absent from the strip until some unrelated
+        // render happens to rebuild the list.
+        try { self.render(); } catch (_) {}
         try { moonDragDebugNote('floater_error', { message: String(err) }); } catch (_) {}
         Logger.warn('thread drag-out spawn failed:', err);
         return null;
