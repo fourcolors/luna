@@ -343,6 +343,7 @@ import {
   CrossEncoderRerankerLayer,
   JevRerankerLayer,
   JevClassifierLayer,
+  LayaRerankerLayer,
   BulletinWriterDefault,
   loadAgents,
 } from "@luna/adapter-sdk"
@@ -2516,6 +2517,10 @@ export const buildBaseLayer = (
   //     Configuring it is the opt-in: both lanes rerank at depth 40 unless
   //     their flag is "0". Best measured judge (packages/adapter-sdk/src/
   //     jev-reranker.ts has the evidence).
+  //   laya - the local Jev-style classifier: the same held-out request replayed
+  //     to the laya sidecar (scripts/laya-rerank-server, LUNA_LAYA_URL) instead
+  //     of api.typesafe.ai, so memory text never leaves the machine. Same
+  //     opt-in semantics as jev (both lanes, depth 40).
   const rerankEngine = process.env["LUNA_RERANK_ENGINE"]?.trim() || "cross-encoder"
   if (!(MEMORY_RERANKER_ENGINES as ReadonlyArray<string>).includes(rerankEngine)) {
     console.warn(`[chat-server] unknown LUNA_RERANK_ENGINE="${rerankEngine}" (${MEMORY_RERANKER_ENGINES.join(" | ")}); using cross-encoder`)
@@ -2534,7 +2539,9 @@ export const buildBaseLayer = (
             return JevRerankerLayer({ apiKey: apiKey ?? "" })
           }),
         )
-      : CrossEncoderRerankerLayer()
+      : rerankEngine === "laya"
+        ? LayaRerankerLayer()
+        : CrossEncoderRerankerLayer()
 
   // Classifier decision engine — which engine serves the Classifier service
   // (packages/core/src/classifier). LUNA_CLASSIFIER_ENGINE:

@@ -355,6 +355,12 @@ export function SettingsModelsPanel({ ctx }: { ctx: PanelCtx }) {
                   description="Every memory search and every chat turn sends the query and its top candidate memories (40 by default) to api.typesafe.ai. Needs your TYPESAFE_API_KEY saved in the Vault; without it Luna keeps plain search order."
                   data-testid="memory-reranker-jev-notice"
                 />
+              ) : state.draftReranker === "laya" ? (
+                <Text type="supporting" color="secondary" data-testid="memory-reranker-laya-note">
+                  Jev-style judging that runs locally via scripts/laya-rerank-server (pip install laya) — memory
+                  text never leaves the machine. Once selected it reranks every search and chat turn unless
+                  LUNA_MEMORY_RERANK=0 or LUNA_RECALL_RERANK=0 opts a lane out.
+                </Text>
               ) : (
                 <Text type="supporting" color="secondary" data-testid="memory-reranker-local-note">
                   Runs next to your Luna server. It only reranks when LUNA_MEMORY_RERANK=1 or LUNA_RECALL_RERANK=1

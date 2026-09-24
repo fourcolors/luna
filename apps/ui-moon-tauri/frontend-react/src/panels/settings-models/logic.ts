@@ -104,6 +104,7 @@ export const ANTHROPIC_MODELS: readonly ModelOption[] = [
 export const RERANKERS = [
   { engine: "cross-encoder", label: "Local cross-encoder" },
   { engine: "jev", label: "Jev (TypeSafe)" },
+  { engine: "laya", label: "Laya (local)" },
 ] as const
 
 /** A reported engine the panel can show; anything unknown is shown as the local cross-encoder, which is what the server binds for it. */

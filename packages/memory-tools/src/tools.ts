@@ -40,7 +40,7 @@
  *   - memory_search reranking (Phase 3, PR #332 bench): when a
  *     MemoryReranker was passed to makeMemoryTools AND the lane is on
  *     (LUNA_MEMORY_RERANK=1, or unset with an engine that is on by default -
- *     LUNA_RERANK_ENGINE=jev; "0" always turns it off), search over-fetches
+ *     LUNA_RERANK_ENGINE=jev or laya; "0" always turns it off), search over-fetches
  *     to at least 20 candidates (or the engine's depth), reranks the top
  *     LUNA_RERANK_<ENGINE>_MAX_CANDIDATES (default: the engine's depth, 8
  *     for the cross-encoder, 40 for Jev), and gates via applyRerank

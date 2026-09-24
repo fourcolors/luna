@@ -944,7 +944,7 @@ export interface RoleBindingItem {
   readonly preferenceList: ReadonlyArray<{ readonly provider: string; readonly model: string }>
 }
 
-/** The memory reranker engine setting ("cross-encoder" | "jev"). Never carries the Jev key.
+/** The memory reranker engine setting ("cross-encoder" | "jev" | "laya"). Never carries the Jev key.
  * Mirrors packages/ui-ws/src/protocol.ts, keep in sync. */
 export interface MemoryRerankerSettingsItem {
   /** List: the engine after the next start. Save: the operator's choice. */
