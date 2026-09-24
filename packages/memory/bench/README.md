@@ -5,9 +5,9 @@
 `LUNA_RERANK_ENGINE` selects the MemoryReranker Luna's server binds (Moon's Models settings tab, Memory Reranker, sets it at the next server start and wins over the environment once chosen):
 
 - `cross-encoder` (default): the local Qwen3-Reranker sidecar below. Reranking stays opt-in per lane (`LUNA_MEMORY_RERANK=1` for the `memory_search` tool, `LUNA_RECALL_RERANK=1` for per-turn recall), 8 candidates for `memory_search`.
-- `jev`: TypeSafe Jev (`packages/adapter-sdk/src/jev-reranker.ts`), the best judge measured (LongMemEval S held-out, evidence in the top 5 at depth 40: 85.5% vs 76.2% for the cross-encoder and 44.0% with no judge; results in `results/2026-09-23-search-tuning/`). Needs your own `TYPESAFE_API_KEY` in the environment or Luna's vault (never commit it). Every rerank sends the query and the candidate memories' text (each capped at 2,000 characters) to `api.typesafe.ai`. Configuring it is the opt-in: both lanes rerank unless their flag is `0`, at depth 40 (`LUNA_RERANK_MAX_CANDIDATES` overrides), pinned to `jev-1.13.0` (`LUNA_JEV_MODEL` overrides).
+- `jev`: TypeSafe Jev (`packages/adapter-sdk/src/jev-reranker.ts`), the best judge measured (LongMemEval S held-out, evidence in the top 5 at depth 40: 85.5% vs 76.2% for the cross-encoder and 44.0% with no judge; results in `results/2026-09-23-search-tuning/`). Needs your own `TYPESAFE_API_KEY` in the environment or Luna's vault (never commit it). Every rerank sends the query and the candidate memories' text (each capped at 2,000 characters) to `api.typesafe.ai`. Configuring it is the opt-in: both lanes rerank unless their flag is `0`, at depth 40 with no threshold (`LUNA_RERANK_JEV_MAX_CANDIDATES` and `LUNA_RERANK_JEV_THRESHOLD` override), pinned to `jev-1.13.0` (`LUNA_JEV_MODEL` overrides).
 
-`LUNA_RERANK_THRESHOLD` (0-100) overrides the engine's injection threshold for both lanes.
+Each engine's depth and threshold are tuned to that engine, so the overrides are per engine: `LUNA_RERANK_<ENGINE>_THRESHOLD` (0-100, the injection threshold for both lanes) and `LUNA_RERANK_<ENGINE>_MAX_CANDIDATES`, where `<ENGINE>` is `CE` or `JEV`. The older unscoped `LUNA_RERANK_THRESHOLD` and `LUNA_RERANK_MAX_CANDIDATES` still work, but only for the cross-encoder. With any other engine they are ignored and the server logs a warning once, so cross-encoder tuning left in `.env` can't silently cut Jev to 8 candidates with a threshold of 40.
 
 (For the hot-tier bulletin eval - the cross-thread digest probes - see
 [BULLETIN.md](./BULLETIN.md) and `bench:bulletin`. This file covers the
@@ -32,7 +32,7 @@ sidecar script's 16,384-token context. `LUNA_RERANK_CE_PROBE_TIMEOUT_MS`
 (default 30,000) is the floor for the one-time calibration probe, kept
 separate from the per-call scoring ceiling because an ~860-token probe
 document on a CPU-only sidecar can take several seconds. `LUNA_RERANK_CE_CONCURRENCY`
-(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below. `LUNA_RERANK_MAX_CANDIDATES` (default 8) caps how many retrieved candidates memory_search sends to the reranker, since latency is ~linear in candidate count (~0.6s each on the GPU sidecar); 8 covers the real-data retrieval ranks with ~5s latency, 5 gives ~3s.
+(default 1) and `LUNA_RERANK_CE_MODEL_TAG` are described below. `LUNA_RERANK_CE_MAX_CANDIDATES` (default 8; the legacy `LUNA_RERANK_MAX_CANDIDATES` also works) caps how many retrieved candidates memory_search sends to the reranker, since latency is ~linear in candidate count (~0.6s each on the GPU sidecar); 8 covers the real-data retrieval ranks with ~5s latency, 5 gives ~3s.
 
 ### The physical batch size is load-bearing (read before deploying)
 

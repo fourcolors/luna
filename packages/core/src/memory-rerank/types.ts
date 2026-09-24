@@ -58,7 +58,10 @@ export interface MemoryRerankerApi {
   /**
    * The engine's own defaults, each validated for that engine (its latency
    * at the depth, its score calibration at the threshold) and each still
-   * overridable by env (LUNA_RERANK_MAX_CANDIDATES, LUNA_RERANK_THRESHOLD,
+   * overridable by env (LUNA_RERANK_<ENGINE>_MAX_CANDIDATES and
+   * LUNA_RERANK_<ENGINE>_THRESHOLD, e.g. LUNA_RERANK_JEV_THRESHOLD; the
+   * legacy unscoped LUNA_RERANK_MAX_CANDIDATES / LUNA_RERANK_THRESHOLD apply
+   * to the cross-encoder only; lane flags
    * LUNA_MEMORY_RERANK / LUNA_RECALL_RERANK = "0" | "1"). Absent fields fall
    * back to memory-tools' historical defaults (8 candidates, threshold 40,
    * lanes off).

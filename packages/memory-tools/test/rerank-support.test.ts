@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from "vitest"
+import { describe, expect, it, beforeEach, vi } from "vitest"
 import { Effect, Logger } from "effect"
 import { RerankError } from "@luna/core"
 import {
@@ -8,6 +8,8 @@ import {
   DEFAULT_RERANK_MAX_CANDIDATES,
   rerankLaneEnabled,
   resetRerankFailureLogState,
+  resetRerankTuningWarnState,
+  rerankTuningVarName,
   resolveRerankMaxCandidates,
   resolveRerankThreshold,
 } from "../src/rerank-support.js"
@@ -65,6 +67,56 @@ describe("engine defaults", () => {
     expect(resolveRerankMaxCandidates({ LUNA_RERANK_MAX_CANDIDATES: "junk" }, 40)).toBe(40)
     expect(resolveRerankThreshold({}, 25)).toBe(25)
     expect(resolveRerankThreshold({ LUNA_RERANK_THRESHOLD: "60" }, 25)).toBe(60)
+  })
+})
+
+describe("engine-scoped tuning env", () => {
+  beforeEach(() => resetRerankTuningWarnState())
+
+  // Cross-encoder tuning an operator already has in .env: the values a live
+  // server carried after switching to Jev, which dropped ~80% of memories.
+  const legacyCeTuning = { LUNA_RERANK_THRESHOLD: "40", LUNA_RERANK_MAX_CANDIDATES: "8" }
+
+  it("names each engine's variables", () => {
+    expect(rerankTuningVarName("THRESHOLD", "cross-encoder")).toBe("LUNA_RERANK_CE_THRESHOLD")
+    expect(rerankTuningVarName("MAX_CANDIDATES", "jev")).toBe("LUNA_RERANK_JEV_MAX_CANDIDATES")
+    expect(rerankTuningVarName("THRESHOLD", "some-engine")).toBe("LUNA_RERANK_SOME_ENGINE_THRESHOLD")
+  })
+
+  it("ignores legacy cross-encoder tuning for Jev and keeps Jev's defaults", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      expect(resolveRerankMaxCandidates(legacyCeTuning, 40, "jev")).toBe(40)
+      expect(resolveRerankThreshold(legacyCeTuning, 0, "jev")).toBe(0)
+      expect(warn).toHaveBeenCalledTimes(2)
+      expect(String(warn.mock.calls[0]?.[0])).toContain("LUNA_RERANK_JEV_MAX_CANDIDATES")
+      // Warns once per variable per engine, not on every search.
+      resolveRerankThreshold(legacyCeTuning, 0, "jev")
+      expect(warn).toHaveBeenCalledTimes(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("applies the engine-scoped variable to its engine", () => {
+    const env = { ...legacyCeTuning, LUNA_RERANK_JEV_THRESHOLD: "20", LUNA_RERANK_JEV_MAX_CANDIDATES: "30" }
+    expect(resolveRerankThreshold(env, 0, "jev")).toBe(20)
+    expect(resolveRerankMaxCandidates(env, 40, "jev")).toBe(30)
+  })
+
+  it("keeps the legacy variables working for the cross-encoder, with the scoped one winning", () => {
+    expect(resolveRerankThreshold({ LUNA_RERANK_THRESHOLD: "60" }, undefined, "cross-encoder")).toBe(60)
+    expect(resolveRerankMaxCandidates({ LUNA_RERANK_MAX_CANDIDATES: "12" }, undefined, "cross-encoder")).toBe(12)
+    expect(
+      resolveRerankThreshold({ LUNA_RERANK_THRESHOLD: "60", LUNA_RERANK_CE_THRESHOLD: "30" }, undefined, "cross-encoder"),
+    ).toBe(30)
+  })
+
+  it("does not let one engine's scoped variable leak into another", () => {
+    expect(resolveRerankThreshold({ LUNA_RERANK_JEV_THRESHOLD: "90" }, undefined, "cross-encoder")).toBe(
+      DEFAULT_RERANK_THRESHOLD,
+    )
+    expect(resolveRerankThreshold({ LUNA_RERANK_CE_THRESHOLD: "90" }, 0, "jev")).toBe(0)
   })
 })
 

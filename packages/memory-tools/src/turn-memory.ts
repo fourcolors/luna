@@ -246,7 +246,7 @@ function rerankHits(
           Effect.as(packRecallContext(hits, args.options)),
         )
       }
-      const threshold = resolveRerankThreshold(process.env, args.reranker.defaults?.threshold)
+      const threshold = resolveRerankThreshold(process.env, args.reranker.defaults?.threshold, args.reranker.engine)
       const startMs = Date.now()
       const byId = new Map(hits.map((h) => [h.record.id, h] as const))
       const { kept, droppedCount } = applyRerank(
@@ -303,11 +303,11 @@ export function recallForTurn(input: {
   // When rerank is active, floor the pool at RECALL_RERANK_OVERFETCH_TOP_K
   // (the pool size the bench's recall lift was measured against).
   const baseTopK = Math.max(options.maxHits * 2, 10)
-  // The rerank depth (LUNA_RERANK_MAX_CANDIDATES, else the engine's own - Jev
+  // The rerank depth (the engine-scoped override, e.g. LUNA_RERANK_JEV_MAX_CANDIDATES, else the engine's own - Jev
   // 40) can raise the pool; the cross-encoder declares none, so its recall
   // pool stays at the historical 20.
   const topK = rerankRequested
-    ? Math.max(baseTopK, RECALL_RERANK_OVERFETCH_TOP_K, resolveRerankMaxCandidates(process.env, input.reranker!.defaults?.maxCandidates ?? 0))
+    ? Math.max(baseTopK, RECALL_RERANK_OVERFETCH_TOP_K, resolveRerankMaxCandidates(process.env, input.reranker!.defaults?.maxCandidates ?? 0, input.reranker!.engine))
     : baseTopK
   return Stream.runCollect(
     input.router.search({
