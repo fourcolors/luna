@@ -32,19 +32,34 @@
  * and every in-flight requestId slot) is panel-local - see vaultReducer.ts's
  * module doc for the full rationale.
  *
- * Astryx mapping: TextInput (text/password) for every text field, Button for
- * every action, SegmentedControl for the 2-way kind choice (env-secret vs.
- * op-token - same "plain-text single-select row" precedent
- * SettingsAppearancePanel.tsx documents for SegmentedControl over a native
- * `<select>`), Switch for the sync-enabled toggle, NumberInput for the poll-
- * seconds field (deliberately given no `min` - the floor is enforced only at
- * submit time, exactly like the vanilla module's `Math.max(60, pollRaw)`, so
- * a below-floor value can still be typed and then clamped on save - see the
- * covering test), Badge for the kind/source/synced/shadowed chips.
+ * Astryx mapping: VStack/HStack + Card sections with Text label/supporting
+ * headers (the SettingsModelsPanel.tsx conventions), TextInput (text/password)
+ * with visible labels for every text field, Button for every action,
+ * SegmentedControl for the 2-way kind choice (env-secret vs. op-token - same
+ * "plain-text single-select row" precedent SettingsAppearancePanel.tsx
+ * documents for SegmentedControl over a native `<select>`), Switch for the
+ * sync-enabled toggle, NumberInput for the poll-seconds field (deliberately
+ * given no `min` - the floor is enforced only at submit time, exactly like
+ * the vanilla module's `Math.max(60, pollRaw)`, so a below-floor value can
+ * still be typed and then clamped on save - see the covering test), Badge for
+ * the kind/synced/shadowed chips, Banner for a sync error.
  */
 import { useEffect, useRef } from "react"
 import { newRequestId, type Action } from "@luna/ui-shared/core"
-import { Badge, Button, NumberInput, SegmentedControl, SegmentedControlItem, Switch, TextInput } from "../../astryx-kit"
+import {
+  Badge,
+  Banner,
+  Button,
+  Card,
+  HStack,
+  NumberInput,
+  SegmentedControl,
+  SegmentedControlItem,
+  Switch,
+  Text,
+  TextInput,
+  VStack,
+} from "../../astryx-kit"
 import { useLocalStore, useMoonSelector, useMoonStore } from "../../state/store"
 import { socketOpen } from "../panel-ctx"
 import type { LunaFrameRegistry, LunaWsClient, PanelCtx } from "../panel-ctx"
@@ -71,6 +86,15 @@ declare global {
 }
 
 const KIND_BADGE: Record<string, string> = { "env-secret": "API key", "op-token": "1P token", "op-item": "1P item" }
+
+/** Quick-add presets for the env vars Luna asks for most often - picking one
+ *  fills the name (which derives the var) so the user only pastes the value. */
+const KEY_PRESETS: ReadonlyArray<{ readonly varName: string; readonly note?: string }> = [
+  { varName: "TYPESAFE_API_KEY", note: "Jev memory reranker" },
+  { varName: "ANTHROPIC_API_KEY" },
+  { varName: "OPENAI_API_KEY" },
+]
+
 const SOURCE_LABEL: Record<string, string> = {
   manual: "added by you",
   agent: "added by Luna",
@@ -109,6 +133,7 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
   const state = useMoonSelector(local, (s) => s)
 
   const wsClientRef = useRef<LunaWsClient | null>(null)
+  const presetNoteRef = useRef(false)
 
   useEffect(() => {
     if (!ctx.connectWs || !window.LunaWS) return
@@ -148,6 +173,24 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
     // `ctx.connectWs` call in `render()`).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /** Quick-add: fills kind/name (the var derives from the name) so the only
+   *  thing left is pasting the value. Disarms a manual var override if one is
+   *  armed, so the env var can't accidentally stay customized. */
+  function applyPreset(preset: (typeof KEY_PRESETS)[number]): void {
+    const changingDestination = state.kind !== "env-secret" || state.name !== preset.varName || state.varOverride
+    // A secret already pasted for another destination must not follow the
+    // selected preset. Keep a manually edited note, but remove an old preset's
+    // generated note when the new preset has no note of its own.
+    if (changingDestination) local.dispatch({ type: "value-input-changed", value: "" })
+    local.dispatch({ type: "kind-changed", value: "env-secret" })
+    if (state.varOverride) local.dispatch({ type: "var-override-toggled" })
+    local.dispatch({ type: "name-changed", value: preset.varName })
+    if (preset.note || presetNoteRef.current) {
+      local.dispatch({ type: "desc-input-changed", value: preset.note ?? "" })
+    }
+    presetNoteRef.current = !!preset.note
+  }
 
   function submitAdd(): void {
     const name = state.name.trim()
@@ -273,282 +316,368 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
   }
 
   return (
-    <div className="moon-astryx-root settings-vault-panel" data-testid="settings-vault-panel">
+    <VStack gap={4} className="settings-vault-panel" data-testid="settings-vault-panel">
+      {/* Capability-gated Vault UI (kept hidden, not unmounted, so a hello
+       *  arriving after mount only flips visibility). */}
       <div id="vault-section" data-testid="vault-section" hidden={!vaultSupported}>
-        <div className="vault-head">
-          <span className="vault-label">Vault</span>
-          <span className="vault-desc">
-            Keys and tokens Luna can use. Values are stored safely on the server - once saved, they never appear here again.
-          </span>
-          {vaultStorage && (
-            <span id="vault-storage-line" data-testid="vault-storage-line" className="vault-storage-line">
-              {storageLineText(vaultStorage)}
-            </span>
-          )}
-        </div>
+        <VStack gap={4}>
+          <VStack gap={1}>
+            <Text type="label">Vault</Text>
+            <Text type="supporting" color="secondary">
+              Keys and tokens Luna can use. Values are stored safely on the server — once saved, they never appear
+              here again.
+            </Text>
+            {vaultStorage && (
+              <Text type="supporting" color="secondary" id="vault-storage-line" data-testid="vault-storage-line">
+                {storageLineText(vaultStorage)}
+              </Text>
+            )}
+          </VStack>
 
-        <div id="vault-list" data-testid="vault-list" className="sp-vault-list">
-          {vaultItems.length === 0 ? (
-            <span className="vault-desc">Nothing stored yet - add your first key below.</span>
-          ) : (
-            vaultItems.map((item) => (
-              <div key={item.id} className={"vault-row" + (item.shadowed ? " shadowed" : "")} data-testid={`vault-row-${item.id}`}>
-                <div className="skill-blot" />
-                <div className="vault-row-info">
-                  <span className="vault-row-name">
-                    {item.name}
-                    <Badge variant="neutral" label={KIND_BADGE[item.kind] || item.kind} data-testid={`vault-row-${item.id}-kind`} />
-                    {item.synced && <span className="vault-chip synced" title="Synced with 1Password">1P</span>}
-                    {item.shadowed && (
-                      <span
-                        className="vault-chip shadowed"
-                        title="Defined by the server's environment - edits here won't take effect"
-                      >
-                        ⚠ shadowed
-                      </span>
-                    )}
-                  </span>
-                  <span className="vault-row-sub">
-                    <code className="vault-ref">{item.ref}</code>
-                    <span className="vault-source">{SOURCE_LABEL[item.source] || item.source}</span>
-                  </span>
-                  {item.description && <span className="skill-row-desc">{item.description}</span>}
-                </div>
-                <div className="connector-actions">
-                  {state.confirmId === item.id ? (
-                    <>
-                      <span className="vault-confirm-note">
-                        {item.kind === "op-token" ? "Remove? The server restarts." : "Remove this credential?"}
-                      </span>
+          <VStack gap={2} id="vault-list" data-testid="vault-list" className="sp-vault-list">
+            {vaultItems.length === 0 ? (
+              <Text type="supporting" color="secondary">
+                Nothing stored yet — add your first key below.
+              </Text>
+            ) : (
+              vaultItems.map((item) => (
+                <Card
+                  key={item.id}
+                  padding={3}
+                  className={"vault-row" + (item.shadowed ? " shadowed" : "")}
+                  data-testid={`vault-row-${item.id}`}
+                >
+                  <HStack gap={3} vAlign="center">
+                    <VStack gap={1} style={{ flex: 1, minWidth: 0 }}>
+                      <HStack gap={2} vAlign="center" className="vault-row-name">
+                        <Text type="body" weight="semibold">
+                          {item.name}
+                        </Text>
+                        <Badge variant="neutral" label={KIND_BADGE[item.kind] || item.kind} data-testid={`vault-row-${item.id}-kind`} />
+                        {item.synced && (
+                          <span className="vault-chip synced" title="Synced with 1Password">
+                            <Badge variant="info" label="1P" />
+                          </span>
+                        )}
+                        {item.shadowed && (
+                          <span
+                            className="vault-chip shadowed"
+                            title="Defined by the server's environment - edits here won't take effect"
+                          >
+                            <Badge variant="warning" label="⚠ shadowed" />
+                          </span>
+                        )}
+                      </HStack>
+                      <HStack gap={2} vAlign="center" className="vault-row-sub">
+                        <code className="vault-ref">{item.ref}</code>
+                        <Text type="supporting" color="secondary" className="vault-source">
+                          {SOURCE_LABEL[item.source] || item.source}
+                        </Text>
+                      </HStack>
+                      {item.description && (
+                        <Text type="supporting" color="secondary" className="skill-row-desc">
+                          {item.description}
+                        </Text>
+                      )}
+                    </VStack>
+                    {state.confirmId === item.id ? (
+                      <HStack gap={2} vAlign="center" style={{ flexShrink: 0 }}>
+                        <Text type="supporting" className="vault-confirm-note">
+                          {item.kind === "op-token" ? "Remove? The server restarts." : "Remove this credential?"}
+                        </Text>
+                        <Button label="Delete" variant="destructive" size="sm" onClick={() => requestDelete(item.id)} />
+                        <Button
+                          label="Keep"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => local.dispatch({ type: "delete-cancelled" })}
+                        />
+                      </HStack>
+                    ) : (
                       <Button label="Delete" variant="destructive" size="sm" onClick={() => requestDelete(item.id)} />
-                      <Button label="Keep" variant="secondary" size="sm" onClick={() => local.dispatch({ type: "delete-cancelled" })} />
-                    </>
-                  ) : (
-                    <Button label="Delete" variant="destructive" size="sm" onClick={() => requestDelete(item.id)} />
+                    )}
+                  </HStack>
+                </Card>
+              ))
+            )}
+          </VStack>
+
+          <VStack gap={2}>
+            <VStack gap={1}>
+              <Text type="label">Add a credential</Text>
+              <Text type="supporting" color="secondary">
+                Pick a common key, paste its value, save — that's it. Pasted values go straight to the server and
+                are never shown again.
+              </Text>
+            </VStack>
+            <Card>
+              <VStack gap={3}>
+                <HStack gap={2} vAlign="center" style={{ flexWrap: "wrap" }}>
+                  {KEY_PRESETS.map((preset) => (
+                    <Button
+                      key={preset.varName}
+                      label={preset.varName}
+                      variant="secondary"
+                      size="sm"
+                      data-testid={`vault-preset-${preset.varName}`}
+                      onClick={() => applyPreset(preset)}
+                    />
+                  ))}
+                </HStack>
+                <TextInput
+                  label="Name"
+                  size="sm"
+                  placeholder="Notion API Key"
+                  value={state.name}
+                  onChange={(value) => local.dispatch({ type: "name-changed", value })}
+                  data-testid="vault-name-input"
+                />
+
+                <SegmentedControl
+                  label="Kind"
+                  value={state.kind}
+                  onChange={(value) => local.dispatch({ type: "kind-changed", value: value as VaultKind })}
+                  data-testid="vault-kind-select"
+                >
+                  <SegmentedControlItem value="env-secret" label="API key / secret" data-testid="vault-kind-env-secret" />
+                  <SegmentedControlItem
+                    value="op-token"
+                    label="1Password service-account token"
+                    data-testid="vault-kind-op-token"
+                  />
+                </SegmentedControl>
+
+                {state.kind !== "op-token" && (
+                  <div id="vault-var-row" data-testid="vault-var-row" className="vault-var-row">
+                    <Text type="supporting" color="secondary">
+                      Stored as
+                    </Text>
+                    <code id="vault-var-preview" data-testid="vault-var-preview" className="vault-ref">
+                      {effectiveVarName(state) || "ENV_VAR_NAME"}
+                    </code>
+                    <Button
+                      label={state.varOverride ? "auto" : "change"}
+                      variant="secondary"
+                      size="sm"
+                      data-testid="vault-var-edit"
+                      onClick={() => local.dispatch({ type: "var-override-toggled" })}
+                    />
+                    {state.varOverride && (
+                      <TextInput
+                        label="Environment variable name"
+                        isLabelHidden
+                        size="sm"
+                        placeholder="ENV_VAR_NAME"
+                        value={state.varInput}
+                        onChange={(value) => local.dispatch({ type: "var-input-changed", value })}
+                        data-testid="vault-var-input"
+                      />
+                    )}
+                  </div>
+                )}
+
+                {state.kind === "op-token" && (
+                  <TextInput
+                    label="Account label"
+                    size="sm"
+                    placeholder="primary"
+                    value={state.labelInput}
+                    onChange={(value) => local.dispatch({ type: "label-input-changed", value })}
+                    data-testid="vault-label-input"
+                  />
+                )}
+
+                <TextInput
+                  label="Secret value"
+                  size="sm"
+                  type="password"
+                  placeholder={state.kind === "op-token" ? "ops_… service-account token" : "Paste the secret value"}
+                  value={state.valueInput}
+                  onChange={(value) => local.dispatch({ type: "value-input-changed", value })}
+                  data-testid="vault-value-input"
+                />
+
+                <TextInput
+                  label="Note"
+                  size="sm"
+                  isOptional
+                  placeholder="What this key is for"
+                  value={state.descInput}
+                  onChange={(value) => {
+                    presetNoteRef.current = false
+                    local.dispatch({ type: "desc-input-changed", value })
+                  }}
+                  data-testid="vault-desc-input"
+                />
+
+                {state.kind === "op-token" && (
+                  <Text type="supporting" color="secondary" id="vault-restart-note" data-testid="vault-restart-note">
+                    Saving verifies the token and briefly restarts the server.
+                  </Text>
+                )}
+
+                <HStack gap={2} vAlign="center">
+                  <Button label="Save to server" variant="primary" size="sm" data-testid="vault-add-btn" onClick={submitAdd} />
+                  {state.statusLine && (
+                    <Text
+                      type="supporting"
+                      id="vault-status-line"
+                      data-testid="vault-status-line"
+                      style={{ color: statusColor(state.statusLine.kind) }}
+                    >
+                      {state.statusLine.text}
+                    </Text>
                   )}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+                </HStack>
+              </VStack>
+            </Card>
+          </VStack>
 
-        <TextInput
-          label="Name"
-          isLabelHidden
-          size="sm"
-          placeholder="Name (e.g. Notion API Key)"
-          value={state.name}
-          onChange={(value) => local.dispatch({ type: "name-changed", value })}
-          data-testid="vault-name-input"
-        />
-
-        <SegmentedControl
-          label="Kind"
-          value={state.kind}
-          onChange={(value) => local.dispatch({ type: "kind-changed", value: value as VaultKind })}
-          data-testid="vault-kind-select"
-        >
-          <SegmentedControlItem value="env-secret" label="API key / secret" data-testid="vault-kind-env-secret" />
-          <SegmentedControlItem value="op-token" label="1Password service-account token" data-testid="vault-kind-op-token" />
-        </SegmentedControl>
-
-        {state.kind !== "op-token" && (
-          <div id="vault-var-row" data-testid="vault-var-row" className="vault-var-row">
-            <span className="vault-desc">
-              Stored as <code id="vault-var-preview" data-testid="vault-var-preview" className="vault-ref">
-                {effectiveVarName(state) || "ENV_VAR_NAME"}
-              </code>
-            </span>
-            <Button
-              label={state.varOverride ? "auto" : "change"}
-              variant="secondary"
-              size="sm"
-              data-testid="vault-var-edit"
-              onClick={() => local.dispatch({ type: "var-override-toggled" })}
-            />
-            {state.varOverride && (
-              <TextInput
-                label="Environment variable name"
-                isLabelHidden
-                size="sm"
-                placeholder="ENV_VAR_NAME"
-                value={state.varInput}
-                onChange={(value) => local.dispatch({ type: "var-input-changed", value })}
-                data-testid="vault-var-input"
-              />
-            )}
-          </div>
-        )}
-
-        {state.kind === "op-token" && (
-          <TextInput
-            label="Account label"
-            isLabelHidden
-            size="sm"
-            placeholder="Account label (e.g. primary)"
-            value={state.labelInput}
-            onChange={(value) => local.dispatch({ type: "label-input-changed", value })}
-            data-testid="vault-label-input"
-          />
-        )}
-
-        <TextInput
-          label="Secret value"
-          isLabelHidden
-          size="sm"
-          type="password"
-          placeholder={state.kind === "op-token" ? "ops_… service-account token" : "Paste the secret value"}
-          value={state.valueInput}
-          onChange={(value) => local.dispatch({ type: "value-input-changed", value })}
-          data-testid="vault-value-input"
-        />
-
-        <TextInput
-          label="Note"
-          isLabelHidden
-          size="sm"
-          placeholder="Note (optional)"
-          value={state.descInput}
-          onChange={(value) => local.dispatch({ type: "desc-input-changed", value })}
-          data-testid="vault-desc-input"
-        />
-
-        {state.kind === "op-token" && (
-          <span id="vault-restart-note" data-testid="vault-restart-note" className="vault-desc">
-            Saving verifies the token and briefly restarts the server.
-          </span>
-        )}
-
-        <div className="vault-inline">
-          <Button label="Save to server" variant="primary" size="sm" data-testid="vault-add-btn" onClick={submitAdd} />
-          <span
-            id="vault-status-line"
-            data-testid="vault-status-line"
-            className={"vault-status" + (state.statusLine?.kind ? ` ${state.statusLine.kind}` : "")}
-            hidden={!state.statusLine}
-          >
-            {state.statusLine?.text ?? ""}
-          </span>
-        </div>
-
-        <div id="vault-sync-section" data-testid="vault-sync-section" className="vault-sync-section">
-          <div className="vault-sync-header">
-            <span className="vault-sync-label">1Password Sync</span>
-            <span id="vault-sync-state" data-testid="vault-sync-state" className="vault-sync-state">
-              {syncStateText(vaultSync)}
-            </span>
-          </div>
-          {vaultSync?.lastError && (
-            <span id="vault-sync-error" data-testid="vault-sync-error" className="vault-sync-error">
-              {vaultSync.lastError}
-            </span>
-          )}
-          <div id="vault-sync-fields" data-testid="vault-sync-fields" className="vault-sync-fields">
-            <Switch
-              label="Enable 1Password sync"
-              value={state.syncEnabled}
-              onChange={(checked) => local.dispatch({ type: "sync-enabled-toggled", checked })}
-              data-testid="vault-sync-enabled"
-            />
-            <TextInput
-              label="Service-account label"
-              isLabelHidden
-              size="sm"
-              placeholder={opLabelPlaceholder(vaultItems)}
-              value={state.syncOpLabel}
-              onChange={(value) => local.dispatch({ type: "sync-op-label-changed", value })}
-              data-testid="vault-sync-op-label"
-            />
-            <TextInput
-              label="Vault name"
-              isLabelHidden
-              size="sm"
-              placeholder="Vault name (e.g. Luna)"
-              value={state.syncOpVault}
-              onChange={(value) => local.dispatch({ type: "sync-op-vault-changed", value })}
-              data-testid="vault-sync-op-vault"
-            />
-            <div className="vault-inline">
-              <span className="vault-sync-helper">Poll every</span>
-              <NumberInput
-                label="Poll seconds"
-                isLabelHidden
-                size="sm"
-                value={state.syncPoll}
-                onChange={(value) => local.dispatch({ type: "sync-poll-changed", value })}
-                data-testid="vault-sync-poll"
-              />
-              <span className="vault-sync-helper">seconds</span>
-            </div>
-            <span className="vault-sync-helper">Create this vault in 1Password and share it with your service account</span>
-            <div className="vault-inline">
-              <Button label="Save sync settings" variant="primary" size="sm" data-testid="vault-sync-save-btn" onClick={submitSyncConfig} />
-              <span
-                id="vault-sync-status"
-                data-testid="vault-sync-status"
-                className={"vault-status" + (state.syncStatus?.kind ? ` ${state.syncStatus.kind}` : "")}
-                hidden={!state.syncStatus}
-              >
-                {state.syncStatus?.text ?? ""}
-              </span>
-            </div>
-            {vaultSync?.enabled && (
-              <span id="vault-sync-import-note" data-testid="vault-sync-import-note" className="vault-sync-import-note">
-                Import Apple Passwords exports from the web client.
-              </span>
-            )}
-          </div>
-        </div>
+          <VStack gap={2} id="vault-sync-section" data-testid="vault-sync-section">
+            <VStack gap={1}>
+              <HStack gap={2} vAlign="center">
+                <Text type="label">1Password sync</Text>
+                <Text type="supporting" color="secondary" id="vault-sync-state" data-testid="vault-sync-state">
+                  {syncStateText(vaultSync)}
+                </Text>
+              </HStack>
+              {vaultSync?.lastError && (
+                <Banner status="error" title={vaultSync.lastError} data-testid="vault-sync-error" />
+              )}
+            </VStack>
+            <Card>
+              <VStack gap={3} id="vault-sync-fields" data-testid="vault-sync-fields">
+                <Switch
+                  label="Enable 1Password sync"
+                  value={state.syncEnabled}
+                  onChange={(checked) => local.dispatch({ type: "sync-enabled-toggled", checked })}
+                  data-testid="vault-sync-enabled"
+                />
+                <TextInput
+                  label="Service-account label"
+                  size="sm"
+                  placeholder={opLabelPlaceholder(vaultItems)}
+                  value={state.syncOpLabel}
+                  onChange={(value) => local.dispatch({ type: "sync-op-label-changed", value })}
+                  data-testid="vault-sync-op-label"
+                />
+                <TextInput
+                  label="1Password vault"
+                  size="sm"
+                  placeholder="Luna"
+                  description="Create this vault in 1Password and share it with your service account."
+                  value={state.syncOpVault}
+                  onChange={(value) => local.dispatch({ type: "sync-op-vault-changed", value })}
+                  data-testid="vault-sync-op-vault"
+                />
+                <NumberInput
+                  label="Check for changes every"
+                  size="sm"
+                  description="Seconds between syncs — minimum 60."
+                  value={state.syncPoll}
+                  onChange={(value) => local.dispatch({ type: "sync-poll-changed", value })}
+                  data-testid="vault-sync-poll"
+                />
+                <HStack gap={2} vAlign="center">
+                  <Button
+                    label="Save sync settings"
+                    variant="primary"
+                    size="sm"
+                    data-testid="vault-sync-save-btn"
+                    onClick={submitSyncConfig}
+                  />
+                  {state.syncStatus && (
+                    <Text
+                      type="supporting"
+                      id="vault-sync-status"
+                      data-testid="vault-sync-status"
+                      style={{ color: statusColor(state.syncStatus.kind) }}
+                    >
+                      {state.syncStatus.text}
+                    </Text>
+                  )}
+                </HStack>
+                {vaultSync?.enabled && (
+                  <Text
+                    type="supporting"
+                    color="secondary"
+                    id="vault-sync-import-note"
+                    data-testid="vault-sync-import-note"
+                  >
+                    Import Apple Passwords exports from the web client.
+                  </Text>
+                )}
+              </VStack>
+            </Card>
+          </VStack>
+        </VStack>
       </div>
 
+      {/* Legacy op-token-only form for pre-vault servers. */}
       <div id="legacy-op-token-section" data-testid="legacy-op-token-section" hidden={vaultSupported}>
-        <div className="vault-head">
-          <span className="vault-label">1Password Service Account</span>
-          <span className="vault-desc">
-            Send an <code className="vault-ref">ops_…</code> service-account token to the server securely. It is verified and
-            stored on the server - never kept in chat history or on this device.
-          </span>
-        </div>
-        <TextInput
-          label="Account label"
-          isLabelHidden
-          size="sm"
-          placeholder="Account label (e.g. primary)"
-          value={state.opLabelInput}
-          onChange={(value) => local.dispatch({ type: "op-label-input-changed", value })}
-          data-testid="op-label-input"
-        />
-        <TextInput
-          label="Service-account token"
-          isLabelHidden
-          size="sm"
-          type="password"
-          placeholder="ops_… service-account token"
-          value={state.opTokenInput}
-          onChange={(value) => local.dispatch({ type: "op-token-input-changed", value })}
-          data-testid="op-token-input"
-        />
-        <div className="vault-inline">
-          <Button
-            label="Save to server"
-            variant="primary"
-            size="sm"
-            data-testid="save-op-token-btn"
-            onClick={submitOpToken}
-          />
-          <span
-            id="op-token-status"
-            data-testid="op-token-status"
-            className={"vault-status" + (state.opStatus?.kind ? ` ${state.opStatus.kind}` : "")}
-            hidden={!state.opStatus}
-          >
-            {state.opStatus?.text ?? ""}
-          </span>
-        </div>
-        <span className="vault-desc">Saving verifies the token and briefly restarts the server.</span>
+        <VStack gap={3}>
+          <VStack gap={1}>
+            <Text type="label">1Password service account</Text>
+            <Text type="supporting" color="secondary">
+              Send an ops_… service-account token to the server securely. It is verified and stored on the server —
+              never kept in chat history or on this device.
+            </Text>
+          </VStack>
+          <Card>
+            <VStack gap={3}>
+              <TextInput
+                label="Account label"
+                size="sm"
+                placeholder="primary"
+                value={state.opLabelInput}
+                onChange={(value) => local.dispatch({ type: "op-label-input-changed", value })}
+                data-testid="op-label-input"
+              />
+              <TextInput
+                label="Service-account token"
+                size="sm"
+                type="password"
+                placeholder="ops_… service-account token"
+                value={state.opTokenInput}
+                onChange={(value) => local.dispatch({ type: "op-token-input-changed", value })}
+                data-testid="op-token-input"
+              />
+              <HStack gap={2} vAlign="center">
+                <Button
+                  label="Save to server"
+                  variant="primary"
+                  size="sm"
+                  data-testid="save-op-token-btn"
+                  onClick={submitOpToken}
+                />
+                {state.opStatus && (
+                  <Text
+                    type="supporting"
+                    id="op-token-status"
+                    data-testid="op-token-status"
+                    style={{ color: statusColor(state.opStatus.kind) }}
+                  >
+                    {state.opStatus.text}
+                  </Text>
+                )}
+              </HStack>
+              <Text type="supporting" color="secondary">
+                Saving verifies the token and briefly restarts the server.
+              </Text>
+            </VStack>
+          </Card>
+        </VStack>
       </div>
-    </div>
+    </VStack>
   )
+}
+
+/** Status-line tint — Text has no semantic error/success color variant, so
+ *  this matches SettingsModelsPanel.tsx's statusColor. */
+function statusColor(kind: "ok" | "error" | "info"): string {
+  if (kind === "error") return "var(--color-danger, #f87171)"
+  if (kind === "ok") return "var(--color-success, #4ade80)"
+  return "var(--muted, #94a3b8)"
 }
 
 function syncStateText(sync: { enabled?: boolean; lastSyncedAt?: number | null } | null): string {
