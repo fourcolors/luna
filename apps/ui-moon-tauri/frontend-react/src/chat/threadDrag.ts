@@ -415,8 +415,10 @@ export function wireThreadRow(
     stickyPendingAt = -1;
     stickyPendingCount = 0;
     row.classList.remove('dragging');
-    // Keep ghost only until hard promote shows a window.
-    if (self._ghost && floatedLabel) {
+    // The ghost only ever bridges until the OS window exists; leaving the
+    // strip chrome always retires it. A failed spawn (no floatedLabel) must
+    // not keep it - it would hover over the UI forever.
+    if (self._ghost) {
       self._ghost.remove();
       self._ghost = null;
     }
@@ -425,6 +427,9 @@ export function wireThreadRow(
 
   const onMove = (e: PointerEvent) => {
     if (!session) return;
+    // Only the pointer that started the gesture may drive it - a second
+    // finger's events must not steer or prematurely settle this session.
+    if (pid != null && e.pointerId !== pid) return;
     lastX = e.clientX; lastY = e.clientY;
     lastSX = e.screenX; lastSY = e.screenY;
     const move = session.pointerMove({
@@ -467,7 +472,10 @@ export function wireThreadRow(
     }
     if (move.action === 'reenter_attached') {
       // Strip gap only; floater still OS-driven (redock-preview from Rust).
-      showAttachedChrome(move.insertIndex);
+      // While the native pullout is armed the Rust probe already owns
+      // redock-preview for this cursor - writing it here too would fight
+      // Rust's insert index on every sample.
+      if (!nativePulloutArmed) showAttachedChrome(move.insertIndex);
       return;
     }
   };
@@ -504,6 +512,7 @@ export function wireThreadRow(
 
   const onUp = (e: PointerEvent) => {
     if (!session) { teardown(); return; }
+    if (pid != null && e.pointerId !== pid) return;
     const result = session.pointerUp({
       clientX: e.clientX,
       clientY: e.clientY,
@@ -586,7 +595,8 @@ export function wireThreadRow(
     }
   };
 
-  const onCancel = () => {
+  const onCancel = (e: PointerEvent) => {
+    if (pid != null && e.pointerId !== pid) return;
     cancelled = true;
     if (session) session.cancel();
     clearAttachedChrome();

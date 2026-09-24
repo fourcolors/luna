@@ -113,6 +113,11 @@ fn main() {
                     // already gone) so quitting never wipes the layout.
                     windows::write_panel_layout(app);
                 }
+                // A closed thread floater hands its strip row back to the
+                // owner — the redock path used to be the only way back.
+                // Self-filtering: no-op for labels that aren't chat
+                // instances carrying thread + redockTo params.
+                windows::notify_floater_closed(app, window.label());
                 // Don't strand the user with nothing on screen: while the
                 // workspace is EXPANDED the moon is hidden, so closing (×) the
                 // LAST widget would leave an empty desktop. When a widget is

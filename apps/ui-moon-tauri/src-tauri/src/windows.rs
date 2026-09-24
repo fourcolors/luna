@@ -224,6 +224,35 @@ fn is_chat_label(label: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A floated thread window is only a VIEW on a live thread: when it dies by
+/// any path (its own close button, ⌘W, close_widget, a crash) the owner's
+/// strip must get its row back — `floatedThreadIds` used to clear only via
+/// the redock path, so a plainly closed floater stranded the row hidden until
+/// restart. Emits `floater-closed` to the recorded owner (`redockTo`); emits
+/// nothing for base labels, non-chat kinds, or params missing either key.
+/// Idempotent on the JS side — a redock close emits it too, after
+/// `redock-thread` already cleared the row.
+pub(crate) fn notify_floater_closed(app: &tauri::AppHandle, label: &str) {
+    let Some((kind, params)) = panel_label_to_kind_and_params(label) else {
+        return;
+    };
+    if kind != "chat" {
+        return;
+    }
+    let Some(params) = params else { return };
+    let (Some(thread_id), Some(owner)) = (
+        params.get("thread").and_then(|v| v.as_str()),
+        params.get("redockTo").and_then(|v| v.as_str()),
+    ) else {
+        return;
+    };
+    let _ = app.emit_to(
+        tauri::EventTarget::labeled(owner),
+        "floater-closed",
+        serde_json::json!({ "threadId": thread_id }),
+    );
+}
+
 /// ~/.luna/layout.json — positions of OPEN system panels (and nothing else:
 /// pin state for content widgets stays server-side; design doc Persistence).
 pub(crate) fn layout_path() -> Option<std::path::PathBuf> {
@@ -1702,6 +1731,13 @@ pub(crate) fn begin_native_resize(window: tauri::WebviewWindow, direction: Strin
     with_appkit_main_thread(window.clone(), move |win| {
         use objc2_app_kit::{NSEvent, NSWindow};
 
+        // Stale arm: the grip's pointerdown reaches here over IPC — if the
+        // button is already back up, monitors installed now would turn the
+        // NEXT unrelated click-drag into a resize of this window.
+        if NSEvent::pressedMouseButtons() & 1 == 0 {
+            return Ok(());
+        }
+
         let ns_win_ptr = win.ns_window().map_err(|e| e.to_string())?;
 
         // Capture the anchor: window frame + cursor, both in Cocoa screen
@@ -2012,7 +2048,14 @@ pub(crate) fn begin_redock_drag(
         .unwrap_or(0.0);
 
     with_appkit_main_thread(window.clone(), move |win| {
-        use objc2_app_kit::NSWindow;
+        use objc2_app_kit::{NSEvent, NSWindow};
+
+        // Stale arm: invoked from the floater's title-bar pointerdown — if
+        // the click is already over, monitors installed now would emit
+        // redock-drag-ended on the NEXT drag of anything.
+        if NSEvent::pressedMouseButtons() & 1 == 0 {
+            return Ok(());
+        }
 
         let floater_ptr = win.ns_window().map_err(|e| e.to_string())?;
         let app = win.app_handle().clone();
@@ -2158,6 +2201,13 @@ pub(crate) fn begin_native_pullout_drag(
             None => return Ok(()),
         };
         let owner_ptr = owner.ns_window().map_err(|e| e.to_string())?;
+
+        // Stale arm: open_widget's spawn latency can outlast the release —
+        // arming now would snap the floater to the cursor with no button
+        // held and leave live monitors for the next unrelated drag.
+        if NSEvent::pressedMouseButtons() & 1 == 0 {
+            return Ok(());
+        }
 
         // Place the window so the grab point is under the cursor NOW (Cocoa),
         // fixing any LogicalPosition vs NSWindow.frame mismatch from open_widget.
