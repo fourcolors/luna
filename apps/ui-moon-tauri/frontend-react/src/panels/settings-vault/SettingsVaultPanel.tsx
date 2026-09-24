@@ -86,6 +86,15 @@ declare global {
 }
 
 const KIND_BADGE: Record<string, string> = { "env-secret": "API key", "op-token": "1P token", "op-item": "1P item" }
+
+/** Quick-add presets for the env vars Luna asks for most often - picking one
+ *  fills the name (which derives the var) so the user only pastes the value. */
+const KEY_PRESETS: ReadonlyArray<{ readonly varName: string; readonly note?: string }> = [
+  { varName: "TYPESAFE_API_KEY", note: "Jev memory reranker" },
+  { varName: "ANTHROPIC_API_KEY" },
+  { varName: "OPENAI_API_KEY" },
+]
+
 const SOURCE_LABEL: Record<string, string> = {
   manual: "added by you",
   agent: "added by Luna",
@@ -163,6 +172,16 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
     // `ctx.connectWs` call in `render()`).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /** Quick-add: fills kind/name (the var derives from the name) so the only
+   *  thing left is pasting the value. Disarms a manual var override if one is
+   *  armed, so the env var can't accidentally stay customized. */
+  function applyPreset(preset: (typeof KEY_PRESETS)[number]): void {
+    local.dispatch({ type: "kind-changed", value: "env-secret" })
+    if (state.varOverride) local.dispatch({ type: "var-override-toggled" })
+    local.dispatch({ type: "name-changed", value: preset.varName })
+    if (preset.note) local.dispatch({ type: "desc-input-changed", value: preset.note })
+  }
 
   function submitAdd(): void {
     const name = state.name.trim()
@@ -378,11 +397,24 @@ export function SettingsVaultPanel({ ctx }: { ctx: PanelCtx }) {
             <VStack gap={1}>
               <Text type="label">Add a credential</Text>
               <Text type="supporting" color="secondary">
-                Pasted values go straight to the server — Luna never shows them again.
+                Pick a common key, paste its value, save — that's it. Pasted values go straight to the server and
+                are never shown again.
               </Text>
             </VStack>
             <Card>
               <VStack gap={3}>
+                <HStack gap={2} vAlign="center" style={{ flexWrap: "wrap" }}>
+                  {KEY_PRESETS.map((preset) => (
+                    <Button
+                      key={preset.varName}
+                      label={preset.varName}
+                      variant="secondary"
+                      size="sm"
+                      data-testid={`vault-preset-${preset.varName}`}
+                      onClick={() => applyPreset(preset)}
+                    />
+                  ))}
+                </HStack>
                 <TextInput
                   label="Name"
                   size="sm"
