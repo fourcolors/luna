@@ -246,7 +246,7 @@ async function main(): Promise<void> {
     fail(2, `BLOCKED: judge warm-up failed: ${describeError(e)}.`)
   }
   const runId = createHash("sha256")
-    .update(JSON.stringify({ split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label), dumpTop: DUMP_TOP }))
+    .update(JSON.stringify({ split: SPLIT, file, offset: OFFSET, limit: LIMIT, seed: SEED, embedModel: EMBED_MODEL, ollamaVersion, configs: CONFIGS.map((c) => c.label), ...(DUMP_TOP ? { dumpTop: true } : {}) }))
     .digest("hex")
     .slice(0, 16)
   mkdirSync(OUT_DIR, { recursive: true })
