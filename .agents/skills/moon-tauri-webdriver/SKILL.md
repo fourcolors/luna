@@ -109,6 +109,58 @@ report it as a bug. Gesture events: `redock-preview`/`redock-thread` → owner,
   expected for unsigned debug binaries; Cmd+K still works (DOM handler).
 - `write_panel_layout` persists open panels to ~/.luna/layout.json — boot
   restore replays them on next launch; delete it for a clean boot.
+- **macOS eats the first press on a non-key window** (click-through
+  activation). After a floater grabs focus (keep_floater calls
+  `openInNewWindow(id, …, { focus: true })`), the first computer-tool press
+  on the owner produces no `down`/session at all - the row may still show
+  :hover/:active styling, so verify via
+  `__moonDragDebug.session` (stale ref = press never landed) and retry the
+  same press; the second one works once the window is key. Same after any
+  desktop drag that activates Finder.
+- **`__TAURI__.core.invoke` is non-writable** - assigning a wrapper silently
+  no-ops (stable object, non-writable prop). To force `open_widget` failure,
+  patch `ThreadDrawerEngine.openInNewWindow` (plain own-property fn) instead.
+- Floater client coords map to screen with NO titlebar offset on these
+  widgets: `shot = (outerPosition + client) * 0.64` works for #redock-btn etc.
+- `window.State` is not a bare global in chat webviews - use
+  `LunaChatHost.state()` (live: winLabel, threadDrawerOpen, threads,
+  floatedThreadIds, activeThreadId). `State.floatedThreadIds` is
+  `Object.create(null)` - WebDriver JSON-serializes it to `{}`; read via
+  `Object.keys()`.
+
+## Thread pull-out / redock (Chrome-tab) testing
+
+Seed rows without a chat server via
+`ThreadDrawerEngine.applyList([{id,title,lastMessagePreview,lastMessageAt}])`
+(sorted desc by lastMessageAt). `ThreadDrawerEngine.openPanel()` opens the
+drawer. Instrument counters on the owner to prove exactly-once behavior:
+wrap `ThreadDrawerEngine.adoptRedockedThread` and `__TAURI__.event.listen`
+for `redock-thread`, `redock-preview`, `floater-closed`.
+
+`window.__moonDragDebug` (ring buffer) is the authoritative in-page trace:
+`.events` logs `down`/`move:{action}`/`floater:{label,grab}`/`up:{outcome}`/
+`floater_error`; `.session` is the live session (`state`,
+`threadId`, `inStrip`, `detachedOnce`, `clientX/Y`). Session outcomes:
+`click`/`reorder` (retired → no-op bounce-back)/`redock`/`keep_floater`.
+`__moonE2E.listThreadIds()/getDragDebug()` also exist.
+
+Floater labels are a params hash (`panel-chat-<djb2>`) - re-floating the same
+thread yields the SAME label; handle-delta counting still works if you
+snapshot first. Closing via traffic-light emits `floater-closed` (from
+`WindowEvent::Destroyed`) - lights sit ~12pt inside the frame top-left;
+locate via `zoom`. Pull-out arm reports `nativePulloutArmed` only in-page -
+verify armed state by floater `outerPosition == cursor - grab(36,18)` on two
+samples (tracks exactly, no jitter).
+
+Divergent-geometry discriminator (JS inStrip vs Cocoa `over`): the strip band
+is owner.x∈[x, x+stripW≈240]; the floater tracks at cursor-(36,18) so its
+center is cursor+244. Release with cursor left of owner (clientX<0) while
+floater center lands in band → JS `keep_floater` but Cocoa `over=true` -
+post-fix the floater's `pullout:true` end event must be ignored.
+
+Synthetic `dispatchEvent(new PointerEvent('pointerup',{pointerId:999}))` on a
+row mid real-drag exercises the non-owning-pointerId guard without disturbing
+the real captured gesture.
 
 ## Devin Secrets Needed
 
