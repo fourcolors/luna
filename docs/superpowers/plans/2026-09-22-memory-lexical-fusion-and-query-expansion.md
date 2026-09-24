@@ -217,6 +217,66 @@ Corrected verdict: query-only agent keywords are SAFE (never significantly worse
 The efficacy replication still fails (Haiku #0 has no wins).
 The relevance judge makes them redundant.
 
+## Which judge: Jev and Haiku against the cross-encoder (tuning results and third lock, recorded 2026-09-23, BEFORE its held-out run)
+
+Judges (all rerank the same `hybrid` candidate pool, every candidate capped at 2,000 characters):
+
+- `ce`: the local Qwen3-Reranker-0.6B cross-encoder, as above.
+- `jev`: TypeSafe Jev (served as `jev-1.13.0`), one request per search with one yes/no question (Noul) per candidate; the score is the probability of yes.
+- `jevpair`: Jev with one request per candidate (the shape of TypeSafe's rerank cookbook).
+- `haiku`: `claude-haiku-4-5-20251001` through the Agent SDK on the Claude subscription, one call scoring every candidate 0-100 with the July production rubric (deleted in #412), candidates listed in search order, thinking disabled, the next call's process pre-warmed with `startup()`.
+
+Why Haiku is back in: the July reranker was dropped as "~20-30 s per call"; that was hidden thinking (700-2,500 output tokens for a ~130-token JSON reply), not Haiku.
+With thinking disabled, 20 short candidates take ~1.4 s warm.
+
+One change was made during tuning, before any held-out run: Jev's wording moved from "does the memory help answer the user's question" (v1) to "is the memory relevant to the search query: does it contain what the query asks about or describes" (v2).
+Diagnosis: memory-suite `q_verbatim_022` is a phrase, not a question; v1 scored its verbatim match 0.21 and dropped it from the top 10, v2 scores it 0.47.
+Production queries are often not questions (per-turn recall searches with the user's message; agents search with phrases).
+Haiku's prompt is unchanged.
+
+Tuning results (LongMemEval S questions 1-60: evidence@5 out of 104 evidence turns; memory-suite: vocab-mismatch recall@5):
+
+| config | LongMemEval evidence@5 | memory-suite vocab-mismatch | memory-suite verbatim |
+|---|---:|---:|---:|
+| `hybrid` | 49 | 0.683 | 1.000 |
+| `hybrid:rr=ce@20` / `@40` | 69 / 73 | 0.817 / 0.850 | 1.000 / 1.000 |
+| `hybrid:rr=haiku@20` / `@40` (two passes) | 71-72 / 76-80 | 0.883 / 0.967 (both passes) | 1.000 / 1.000 |
+| `hybrid:rr=jev@20` / `@40` (v1 wording) | 77 / 85 | 0.883 / 0.967 | 0.975 / 0.975 |
+| **`hybrid:rr=jev@20` / `@40` (v2 wording)** | **79 / 86** | **0.883 / 0.967** | 1.000 / 0.975 |
+| `hybrid:rr=jevpair@20` / `@40` (v1 wording) | 77 / 83 | 0.883 / 0.967 | 0.975 / 0.975 |
+
+The `ce` rows reproduce the tables above exactly, and the shared `hybrid` baseline is identical in every run.
+Paired LongMemEval (questions with more / fewer evidence turns in the top 5): `jev@40` vs `ce@40` 13 / 3 (p = 0.021); `jev@40` vs `haiku@40` 8 / 1 and 5 / 2 over Haiku's two passes (p = 0.039, 0.45); `haiku@40` vs `ce@40` 10 / 7 (p = 0.63).
+Haiku's two passes gave the same best rank on 222-223 of 230 memory-suite queries and identical recall@5; on LongMemEval they differ by 1-4 evidence turns.
+Jev's scores are calibrated enough to gate on: on memory-suite the median score of a right memory is 0.94, the median top score for a query with no right answer 0.04-0.05.
+`jevpair` equals `jev` on quality with a much worse slow tail (up to 61 s on the laptop), so it is dropped.
+
+Latency here is indicative only: these runs were on a laptop whose network varies, several runs overlapped, and the SDK's process start is network-bound (0.6 s on a good connection, 4.6-10 s on a slow one).
+Laptop per-call medians (depth 20 / 40): `jev` 0.23 / 0.27 s, `haiku` 1.8 / 2.9 s, `ce` 1.4 / 2.7 s.
+Latency is decided separately, on the production server against a COPY of the memory database (Rollout, step 1).
+
+LOCKED: one held-out run of `hybrid`, `hybrid:rr=ce@8`, `hybrid:rr=ce@20`, `hybrid:rr=ce@40`, `hybrid:rr=jev@20`, `hybrid:rr=jev@40`, `hybrid:rr=haiku@20`, `hybrid:rr=haiku@40`, with the judge code and prompts at this commit.
+
+Held-out set: LongMemEval S questions 261-460 again.
+Jev and Haiku were never tuned or selected on them; they were used once, for the cross-encoder, whose rows re-run here so every comparison is paired within one run.
+Reproduction check: `ce@20` and `ce@40` should reproduce 265/366 and 279/366; if they do not (for example after an Ollama update), the in-run numbers are used and the difference is reported.
+
+Primary comparisons, at depth 40, paired two-sided sign test on evidence@5, Bonferroni for three (p < 0.0167):
+
+1. `jev@40` vs `ce@40`.
+2. `haiku@40` vs `ce@40`.
+3. `jev@40` vs `haiku@40`.
+
+A judge "beats" another only with more wins and p < 0.0167; otherwise the result is "no detectable difference", and the evidence@5 gap is reported with it.
+The same three comparisons at depth 20, and every judge against `hybrid`, are reported but not claimed.
+Haiku runs once on held-out; its tuning pass-to-pass spread is reported next to it.
+
+What the outcome decides (latency still has to fit, and sending memory text to a vendor is the owner's decision):
+
+- Jev beats Haiku, or no detectable difference: recommend Jev (as good or better, about 7x faster per call, calibrated scores that can gate injection).
+- Haiku beats Jev: recommend Haiku only if it fits the latency budget on the server; otherwise present the trade-off as a decision.
+- Neither beats `ce@40`: the local cross-encoder stays the judge, and its latency on the production GPU remains the blocker.
+
 ## Rollout (separate PRs; revised 2026-09-23 after the judge result)
 
 The evidence points at judging more candidates, not at changing lexical matching.
