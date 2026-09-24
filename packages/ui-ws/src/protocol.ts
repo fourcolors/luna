@@ -1492,6 +1492,14 @@ export interface RoleBindingItem {
   readonly preferenceList: ReadonlyArray<{ readonly provider: string; readonly model: string }>
 }
 
+/** The memory reranker engine setting ("cross-encoder" | "jev"). Never carries the Jev key. */
+export interface MemoryRerankerSettingsItem {
+  /** List: the engine after the next start. Save: the operator's choice. */
+  readonly engine: string
+  /** List only: the engine this running server bound (differs from `engine` until a restart). */
+  readonly active?: string
+}
+
 /**
  * Server→client: current model-routing settings. Sent after `hello` and after
  * each successful mutation. Wire-safe — no secret values, only metadata +
@@ -1501,6 +1509,9 @@ export interface ModelRoutingListFrame {
   readonly type: "model-routing-list"
   readonly providers: ReadonlyArray<ProviderSettingsItem>
   readonly roleBindings: ReadonlyArray<RoleBindingItem>
+  /** The engine the server will use after its next start (saved choice, else env, else
+   *  "cross-encoder"). OPTIONAL/additive: older servers omit it; clients then hide the control. */
+  readonly memoryReranker?: MemoryRerankerSettingsItem
 }
 
 /**
@@ -1529,6 +1540,8 @@ export interface ModelRoutingSaveFrame {
   readonly requestId: string
   readonly providers: ReadonlyArray<ProviderSettingsItem>
   readonly roleBindings: ReadonlyArray<RoleBindingItem>
+  /** OPTIONAL/additive: absent (older clients) keeps the stored choice unchanged. */
+  readonly memoryReranker?: MemoryRerankerSettingsItem
 }
 
 export type ServerFrame =

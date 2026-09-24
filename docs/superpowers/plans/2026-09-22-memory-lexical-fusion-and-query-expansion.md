@@ -308,8 +308,8 @@ Latency on the production server and the owner's decision on sending memory text
 
 ## Jev as a configurable engine, and its injection threshold (2026-09-23, tuning sets only)
 
-Shipped in this PR, opt-in (the owner: make Jev configurable; never put a key in the public repo):
-`LUNA_RERANK_ENGINE=jev` plus the operator's own `TYPESAFE_API_KEY` (resolved like every server secret: vault, Keychain or environment).
+Shipped in this PR, opt-in (the owner: make Jev configurable, from the UI; never put a key in the public repo):
+the Models settings tab in Moon (Memory Reranker: Local cross-encoder / Jev (TypeSafe), applied at the next server start like model routing, stored in `provider_settings` and applied as `LUNA_RERANK_ENGINE`), or `LUNA_RERANK_ENGINE=jev` directly, plus the operator's own `TYPESAFE_API_KEY` (resolved like every server secret: vault, Keychain or environment).
 The default is unchanged: the local cross-encoder, reranking off in both lanes unless `LUNA_MEMORY_RERANK=1` / `LUNA_RECALL_RERANK=1`.
 Configured, Jev reranks both `memory_search` and per-turn recall (flag `0` turns a lane off), judges the top 40, pins `jev-1.13.0`, and sends the exact held-out request (one builder in `@luna/core`, byte-identical to the benchmarked one).
 
@@ -331,10 +331,10 @@ Threshold 5 loses nothing on either tuning set and halves memory-suite's negativ
 
 ## Rollout (revised 2026-09-23 after the judge result)
 
-1. Done in this PR: Jev as an opt-in engine (above); the default path is unchanged.
+1. Done in this PR: Jev as an opt-in engine, selectable in Moon's Models settings tab (above); the default path is unchanged.
 2. Before enabling it on the owner's server (merge auto-deploys, but nothing changes until `LUNA_RERANK_ENGINE=jev` and a key are set there): measure Jev latency and recall on a COPY of the stable memory DB with real `memory_search` queries at depth 8 / 20 / 40, including the recall lane's 160-row backend fetch inside the 2.5 s budget and cold starts (the first call after idle measured 9-19 s; the layer sends one data-free warm-up call at boot).
 3. Held-out check of threshold 5 (fresh questions or a new split), then make it Jev's default if it holds.
-4. End-to-end QA like-for-like with published memory scores (running: LongMemEval S, all 500 questions, Claude Sonnet reading Luna's recall, official judge prompts graded by gpt-4o-2024-08-06 and grok-4.5).
+4. Not pursued for now (owner, 2026-09-23): an end-to-end QA like-for-like with published memory scores (e.g. Mitosis's self-reported, preliminary 91.7% LongMemEval with Claude Sonnet answering and Grok 4.5 grading). The harness is in this PR (`packages/memory-tools/bench/lme-qa-answer.ts`, `packages/memory/bench/lme-qa-grade.ts`: official judge prompts byte-identical to `evaluate_qa.py`, gpt-4o-2024-08-06 and grok-4.5 graders) and was smoke-tested on 3 questions; no full run was made. Caveat for anyone running it: on a Claude subscription the CLI injects the real date and account email into every answer call (only `--bare`, which needs an API key, removes them); the answer stage instructs the model to use the question's date and counts answers that mention the real year.
 5. Agent keywords (`memory_search` `keywords` argument) stay out: safe but not proven, and the judge already delivers the vocabulary-mismatch gain they were meant to.
 
 ## Out of scope

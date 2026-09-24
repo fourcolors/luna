@@ -130,6 +130,7 @@ export type {
   ModelRoutingListFrame,
   ModelRoutingStatusFrame,
   ModelRoutingSaveFrame,
+  MemoryRerankerSettingsItem,
   ProviderSettingsItem,
   RoleBindingItem,
   ServerDescriptor,

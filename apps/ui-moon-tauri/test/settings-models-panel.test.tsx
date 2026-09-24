@@ -435,3 +435,80 @@ describe('mountSettingsModelsPanel (panel.html contract parity)', () => {
     })
   })
 })
+
+describe('SettingsModelsPanel - Memory reranker', () => {
+  const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`)
+  const pushListWith = (h: Harness, memoryReranker?: { engine: string; active?: string }) =>
+    act(() => {
+      h.registry().dispatch({ type: 'model-routing-list', providers: [], roleBindings: [], ...(memoryReranker ? { memoryReranker } : {}) })
+    })
+
+  it('is hidden when the server does not report the setting (older server)', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h)
+    expect(byTestId('memory-reranker-section')).toBeNull()
+  })
+
+  it('shows the server\'s current engine, with the on-device note for the local cross-encoder', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'cross-encoder' })
+    expect(byTestId('memory-reranker-cross-encoder')!.getAttribute('aria-checked')).toBe('true')
+    expect(byTestId('memory-reranker-jev')!.getAttribute('aria-checked')).toBe('false')
+    expect(byTestId('memory-reranker-local-note')).not.toBeNull()
+    expect(byTestId('memory-reranker-jev-notice')).toBeNull()
+  })
+
+  it('choosing Jev shows the privacy and key notice and saves the choice', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'cross-encoder' })
+    act(() => {
+      byTestId('memory-reranker-jev')!.click()
+    })
+    expect(byTestId('memory-reranker-jev')!.getAttribute('aria-checked')).toBe('true')
+    const notice = byTestId('memory-reranker-jev-notice')!
+    expect(notice.textContent).toContain('Sends memory text to TypeSafe')
+    expect(notice.textContent).toContain('TYPESAFE_API_KEY')
+    act(() => {
+      byTestId('save-models-btn')!.click()
+    })
+    expect((h.client.sent[0] as any).memoryReranker).toEqual({ engine: 'jev' })
+  })
+
+  it('an untouched control is not sent on save, so an env-chosen engine stays env-chosen', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'jev', active: 'jev' })
+    act(() => {
+      byTestId('save-models-btn')!.click()
+    })
+    expect('memoryReranker' in (h.client.sent[0] as any)).toBe(false)
+  })
+
+  it('after a save that is not yet active, says which engine keeps running until the restart', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h, { engine: 'jev', active: 'cross-encoder' })
+    expect(byTestId('memory-reranker-pending')!.textContent).toBe('Luna keeps using Local cross-encoder until the server restarts.')
+    pushListWith(h, { engine: 'jev', active: 'jev' })
+    expect(byTestId('memory-reranker-pending')).toBeNull()
+  })
+
+  it('never sends the field to a server that did not offer it', () => {
+    const h = makeHarness()
+    renderPanel(h.ctx)
+    enableModelRouting(h)
+    pushListWith(h)
+    act(() => {
+      byTestId('save-models-btn')!.click()
+    })
+    expect('memoryReranker' in (h.client.sent[0] as any)).toBe(false)
+  })
+})

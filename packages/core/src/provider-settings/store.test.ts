@@ -69,6 +69,16 @@ describe("openProviderSettingsStore", () => {
     expect(result?.roleBindings).toHaveLength(2)
   })
 
+  it("round-trips the memory reranker choice, and a payload without one reads back without one", async () => {
+    const db = await openMemoryDb()
+    if (db === null) return
+    const store = openProviderSettingsStore(db, Date.now())
+    store.write({ ...samplePayload(), memoryReranker: { engine: "jev" } })
+    expect(store.read()?.memoryReranker).toEqual({ engine: "jev" })
+    store.write(samplePayload())
+    expect(store.read()?.memoryReranker).toBeUndefined()
+  })
+
   it("write() is idempotent — second write overwrites first", async () => {
     const db = await openMemoryDb()
     if (db === null) return

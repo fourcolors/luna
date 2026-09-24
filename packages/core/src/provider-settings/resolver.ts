@@ -24,7 +24,7 @@ import {
   readOverflowConfig,
   validateOverflowConfig,
 } from "../overflow-chain.js"
-import type { ProviderSettingsPayload, RoleName } from "./types.js"
+import { MEMORY_RERANKER_ENGINES, type MemoryRerankerEngine, type ProviderSettingsPayload, type RoleName } from "./types.js"
 
 // ── Default role→model mapping (PR 1 defaults) ──────────────────────────────
 
@@ -227,3 +227,55 @@ export const resolveAll = (
   providerEnv: resolveProviderEnv(storeConfig, env),
   overflowConfig: resolveOverflowConfig(storeConfig, env),
 })
+
+/** True for a memory reranker engine Luna can bind (the UI sends plain strings). */
+export const isMemoryRerankerEngine = (value: unknown): value is MemoryRerankerEngine =>
+  typeof value === "string" && (MEMORY_RERANKER_ENGINES as ReadonlyArray<string>).includes(value)
+
+/**
+ * The engine the RUNNING server bound: LUNA_RERANK_ENGINE as it was at boot
+ * (applyProviderSettingsToEnv sets it from the store before the reranker
+ * layer is built; nothing changes it later), with anything unknown falling
+ * back to the local cross-encoder exactly as the server does.
+ */
+export const boundMemoryRerankerEngine = (env: Record<string, string | undefined> = process.env): MemoryRerankerEngine => {
+  const raw = env["LUNA_RERANK_ENGINE"]?.trim()
+  return isMemoryRerankerEngine(raw) ? raw : "cross-encoder"
+}
+
+/**
+ * The engine the server binds at its NEXT start: the operator's saved choice
+ * (Models settings tab), else what it runs now. Store wins over env, like
+ * every setting here.
+ */
+export const resolveMemoryRerankerEngine = (
+  store: ProviderSettingsPayload | null,
+  env: Record<string, string | undefined> = process.env,
+): MemoryRerankerEngine => {
+  const saved = store?.memoryReranker?.engine
+  return isMemoryRerankerEngine(saved) ? saved : boundMemoryRerankerEngine(env)
+}
+
+/**
+ * The memoryReranker to persist on a model-routing save: the client's choice
+ * when it sent one (validated), else what was stored (so a client that never
+ * shows the control cannot erase it). An invalid stored value is dropped.
+ */
+export const nextMemoryReranker = (
+  input: { readonly engine: string } | undefined,
+  stored: ProviderSettingsPayload | null,
+): { readonly ok: true; readonly value: { readonly engine: MemoryRerankerEngine } | undefined } | { readonly ok: false; readonly message: string } => {
+  if (input !== undefined) {
+    return isMemoryRerankerEngine(input.engine)
+      ? { ok: true, value: { engine: input.engine } }
+      : { ok: false, message: `Unknown memory reranker: ${String(input.engine)}` }
+  }
+  const kept = stored?.memoryReranker?.engine
+  return { ok: true, value: isMemoryRerankerEngine(kept) ? { engine: kept } : undefined }
+}
+
+/** LUNA_RERANK_ENGINE to set at boot from the store, or undefined to leave the environment alone. */
+export const memoryRerankerEnvFromStore = (store: ProviderSettingsPayload | null): MemoryRerankerEngine | undefined => {
+  const engine = store?.memoryReranker?.engine
+  return isMemoryRerankerEngine(engine) ? engine : undefined
+}

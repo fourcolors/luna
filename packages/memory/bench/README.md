@@ -2,7 +2,7 @@
 
 ## Choosing the rerank engine (production)
 
-`LUNA_RERANK_ENGINE` selects the MemoryReranker Luna's server binds:
+`LUNA_RERANK_ENGINE` selects the MemoryReranker Luna's server binds (Moon's Models settings tab, Memory Reranker, sets it at the next server start and wins over the environment once chosen):
 
 - `cross-encoder` (default): the local Qwen3-Reranker sidecar below. Reranking stays opt-in per lane (`LUNA_MEMORY_RERANK=1` for the `memory_search` tool, `LUNA_RECALL_RERANK=1` for per-turn recall), 8 candidates for `memory_search`.
 - `jev`: TypeSafe Jev (`packages/adapter-sdk/src/jev-reranker.ts`), the best judge measured (LongMemEval S held-out, evidence in the top 5 at depth 40: 85.5% vs 76.2% for the cross-encoder and 44.0% with no judge; results in `results/2026-09-23-search-tuning/`). Needs your own `TYPESAFE_API_KEY` in the environment or Luna's vault (never commit it). Every rerank sends the query and the candidate memories' text (each capped at 2,000 characters) to `api.typesafe.ai`. Configuring it is the opt-in: both lanes rerank unless their flag is `0`, at depth 40 (`LUNA_RERANK_MAX_CANDIDATES` overrides), pinned to `jev-1.13.0` (`LUNA_JEV_MODEL` overrides).

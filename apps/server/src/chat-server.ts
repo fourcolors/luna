@@ -250,6 +250,11 @@ import {
   resolveAll,
   validateAndPrepare,
   resolveRoleModel,
+  MEMORY_RERANKER_ENGINES,
+  boundMemoryRerankerEngine,
+  memoryRerankerEnvFromStore,
+  nextMemoryReranker,
+  resolveMemoryRerankerEngine,
   type ProviderSettingsPayload,
   SuggestedActions,
   SuggestedActionsStore,
@@ -1680,6 +1685,12 @@ const applyProviderSettingsToEnv = (dbPath: string): void => {
         process.env["LUNA_OVERFLOW_CHAINS"] = JSON.stringify(overflowConfig)
       }
 
+      // Memory reranker engine chosen in the Models settings tab: the reranker
+      // layer reads LUNA_RERANK_ENGINE at buildBaseLayer, so set it here (store
+      // wins over env, like every setting in this function; absent = env decides).
+      const savedRerankEngine = memoryRerankerEnvFromStore(storeConfig)
+      if (savedRerankEngine !== undefined) process.env["LUNA_RERANK_ENGINE"] = savedRerankEngine
+
       // Wire reasoner-lane model SELECTION: wake/dream resolve their model from
       // LUNA_WAKE_MODEL / LUNA_DREAM_MODEL (brokered-turn resolveReasonerModel).
       // Set them from the operator's role binding so the chosen model is actually
@@ -2482,8 +2493,8 @@ export const buildBaseLayer = (
   //     their flag is "0". Best measured judge (packages/adapter-sdk/src/
   //     jev-reranker.ts has the evidence).
   const rerankEngine = process.env["LUNA_RERANK_ENGINE"]?.trim() || "cross-encoder"
-  if (rerankEngine !== "cross-encoder" && rerankEngine !== "jev") {
-    console.warn(`[chat-server] unknown LUNA_RERANK_ENGINE="${rerankEngine}" (cross-encoder | jev); using cross-encoder`)
+  if (!(MEMORY_RERANKER_ENGINES as ReadonlyArray<string>).includes(rerankEngine)) {
+    console.warn(`[chat-server] unknown LUNA_RERANK_ENGINE="${rerankEngine}" (${MEMORY_RERANKER_ENGINES.join(" | ")}); using cross-encoder`)
   }
   const memoryRerankerL =
     rerankEngine === "jev"
@@ -4611,11 +4622,17 @@ const buildServerLayer = (
                     model: pref.model,
                   })),
                 })),
+                // What the server uses after its next start: the saved choice,
+                // else the environment, else the default. Never the Jev key.
+                // engine: what runs after the next start (saved choice, else today's);
+                // active: what this running server bound. They differ until a restart.
+                memoryReranker: { engine: resolveMemoryRerankerEngine(cfg), active: boundMemoryRerankerEngine() },
               }
             },
             save: (input: {
               readonly providers: ReadonlyArray<import("@luna/ui-ws").ProviderSettingsItem>
               readonly roleBindings: ReadonlyArray<import("@luna/ui-ws").RoleBindingItem>
+              readonly memoryReranker?: import("@luna/ui-ws").MemoryRerankerSettingsItem
             }): { readonly ok: boolean; readonly message: string } => {
               try {
                 // Sanitize client-supplied enums BEFORE casting: the wire types
@@ -4630,6 +4647,8 @@ const buildServerLayer = (
                     return { ok: false, message: `Unknown provider kind: ${String(p.kind)}` }
                   }
                 }
+                const rerankerChoice = nextMemoryReranker(input.memoryReranker, mrStore.read())
+                if (!rerankerChoice.ok) return { ok: false, message: rerankerChoice.message }
                 for (const b of input.roleBindings) {
                   if (!KNOWN_ROLES.has(b.role)) {
                     return { ok: false, message: `Unknown role: ${String(b.role)}` }
@@ -4642,6 +4661,7 @@ const buildServerLayer = (
                 }
                 const candidate: ProviderSettingsPayload = {
                   version: 1,
+                  ...(rerankerChoice.value !== undefined ? { memoryReranker: rerankerChoice.value } : {}),
                   providers: input.providers.map((p) => ({
                     kind: p.kind as import("@luna/core").ProviderKind,
                     enabled: p.enabled,
@@ -4658,7 +4678,7 @@ const buildServerLayer = (
                 }
                 validateAndPrepare(candidate)
                 mrStore.write(candidate)
-                return { ok: true, message: "Model routing settings saved. Restart to apply." }
+                return { ok: true, message: "Model and reranker settings saved. Restart to apply." }
               } catch (err) {
                 const msg =
                   err instanceof Error ? err.message : String(err)
