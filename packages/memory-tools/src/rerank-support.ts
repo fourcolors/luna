@@ -88,10 +88,10 @@ export function rerankLaneEnabled(
  * fires - it never reaches our degrade-to-un-reranked fallback (Codex
  * review finding). So the rerank call must give up comfortably inside that
  * budget: fail fast, degrade to the plain pack, keep recall alive. 1500ms
- * default leaves ~1s for retrieval + packing. Note: the Phase 3 Haiku
- * engine (~30s/call) can never finish inside this budget - per-turn rerank
- * only becomes functional with a fast engine (Phase 4 cross-encoder);
- * until then the flag degrades safely instead of nulling recall.
+ * default leaves ~1s for retrieval + packing. Only a fast engine fits: on
+ * laptop measurements Jev at depth 40 (~0.2 s warm) does, the cross-encoder
+ * at depth 40 (~2.2 s) does not (the removed Haiku engine took ~30 s); a
+ * slow engine degrades to the plain pack instead of nulling recall.
  * memory_search (explicit tool call, no 2.5s outer bound) is unaffected
  * and uses the engine's own default timeout.
  */
