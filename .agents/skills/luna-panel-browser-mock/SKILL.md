@@ -94,6 +94,27 @@ runs unmodified.
   window mid-recording. Hide it: `osascript -e 'tell application "System
   Events" to set visible of process "Simulator" to false'`; dismiss its
   in-sim dialogs first if clicks are being swallowed.
+- Fast Refresh remount loop: if ANYTHING else touches panel source files
+  while Vite watches (a parallel agent's formatter, a file-sync daemon),
+  every touch emits `hmr update` → remounts the panel → replays its whole
+  boot/probe sequence (your invoke log fills with repeated boot calls) AND
+  silently eats pointer-driven interactions mid-flight (drag pointerup on
+  the unmounted element → onChangeEnd never fires). Check the Vite log for
+  `hmr update` lines before blaming the panel; wait for a quiet window or
+  prefer keyboard-driven commits — Astryx Slider fires onChangeEnd on every
+  arrow keydown (line ~306 of Slider.js), so focus-thumb + ArrowRight
+  commits deterministically without pointer capture.
+- `browser_console` refuses ("Chrome is not in the foreground") on Chrome
+  instances the tool didn't launch, and the macOS AX tree does NOT expose
+  Chrome web content for query/assert. Render an on-screen overlay div
+  (fixed pane appended on DOMContentLoaded, fed by the invoke stub) showing
+  the ordered invoke log + relevant localStorage keys — it is DOM truth made
+  pixel-visible for screenshots/recordings, no console needed.
+- Window sizing: the computer tool's coordinate space is scaled (e.g.
+  1024x768) vs macOS real points (e.g. 1600x1200 — get via `osascript -e
+  'tell application "Finder" to get bounds of window of desktop'`). osascript
+  `set size/position` works in real points: set Chrome to the FULL desktop
+  bounds, not the tool-space numbers, or the window ends up ~64% size.
 
 ## chat.html works too (chat-mock.html)
 
