@@ -57,6 +57,7 @@ import {
   type TtsEngine,
   type VoiceAction,
   type VoiceMode,
+  type VoiceOption,
   type VoiceState,
 } from "./voice-store"
 
@@ -129,11 +130,11 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
 
   const cancelledRef = useRef(false)
 
-  function populateVoices(): Promise<void> {
+  function fetchVoices(): Promise<VoiceOption[] | null> {
     return (ctx.invoke("voice_list_voices") as Promise<unknown>)
       .then((voices) => {
-        if (cancelledRef.current || !Array.isArray(voices)) return
-        const options = voices
+        if (cancelledRef.current || !Array.isArray(voices)) return null
+        return voices
           .filter((v): v is { id: string; name?: string; quality?: string } => {
             return !!v && typeof (v as { id?: unknown }).id === "string" && (v as { id: string }).id.length > 0
           })
@@ -142,9 +143,14 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
             ...(v.name !== undefined ? { name: v.name } : {}),
             ...(v.quality !== undefined ? { quality: v.quality } : {}),
           }))
-        dispatch({ type: "voices-loaded", voices: options })
       })
-      .catch(() => {})
+      .catch(() => null)
+  }
+
+  function populateVoices(): Promise<void> {
+    return fetchVoices().then((options) => {
+      if (options) dispatch({ type: "voices-loaded", voices: options })
+    })
   }
 
   useEffect(() => {
@@ -273,11 +279,18 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
     const key = fishKeyRef.current?.value.trim() ?? ""
     if (!key || !state.available) return
     ;(ctx.invoke("voice_fish_set_key", { key }) as Promise<unknown>)
-      .then(() => {
+      // A fresh key unlocks the fish voice catalog. One dispatch for the
+      // whole save result: a second async dispatch can land while React is
+      // mid-render of the first and trip a react-dom interrupted-render
+      // crash (dev build).
+      .then(() => fetchVoices())
+      .then((voices) => {
         if (fishKeyRef.current) fishKeyRef.current.value = ""
-        dispatch({ type: "fish-key-resolved", configured: true })
-        // A fresh key unlocks the fish voice catalog.
-        return populateVoices()
+        dispatch({
+          type: "fish-key-resolved",
+          configured: true,
+          ...(voices ? { voices } : {}),
+        })
       })
       .catch(() => {})
   }
