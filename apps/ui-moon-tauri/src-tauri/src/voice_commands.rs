@@ -182,3 +182,35 @@ pub(crate) async fn voice_ensure_model(app: tauri::AppHandle) -> Result<(), Stri
     })
     .await
 }
+
+/// Engine inventory + Fish key presence for Settings → Voice. The key
+/// itself never crosses IPC — only `fishKeyConfigured`.
+#[cfg(feature = "voice")]
+#[tauri::command]
+pub(crate) async fn voice_tts_info(
+    controller: tauri::State<'_, VoiceController>,
+) -> Result<voice::tts_router::TtsInfo, String> {
+    Ok(controller.tts_info())
+}
+
+/// Switch the active TTS engine ("system" | "fish"). Live on the next
+/// speak — no pipeline restart; unknown names reject with the valid set.
+#[cfg(feature = "voice")]
+#[tauri::command]
+pub(crate) async fn voice_set_tts_engine(
+    controller: tauri::State<'_, VoiceController>,
+    engine: String,
+) -> Result<String, String> {
+    controller.set_tts_engine(&engine)
+}
+
+/// Persist or clear the Fish API key (~/.luna/fish-api-key, 0600; blank
+/// deletes). Applies to the running engine immediately.
+#[cfg(feature = "voice")]
+#[tauri::command]
+pub(crate) async fn voice_fish_set_key(
+    controller: tauri::State<'_, VoiceController>,
+    key: String,
+) -> Result<(), String> {
+    controller.set_fish_key(&key)
+}
