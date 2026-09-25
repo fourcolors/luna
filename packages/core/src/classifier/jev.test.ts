@@ -89,6 +89,16 @@ describe("parseJevClassifierAnswers", () => {
     }
   })
 
+  it("still accepts a declared option that shadows a prototype member", () => {
+    const q: ClassifierQuestion = {
+      type: "choice",
+      instructions: "Which lane?",
+      criteria: { toString: "The string lane", chat: "Ordinary conversation" },
+    }
+    const { answers } = parseJevClassifierAnswers({ answers: { route: { choice: "toString" } } }, { route: q })
+    expect(answers["route"]).toMatchObject({ type: "choice", choice: "toString" })
+  })
+
   it("still accepts declared options on a null-prototype criteria object", () => {
     const nullProto = Object.assign(Object.create(null), { chat: "Ordinary conversation", job: "A durable job or task" })
     const q: ClassifierQuestion = { type: "choice", instructions: "Which lane?", criteria: nullProto }
@@ -98,6 +108,14 @@ describe("parseJevClassifierAnswers", () => {
     expect(() => parseJevClassifierAnswers({ answers: { route: { choice: "toString" } } }, { route: q })).toThrow(
       /undeclared option "toString"/,
     )
+  })
+
+  it("rejects a non-string or empty choice before the option check", () => {
+    for (const choice of ["", 42, null, ["job"]]) {
+      expect(() =>
+        parseJevClassifierAnswers({ answers: { route: { choice } } }, { route: routingQuestion }),
+      ).toThrow(/missing or malformed choice answer route/)
+    }
   })
 
   it("fails on a score index outside the rubric's level range", () => {
