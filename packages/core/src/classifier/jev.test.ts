@@ -81,6 +81,14 @@ describe("parseJevClassifierAnswers", () => {
     ).toThrow(/undeclared option "sleep"/)
   })
 
+  it("rejects prototype-chain keys as choice winners — `in` would accept them on any criteria object", () => {
+    for (const choice of ["toString", "constructor", "hasOwnProperty", "valueOf"]) {
+      expect(() =>
+        parseJevClassifierAnswers({ answers: { route: { choice } } }, { route: routingQuestion }),
+      ).toThrow(new RegExp(`undeclared option "${choice}"`))
+    }
+  })
+
   it("fails on a score index outside the rubric's level range", () => {
     expect(() =>
       parseJevClassifierAnswers({ answers: { urgency: { score: 3 } } }, { urgency: scoreQuestion }),
