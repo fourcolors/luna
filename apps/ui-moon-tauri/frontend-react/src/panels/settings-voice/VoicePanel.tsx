@@ -381,9 +381,9 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
             disabled={disabled}
             ref={fishKeyRef}
           />
-          <Button id="voice-fish-key-save" label="Save" variant="secondary" isDisabled={disabled} clickAction={handleFishKeySave} />
+          <Button id="voice-fish-key-save" label="Save" variant="secondary" isDisabled={disabled} onClick={handleFishKeySave} />
           {state.fishKeyConfigured && (
-            <Button id="voice-fish-key-clear" label="Clear" variant="secondary" isDisabled={disabled} clickAction={handleFishKeyClear} />
+            <Button id="voice-fish-key-clear" label="Clear" variant="secondary" isDisabled={disabled} onClick={handleFishKeyClear} />
           )}
           <span id="voice-fish-key-status" className="panel-status">
             {state.fishKeyConfigured
