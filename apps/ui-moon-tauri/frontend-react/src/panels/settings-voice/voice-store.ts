@@ -115,7 +115,15 @@ export type VoiceAction =
   | { readonly type: "speak-replies-changed"; readonly value: boolean }
   | { readonly type: "engine-changed"; readonly engine: TtsEngine }
   | { readonly type: "tts-info-resolved"; readonly engine: string; readonly fishKeyConfigured: boolean }
-  | { readonly type: "fish-key-resolved"; readonly configured: boolean }
+  | {
+      readonly type: "fish-key-resolved"
+      readonly configured: boolean
+      /** Saving a key refreshes the fish voice catalog in the same
+       *  transition so the configured flag and the fresh list render as
+       *  one update (a second async dispatch can land mid-render and trip
+       *  a react-dom interrupted-render crash). */
+      readonly voices?: readonly VoiceOption[]
+    }
   | { readonly type: "voice-selected"; readonly id: string }
   | { readonly type: "voices-loaded"; readonly voices: readonly VoiceOption[] }
   | { readonly type: "silence-hang-dragged"; readonly value: number }
@@ -171,7 +179,9 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
         fishKeyConfigured: action.fishKeyConfigured,
       }
     case "fish-key-resolved":
-      return { ...state, fishKeyConfigured: action.configured }
+      return action.voices
+        ? { ...state, fishKeyConfigured: action.configured, voices: action.voices }
+        : { ...state, fishKeyConfigured: action.configured }
     case "voice-selected":
       return state.ttsEngine === "fish"
         ? { ...state, fishVoiceId: action.id }

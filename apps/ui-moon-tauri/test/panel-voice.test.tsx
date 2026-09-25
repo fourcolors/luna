@@ -442,6 +442,11 @@ describe("settings.voice panel", () => {
     })
     const container = mount(ctx)
     await vi.waitFor(() => expect(modeStatus()).toContain("ready"))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("voice_tts_info"))
+    await vi.waitFor(() =>
+      expect((container.querySelector("#voice-voice-select") as HTMLSelectElement).options.length).toBeGreaterThan(0),
+    )
+    await act(async () => {})
 
     act(() => {
       findButtonByText(container, "Fish Audio").click()
@@ -459,12 +464,21 @@ describe("settings.voice panel", () => {
       invoke: (cmd) => {
         if (cmd === "voice_status") return { modelPresent: true }
         if (cmd === "voice_tts_info") return { engine: "fish", engines: ["system", "fish"], fishKeyConfigured: false }
+        if (cmd === "voice_list_voices") return [{ id: "f1", name: "Fishy" }]
         return null
       },
     })
     const container = mount(ctx)
     await vi.waitFor(() => expect(modeStatus()).toContain("ready"))
     await vi.waitFor(() => expect(container.querySelector("#voice-fish-key")).toBeTruthy())
+    // Let the whole boot chain drain before interacting: each invoke
+    // continuation dispatches, and a dispatch landing mid-render trips a
+    // react-dom dev-mode interrupted-render bug on CI runners.
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("voice_tts_info"))
+    await vi.waitFor(() =>
+      expect((container.querySelector("#voice-voice-select") as HTMLSelectElement).options.length).toBeGreaterThan(0),
+    )
+    await act(async () => {})
 
     const key = container.querySelector("#voice-fish-key") as HTMLInputElement
     act(() => {
