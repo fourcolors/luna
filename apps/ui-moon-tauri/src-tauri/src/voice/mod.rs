@@ -18,8 +18,11 @@
 pub mod capture;
 pub mod endpoint;
 pub mod model;
+pub mod playback;
 pub mod stt;
 pub mod tts;
+pub mod tts_fish;
+pub mod tts_router;
 // `feature = "voice"` is implied (lib.rs gates the whole voice module on it)
 // but spelled out so the compilation condition is readable here.
 #[cfg(all(feature = "voice", target_os = "macos"))]
@@ -175,6 +178,10 @@ pub struct VoiceController {
     sink: Arc<dyn EventSink>,
     deps: Arc<VoiceDeps>,
     tts: Arc<Mutex<Box<dyn TtsEngine>>>,
+    /// Engine-switch handle for the routed production stack (system +
+    /// Fish). None for tests that inject a bare engine — `tts_info` then
+    /// degrades to a one-engine inventory instead of failing.
+    router: Option<tts_router::TtsRouterHandle>,
     pipeline: Mutex<Option<PipelineHandle>>,
     /// Control-channel sender kept OUTSIDE the pipeline-handle Mutex:
     /// `set_mode` holds `pipeline` across a join that can ride through a
@@ -196,6 +203,7 @@ impl VoiceController {
             sink,
             deps: Arc::new(deps),
             tts: Arc::new(Mutex::new(tts)),
+            router: None,
             pipeline: Mutex::new(None),
             ctrl_tx: Mutex::new(None),
         }
@@ -218,7 +226,45 @@ impl VoiceController {
             }),
             model_present: Box::new(model::model_present),
         };
-        Self::new(sink, deps, tts::create_platform_tts())
+        let (engine, handle) = tts_router::create_routed(Some(sink.clone()));
+        Self::new(sink, deps, engine).with_router(handle)
+    }
+
+    /// Attach the engine-switch handle for a routed engine stack.
+    pub fn with_router(mut self, router: tts_router::TtsRouterHandle) -> Self {
+        self.router = Some(router);
+        self
+    }
+
+    /// Engine inventory for `voice_tts_info` (fish_key_configured is all
+    /// the frontend ever sees of the key — the value never crosses IPC).
+    pub fn tts_info(&self) -> tts_router::TtsInfo {
+        match &self.router {
+            Some(r) => r.info(),
+            None => tts_router::TtsInfo {
+                engine: "system".to_string(),
+                engines: vec!["system".to_string()],
+                fish_key_configured: false,
+            },
+        }
+    }
+
+    /// Switch the active TTS engine; unknown names error with the valid set.
+    /// Takes effect on the next speak — no pipeline restart.
+    pub fn set_tts_engine(&self, engine: &str) -> Result<String, String> {
+        self.router
+            .as_ref()
+            .ok_or_else(|| "this controller has no TTS router".to_string())?
+            .set_engine(engine)
+    }
+
+    /// Persist/clear the Fish API key (~/.luna/fish-api-key, 0600; blank
+    /// deletes). The running config updates in place — no restart needed.
+    pub fn set_fish_key(&self, key: &str) -> Result<(), String> {
+        self.router
+            .as_ref()
+            .ok_or_else(|| "this controller has no TTS router".to_string())?
+            .set_fish_key(key)
     }
 
     pub fn status(&self) -> VoiceStatus {

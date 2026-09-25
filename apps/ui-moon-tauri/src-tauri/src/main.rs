@@ -224,7 +224,10 @@ fn main() {
         voice_commands::voice_list_voices,
         voice_commands::voice_set_voice,
         voice_commands::voice_set_config,
-        voice_commands::voice_ensure_model
+        voice_commands::voice_ensure_model,
+        voice_commands::voice_tts_info,
+        voice_commands::voice_set_tts_engine,
+        voice_commands::voice_fish_set_key
     ]);
     #[cfg(not(feature = "voice"))]
     let builder = builder.invoke_handler(tauri::generate_handler![

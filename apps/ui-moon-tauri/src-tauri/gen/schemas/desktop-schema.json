@@ -375,6 +375,18 @@
           "markdownDescription": "Allows the expand_from_moon command"
         },
         {
+          "description": "Allows reading the user's home directory, advertised as the local-shell default cwd when no root is attached",
+          "type": "string",
+          "const": "allow-get-home-dir",
+          "markdownDescription": "Allows reading the user's home directory, advertised as the local-shell default cwd when no root is attached"
+        },
+        {
+          "description": "Allows reading this machine's short host name, used as the label the agent addresses it by when several machines are attached to one thread",
+          "type": "string",
+          "const": "allow-get-host-label",
+          "markdownDescription": "Allows reading this machine's short host name, used as the label the agent addresses it by when several machines are attached to one thread"
+        },
+        {
           "description": "Allows reading the CLI thread file",
           "type": "string",
           "const": "allow-get-last-thread-id",
@@ -555,6 +567,12 @@
           "markdownDescription": "Allows downloading the whisper model to ~/.luna/models (idempotent)"
         },
         {
+          "description": "Allows storing or clearing the Fish Audio API key",
+          "type": "string",
+          "const": "allow-voice-fish-set-key",
+          "markdownDescription": "Allows storing or clearing the Fish Audio API key"
+        },
+        {
           "description": "Allows listing the available TTS voices",
           "type": "string",
           "const": "allow-voice-list-voices",
@@ -585,6 +603,12 @@
           "markdownDescription": "Allows switching the voice mode (off/ptt/auto), starting/stopping the pipeline"
         },
         {
+          "description": "Allows selecting the TTS engine (system or Fish Audio)",
+          "type": "string",
+          "const": "allow-voice-set-tts-engine",
+          "markdownDescription": "Allows selecting the TTS engine (system or Fish Audio)"
+        },
+        {
           "description": "Allows selecting the TTS voice by identifier",
           "type": "string",
           "const": "allow-voice-set-voice",
@@ -601,6 +625,12 @@
           "type": "string",
           "const": "allow-voice-stop-speaking",
           "markdownDescription": "Allows stopping TTS playback and clearing the sentence queue"
+        },
+        {
+          "description": "Allows reading TTS engine inventory and Fish key presence",
+          "type": "string",
+          "const": "allow-voice-tts-info",
+          "markdownDescription": "Allows reading TTS engine inventory and Fish key presence"
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

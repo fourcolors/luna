@@ -655,10 +655,15 @@ export class HubController {
       }
     }
     const voiceId = localStorage.getItem("luna_voice_id") || ""
+    const engine = localStorage.getItem("luna_voice_tts_engine") === "fish" ? "fish" : "system"
+    const fishVoiceId = localStorage.getItem("luna_voice_fish_id") || ""
     const hang = parseInt(localStorage.getItem("luna_voice_silence_hang_ms") || "", 10)
     const silenceHangMs = Number.isFinite(hang) ? Math.max(300, Math.min(1200, hang)) : 600
     await this.voiceInvoke("voice_set_mode", { mode: "off" })
-    if (voiceId) await this.voiceInvoke("voice_set_voice", { id: voiceId })
+    // Engine BEFORE voice: voice_set_voice targets the ACTIVE engine.
+    await this.voiceInvoke("voice_set_tts_engine", { engine })
+    const vid = engine === "fish" ? fishVoiceId : voiceId
+    if (vid) await this.voiceInvoke("voice_set_voice", { id: vid })
     await this.voiceInvoke("voice_set_config", { silenceHangMs })
   }
 

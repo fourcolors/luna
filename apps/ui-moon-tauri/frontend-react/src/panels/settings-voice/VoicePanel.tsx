@@ -51,8 +51,10 @@ import type { PanelCtx } from "../panel-ctx"
 import {
   clampSilenceHang,
   initialVoiceState,
+  isTtsEngine,
   isVoiceMode,
   voiceReduce,
+  type TtsEngine,
   type VoiceAction,
   type VoiceMode,
   type VoiceState,
@@ -64,6 +66,8 @@ const LS_MODE = "luna_voice_mode"
 const LS_SPEAK_REPLIES = "luna_voice_speak_replies"
 const LS_VOICE_ID = "luna_voice_id"
 const LS_SILENCE_HANG_MS = "luna_voice_silence_hang_ms"
+const LS_TTS_ENGINE = "luna_voice_tts_engine"
+const LS_FISH_VOICE_ID = "luna_voice_fish_id"
 
 function lsGet(key: string): string | null {
   try {
@@ -87,13 +91,23 @@ function lsDel(key: string): void {
   }
 }
 
-function readInitialSettings(): { mode: VoiceMode; speakReplies: boolean; voiceId: string; silenceHangMs: number } {
+function readInitialSettings(): {
+  mode: VoiceMode
+  speakReplies: boolean
+  ttsEngine: TtsEngine
+  voiceId: string
+  fishVoiceId: string
+  silenceHangMs: number
+} {
   const rawMode = lsGet(LS_MODE)
   const mode: VoiceMode = rawMode !== null && isVoiceMode(rawMode) ? rawMode : "off"
   const speakReplies = lsGet(LS_SPEAK_REPLIES) !== "0"
+  const rawEngine = lsGet(LS_TTS_ENGINE)
+  const ttsEngine: TtsEngine = rawEngine !== null && isTtsEngine(rawEngine) ? rawEngine : "system"
   const voiceId = lsGet(LS_VOICE_ID) || ""
+  const fishVoiceId = lsGet(LS_FISH_VOICE_ID) || ""
   const silenceHangMs = clampSilenceHang(Number.parseInt(lsGet(LS_SILENCE_HANG_MS) ?? "", 10))
-  return { mode, speakReplies, voiceId, silenceHangMs }
+  return { mode, speakReplies, ttsEngine, voiceId, fishVoiceId, silenceHangMs }
 }
 
 /** One store per mounted VoicePanel, same lazy-ref-init shape as useMoonStore. */
@@ -113,16 +127,36 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
   const state = useMoonSelector(store, (s) => s)
   const dispatch = store.dispatch
 
+  const cancelledRef = useRef(false)
+
+  function populateVoices(): Promise<void> {
+    return (ctx.invoke("voice_list_voices") as Promise<unknown>)
+      .then((voices) => {
+        if (cancelledRef.current || !Array.isArray(voices)) return
+        const options = voices
+          .filter((v): v is { id: string; name?: string; quality?: string } => {
+            return !!v && typeof (v as { id?: unknown }).id === "string" && (v as { id: string }).id.length > 0
+          })
+          .map((v) => ({
+            id: v.id,
+            ...(v.name !== undefined ? { name: v.name } : {}),
+            ...(v.quality !== undefined ? { quality: v.quality } : {}),
+          }))
+        dispatch({ type: "voices-loaded", voices: options })
+      })
+      .catch(() => {})
+  }
+
   useEffect(() => {
-    const { mode, speakReplies, voiceId, silenceHangMs } = readInitialSettings()
-    dispatch({ type: "settings-loaded", mode, speakReplies, voiceId, silenceHangMs })
+    cancelledRef.current = false
+    const { mode, speakReplies, ttsEngine, voiceId, fishVoiceId, silenceHangMs } = readInitialSettings()
+    dispatch({ type: "settings-loaded", mode, speakReplies, ttsEngine, voiceId, fishVoiceId, silenceHangMs })
 
     if (!ctx.hasTauri) {
       dispatch({ type: "availability-resolved", available: false })
       return
     }
 
-    let cancelled = false
     let unlistenProgress: (() => void) | undefined
 
     function subscribeEvents(): void {
@@ -148,49 +182,50 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
           dispatch({ type: "model-download-progress", downloadedBytes, totalBytes })
         })
         .then((unlisten) => {
-          if (cancelled) unlisten()
+          if (cancelledRef.current) unlisten()
           else unlistenProgress = unlisten
-        })
-        .catch(() => {})
-    }
-
-    function populateVoices(): Promise<void> {
-      return (ctx.invoke("voice_list_voices") as Promise<unknown>)
-        .then((voices) => {
-          if (cancelled || !Array.isArray(voices)) return
-          const options = voices
-            .filter((v): v is { id: string; name?: string; quality?: string } => {
-              return !!v && typeof (v as { id?: unknown }).id === "string" && (v as { id: string }).id.length > 0
-            })
-            .map((v) => ({
-              id: v.id,
-              ...(v.name !== undefined ? { name: v.name } : {}),
-              ...(v.quality !== undefined ? { quality: v.quality } : {}),
-            }))
-          dispatch({ type: "voices-loaded", voices: options })
         })
         .catch(() => {})
     }
 
     ;(ctx.invoke("voice_status") as Promise<{ modelPresent?: boolean; model_present?: boolean } | null>)
       .then((status) => {
-        if (cancelled) return
+        if (cancelledRef.current) return
         dispatch({ type: "availability-resolved", available: true })
         const present = !!(status && (status.modelPresent === true || status.model_present === true))
         dispatch({ type: "model-status-applied", present })
         subscribeEvents()
         // Re-apply persisted settings to the Rust core (mirrors applyPersisted).
         ctx.invoke("voice_set_mode", { mode }).catch(() => {})
-        if (voiceId) ctx.invoke("voice_set_voice", { id: voiceId }).catch(() => {})
+        // Engine BEFORE voices: voice_list_voices serves the ACTIVE engine,
+        // so a persisted fish engine must be applied before populating.
+        const engineChain =
+          ttsEngine !== "system"
+            ? ctx.invoke("voice_set_tts_engine", { engine: ttsEngine })
+            : Promise.resolve(null)
+        void engineChain
+          .then(() => ctx.invoke("voice_tts_info"))
+          .then((info) => {
+            if (cancelledRef.current || !info || typeof info !== "object") return
+            const i = info as { engine?: unknown; fishKeyConfigured?: unknown }
+            dispatch({
+              type: "tts-info-resolved",
+              engine: typeof i.engine === "string" ? i.engine : "",
+              fishKeyConfigured: i.fishKeyConfigured === true,
+            })
+          })
+          .catch(() => {})
+        const savedVoiceId = ttsEngine === "fish" ? fishVoiceId : voiceId
+        if (savedVoiceId) ctx.invoke("voice_set_voice", { id: savedVoiceId }).catch(() => {})
         ctx.invoke("voice_set_config", { silenceHangMs }).catch(() => {})
-        return populateVoices()
+        return engineChain.then(() => populateVoices()).catch(() => {})
       })
       .catch(() => {
-        if (!cancelled) dispatch({ type: "availability-resolved", available: false })
+        if (!cancelledRef.current) dispatch({ type: "availability-resolved", available: false })
       })
 
     return () => {
-      cancelled = true
+      cancelledRef.current = true
       unlistenProgress?.()
     }
     // Runs once on mount, exactly like the vanilla module's boot sequence.
@@ -198,6 +233,7 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
   }, [])
 
   const disabled = !state.available
+  const fishKeyRef = useRef<HTMLInputElement | null>(null)
 
   function handleModeChange(mode: VoiceMode): void {
     dispatch({ type: "mode-changed", mode })
@@ -212,9 +248,45 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
 
   function handleVoiceChange(id: string): void {
     dispatch({ type: "voice-selected", id })
-    if (id) lsSet(LS_VOICE_ID, id)
-    else lsDel(LS_VOICE_ID)
+    const key = state.ttsEngine === "fish" ? LS_FISH_VOICE_ID : LS_VOICE_ID
+    if (id) lsSet(key, id)
+    else lsDel(key)
     if (state.available) ctx.invoke("voice_set_voice", { id }).catch(() => {})
+  }
+
+  function handleEngineChange(engine: TtsEngine): void {
+    dispatch({ type: "engine-changed", engine })
+    lsSet(LS_TTS_ENGINE, engine)
+    if (!state.available) return
+    // Switch, then refresh the voice list (it serves the active engine)
+    // and re-apply the per-engine saved pick.
+    ;(ctx.invoke("voice_set_tts_engine", { engine }) as Promise<unknown>)
+      .then(() => populateVoices())
+      .then(() => {
+        const id = engine === "fish" ? state.fishVoiceId : state.voiceId
+        return ctx.invoke("voice_set_voice", { id })
+      })
+      .catch(() => {})
+  }
+
+  function handleFishKeySave(): void {
+    const key = fishKeyRef.current?.value.trim() ?? ""
+    if (!key || !state.available) return
+    ;(ctx.invoke("voice_fish_set_key", { key }) as Promise<unknown>)
+      .then(() => {
+        if (fishKeyRef.current) fishKeyRef.current.value = ""
+        dispatch({ type: "fish-key-resolved", configured: true })
+        // A fresh key unlocks the fish voice catalog.
+        return populateVoices()
+      })
+      .catch(() => {})
+  }
+
+  function handleFishKeyClear(): void {
+    if (!state.available) return
+    ;(ctx.invoke("voice_fish_set_key", { key: "" }) as Promise<unknown>)
+      .then(() => dispatch({ type: "fish-key-resolved", configured: false }))
+      .catch(() => {})
   }
 
   function handleSilenceDrag(value: number): void {
@@ -271,12 +343,50 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
       </div>
 
       <div className="panel-row">
+        <ToggleButtonGroup
+          label="Voice engine"
+          type="single"
+          value={state.ttsEngine}
+          onChange={(value) => value && isTtsEngine(value) && handleEngineChange(value)}
+          isDisabled={disabled}
+        >
+          <ToggleButton value="system" label="System" isDisabled={disabled} />
+          <ToggleButton value="fish" label="Fish Audio" isDisabled={disabled} />
+        </ToggleButtonGroup>
+      </div>
+
+      {state.ttsEngine === "fish" && (
+        <div className="panel-row voice-fish-key-row">
+          <label className="voice-select-label" htmlFor="voice-fish-key">
+            Fish API key
+          </label>
+          <input
+            id="voice-fish-key"
+            type="password"
+            autoComplete="off"
+            placeholder="Paste your fish.audio key"
+            disabled={disabled}
+            ref={fishKeyRef}
+          />
+          <Button id="voice-fish-key-save" label="Save" variant="secondary" isDisabled={disabled} clickAction={handleFishKeySave} />
+          {state.fishKeyConfigured && (
+            <Button id="voice-fish-key-clear" label="Clear" variant="secondary" isDisabled={disabled} clickAction={handleFishKeyClear} />
+          )}
+          <span id="voice-fish-key-status" className="panel-status">
+            {state.fishKeyConfigured
+              ? "Key saved — stored at ~/.luna/fish-api-key"
+              : "No key saved — free tier at fish.audio → API Keys"}
+          </span>
+        </div>
+      )}
+
+      <div className="panel-row">
         <label className="voice-select-label" htmlFor="voice-voice-select">
           Voice
         </label>
         <select
           id="voice-voice-select"
-          value={state.voiceId}
+          value={state.ttsEngine === "fish" ? state.fishVoiceId : state.voiceId}
           disabled={disabled}
           onChange={(e) => handleVoiceChange(e.target.value)}
         >
@@ -287,9 +397,10 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
                 (v.quality && v.quality !== "default" ? ` · ${v.quality}` : "")}
             </option>
           ))}
-          {state.voiceId && !state.voices.some((v) => v.id === state.voiceId) && (
-            <option value={state.voiceId}>{state.voiceId} (saved)</option>
-          )}
+          {(() => {
+            const sel = state.ttsEngine === "fish" ? state.fishVoiceId : state.voiceId
+            return sel && !state.voices.some((v) => v.id === sel) && <option value={sel}>{sel} (saved)</option>
+          })()}
         </select>
       </div>
 
