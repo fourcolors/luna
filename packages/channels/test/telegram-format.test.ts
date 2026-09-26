@@ -133,6 +133,19 @@ describe("markdownToTelegramHtml — block structure", () => {
     ).toBe("Write fences like this:\n<pre>```typescript\nconst x = 1;</pre>\ndone")
   })
 
+  it("closes fences on bare, indented, and trailing-space closers only", () => {
+    // Boundary cases of the closing-fence rule: a closer is a same-char
+    // marker run with no info string. Wrong-char runs and info-string lines
+    // stay content.
+    expect(markdownToTelegramHtml("```\ncode\n```   ")).toBe("<pre>code</pre>")
+    expect(markdownToTelegramHtml("```\ncode\n  ```")).toBe("<pre>code</pre>")
+    expect(markdownToTelegramHtml("```\ncode\n``````")).toBe("<pre>code</pre>")
+    expect(markdownToTelegramHtml("```\n~~~\n```")).toBe("<pre>~~~</pre>")
+    expect(markdownToTelegramHtml("~~~\n```js\nx\n~~~\nafter")).toBe(
+      "<pre>```js\nx</pre>\nafter",
+    )
+  })
+
   it("groups consecutive quote lines into one blockquote", () => {
     expect(markdownToTelegramHtml("> line one\n> line two")).toBe(
       "<blockquote>line one\nline two</blockquote>",
