@@ -415,6 +415,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     mode: 'off',           // persisted user preference (luna_voice_mode)
     speakReplies: true,
     voiceId: '',
+    ttsEngine: 'system',  // persisted luna_voice_tts_engine ('system'|'fish')
+    fishVoiceId: '',      // persisted luna_voice_fish_id (per-engine pick)
     silenceHangMs: 600,
     modelPresent: false,
     micPaused: false,      // auto mode: mic click parks the pipeline without
@@ -516,6 +518,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       this.mode = 'off';
       this.speakReplies = localStorage.getItem('luna_voice_speak_replies') !== '0';
       this.voiceId = localStorage.getItem('luna_voice_id') || '';
+      this.ttsEngine = localStorage.getItem('luna_voice_tts_engine') === 'fish' ? 'fish' : 'system';
+      this.fishVoiceId = localStorage.getItem('luna_voice_fish_id') || '';
       const hang = parseInt(localStorage.getItem('luna_voice_silence_hang_ms') || '', 10);
       this.silenceHangMs = Number.isFinite(hang)
         ? Math.max(300, Math.min(1200, hang))
@@ -534,7 +538,13 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     async applyPersisted() {
       const st = await this.invoke('voice_set_mode', { mode: 'off' });
       this._applyModeResult('off', st);
-      if (this.voiceId) await this.invoke('voice_set_voice', { id: this.voiceId });
+      // Engine BEFORE voice: voice_set_voice targets the active engine, so
+      // a persisted fish engine must be applied first (harmless no-op on a
+      // pre-router core — invoke() degrades to null, same as voice commands
+      // on older builds).
+      await this.invoke('voice_set_tts_engine', { engine: this.ttsEngine });
+      const vid = this.ttsEngine === 'fish' ? this.fishVoiceId : this.voiceId;
+      if (vid) await this.invoke('voice_set_voice', { id: vid });
       await this.invoke('voice_set_config', { silenceHangMs: this.silenceHangMs });
     },
 

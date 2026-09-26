@@ -31,7 +31,15 @@ export function isVoiceMode(value: string): value is VoiceMode {
   return (VOICE_MODES as readonly string[]).includes(value)
 }
 
-interface VoiceOption {
+export type TtsEngine = "system" | "fish"
+
+const TTS_ENGINES: readonly TtsEngine[] = ["system", "fish"]
+
+export function isTtsEngine(value: string): value is TtsEngine {
+  return (TTS_ENGINES as readonly string[]).includes(value)
+}
+
+export interface VoiceOption {
   readonly id: string
   readonly name?: string
   readonly quality?: string
@@ -53,7 +61,14 @@ export interface VoiceState {
   readonly probeDone: boolean
   readonly mode: VoiceMode
   readonly speakReplies: boolean
+  /** Active speech engine: "system" (platform) or "fish" (Fish Audio). */
+  readonly ttsEngine: TtsEngine
+  /** Backend reports a Fish API key is on file (never the key itself). */
+  readonly fishKeyConfigured: boolean
   readonly voiceId: string
+  /** Selected voice id on the fish engine (luna_voice_fish_id); kept
+   *  separate from voiceId so per-engine picks survive engine switches. */
+  readonly fishVoiceId: string
   /** Committed value - what has been persisted + sent to voice_set_config. */
   readonly silenceHangMs: number
   /** Live value while the slider is being dragged, pre-commit. Equal to
@@ -74,7 +89,10 @@ export const initialVoiceState: VoiceState = {
   probeDone: false,
   mode: "off",
   speakReplies: true,
+  ttsEngine: "system",
+  fishKeyConfigured: false,
   voiceId: "",
+  fishVoiceId: "",
   silenceHangMs: DEFAULT_SILENCE_HANG_MS,
   silenceHangDisplay: DEFAULT_SILENCE_HANG_MS,
   voices: [],
@@ -88,11 +106,24 @@ export type VoiceAction =
       readonly type: "settings-loaded"
       readonly mode: VoiceMode
       readonly speakReplies: boolean
+      readonly ttsEngine: TtsEngine
       readonly voiceId: string
+      readonly fishVoiceId: string
       readonly silenceHangMs: number
     }
   | { readonly type: "mode-changed"; readonly mode: VoiceMode }
   | { readonly type: "speak-replies-changed"; readonly value: boolean }
+  | { readonly type: "engine-changed"; readonly engine: TtsEngine }
+  | { readonly type: "tts-info-resolved"; readonly engine: string; readonly fishKeyConfigured: boolean }
+  | {
+      readonly type: "fish-key-resolved"
+      readonly configured: boolean
+      /** Saving a key refreshes the fish voice catalog in the same
+       *  transition so the configured flag and the fresh list render as
+       *  one update (a second async dispatch can land mid-render and trip
+       *  a react-dom interrupted-render crash). */
+      readonly voices?: readonly VoiceOption[]
+    }
   | { readonly type: "voice-selected"; readonly id: string }
   | { readonly type: "voices-loaded"; readonly voices: readonly VoiceOption[] }
   | { readonly type: "silence-hang-dragged"; readonly value: number }
@@ -126,7 +157,9 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
         ...state,
         mode: action.mode,
         speakReplies: action.speakReplies,
+        ttsEngine: action.ttsEngine,
         voiceId: action.voiceId,
+        fishVoiceId: action.fishVoiceId,
         silenceHangMs,
         silenceHangDisplay: silenceHangMs,
       }
@@ -135,8 +168,24 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
       return { ...state, mode: action.mode }
     case "speak-replies-changed":
       return { ...state, speakReplies: action.value }
+    case "engine-changed":
+      return { ...state, ttsEngine: action.engine }
+    case "tts-info-resolved":
+      // The backend engine is authoritative: a stale persisted value
+      // (or a rejected set) shows what is actually speaking.
+      return {
+        ...state,
+        ttsEngine: isTtsEngine(action.engine) ? action.engine : state.ttsEngine,
+        fishKeyConfigured: action.fishKeyConfigured,
+      }
+    case "fish-key-resolved":
+      return action.voices
+        ? { ...state, fishKeyConfigured: action.configured, voices: action.voices }
+        : { ...state, fishKeyConfigured: action.configured }
     case "voice-selected":
-      return { ...state, voiceId: action.id }
+      return state.ttsEngine === "fish"
+        ? { ...state, fishVoiceId: action.id }
+        : { ...state, voiceId: action.id }
     case "voices-loaded":
       return { ...state, voices: action.voices }
     case "silence-hang-dragged":
