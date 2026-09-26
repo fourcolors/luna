@@ -122,6 +122,17 @@ describe("markdownToTelegramHtml — block structure", () => {
     )
   })
 
+  it("treats an info-string fence line inside a block as content, not a closer", () => {
+    // CommonMark: a closing fence carries no info string. The agent writes
+    // "markdown about markdown" constantly when explaining code, so an inner
+    // "```typescript" line must not split the block early.
+    expect(
+      markdownToTelegramHtml(
+        "Write fences like this:\n```\n```typescript\nconst x = 1;\n```\ndone",
+      ),
+    ).toBe("Write fences like this:\n<pre>```typescript\nconst x = 1;</pre>\ndone")
+  })
+
   it("groups consecutive quote lines into one blockquote", () => {
     expect(markdownToTelegramHtml("> line one\n> line two")).toBe(
       "<blockquote>line one\nline two</blockquote>",
