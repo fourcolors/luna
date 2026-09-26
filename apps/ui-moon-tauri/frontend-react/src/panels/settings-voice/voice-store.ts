@@ -39,7 +39,7 @@ export function isTtsEngine(value: string): value is TtsEngine {
   return (TTS_ENGINES as readonly string[]).includes(value)
 }
 
-interface VoiceOption {
+export interface VoiceOption {
   readonly id: string
   readonly name?: string
   readonly quality?: string
