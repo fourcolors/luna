@@ -1133,4 +1133,66 @@ mod tests {
         drop(tts);
         drop(server);
     }
+
+    // -- live API smoke (opt-in) --------------------------------------------
+
+    /// Real api.fish.audio round trip: skipped unless FISH_API_KEY is set.
+    /// Collects PCM through the actual curl→WAV-parse→sink path (no playback
+    /// device needed — the factory injects a capturing sink).
+    #[test]
+    fn live_fish_api_speaks_pcm() {
+        let key = match std::env::var("FISH_API_KEY") {
+            Ok(k) if !k.trim().is_empty() => k,
+            _ => {
+                eprintln!("live_fish_api_speaks_pcm: FISH_API_KEY unset — skipping");
+                return;
+            }
+        };
+        let cfg = shared_config(FishConfig {
+            api_key: Some(key),
+            api_base: FISH_DEFAULT_BASE.to_string(),
+            model: FISH_DEFAULT_MODEL.to_string(),
+            reference_id: None,
+        });
+        let collected: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let c = collected.clone();
+        let mut tts = FishTts::with_sink_factory(
+            cfg,
+            None,
+            Box::new(move || {
+                struct CollectSink(Arc<Mutex<Vec<f32>>>);
+                impl AudioSink for CollectSink {
+                    fn write(&mut self, s: &[f32]) {
+                        self.0.lock().unwrap().extend_from_slice(s);
+                    }
+                    fn rate(&self) -> u32 {
+                        44100
+                    }
+                    fn has_pending(&self) -> bool {
+                        false
+                    }
+                    fn flush(&mut self) {}
+                }
+                Ok(Box::new(CollectSink(c.clone())))
+            }),
+        );
+        tts.speak("Luna voice pipeline end to end.", false);
+        let t0 = std::time::Instant::now();
+        while collected.lock().unwrap().is_empty() && t0.elapsed() < Duration::from_secs(45) {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // Let the tail finish streaming in.
+        while tts.is_speaking() && t0.elapsed() < Duration::from_secs(45) {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let got = collected.lock().unwrap().clone();
+        // Any real utterance is well over half a second of 44.1kHz PCM.
+        assert!(
+            got.len() > 20_000,
+            "expected real PCM from api.fish.audio, got {} samples",
+            got.len()
+        );
+        assert!(got.iter().any(|s| s.abs() > 0.001), "PCM was all silence");
+        drop(tts);
+    }
 }
