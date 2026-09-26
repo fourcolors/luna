@@ -25,6 +25,27 @@ via CDP") and `read_dom` both fail. Options:
   recording (good evidence). The globals (`Attachments`, `WebSocketEngine`,
   `ChatLoop`, …) are reachable there.
 - Or relaunch Chrome with `--remote-debugging-port=9222` if CDP is needed.
+
+### What actually works against a manually launched Chrome (verified)
+
+`open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-devin`
+(a non-default user-data-dir is required by Chrome 136+). Then:
+
+- The computer tool's **browser target DOES attach**: pass `target:"browser"`,
+  `cdp_port:9222` — `inspect`, `query`, and `act` (press, set_text) all work
+  even though `capabilities` reports the browser target as "unavailable".
+  Page refs are usable for real clicks (e.g. pressing a seed button).
+- `browser_console` still REFUSES ("Chrome is not in the foreground") even
+  with Chrome focused — it only talks to the tool's own managed browser.
+  For JS evaluation use a ~20-line bun script: `fetch
+  http://127.0.0.1:9222/json`, pick the page target by URL substring, open
+  its `webSocketDebuggerUrl` with `new WebSocket`, send
+  `Runtime.evaluate` `{expression, returnByValue:true, awaitPromise:true}`.
+  That drives `WebSocketEngine.handleFrame(...)`, `ChatLoop.flush()`, and
+  DOM reads reliably.
+- `location.href='panel.html?type=…'` via that script navigates the tab —
+  the same page target stays valid on the new URL (match by substring, not
+  equality).
 - Expected noise: with no chat server running, the console fills with
   `WebSocket connection to 'ws://127.0.0.1:4753/ui' failed:
   net::ERR_CONNECTION_REFUSED` retries — unrelated to UI features that are
