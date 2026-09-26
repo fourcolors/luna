@@ -33,7 +33,7 @@ declare global {
   }
 }
 
-export const SETTINGS_LAUNCHER_PANEL_TYPES = ["settings", "settings-launcher"] as const
+const SETTINGS_LAUNCHER_PANEL_TYPES = ["settings", "settings-launcher"] as const
 
 export function isSettingsLauncherPanelType(type: string): boolean {
   return (SETTINGS_LAUNCHER_PANEL_TYPES as readonly string[]).includes(type)

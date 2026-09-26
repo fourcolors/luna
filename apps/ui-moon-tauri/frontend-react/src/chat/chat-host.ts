@@ -50,7 +50,7 @@ export function getChatHost(): LunaChatHostApi | null {
 }
 
 /** Compile-time member manifest - see this file's module doc. */
-export const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
+const CHAT_HOST_MEMBERS: Record<keyof LunaChatHostApi, true> = {
   state: true,
   isConnected: true,
   send: true,
@@ -65,7 +65,6 @@ export const CHAT_HOST_MEMBER_NAMES: readonly string[] = Object.keys(CHAT_HOST_M
  * (module evaluated before chat.html's classic script ran) - the ctx-level
  * counterpart of chat.html's own per-member absent-provider degrade (see
  * luna-chat-host.d.ts's `executeCapability` doc). */
-const HOST_ABSENT: ExecuteResult = { ok: false, error: "chat host unavailable", reason: "unavailable" }
 
 export function chatHostComposerCtx(): ComposerConfigCtx {
   return {

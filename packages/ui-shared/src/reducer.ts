@@ -15,7 +15,6 @@ import type {
   ChatMessage,
   ConnectorCatalogItem,
   ConnectorInstanceItem,
-  JobInputRequestFrame,
   ObsEvent,
   PinnedArtifactItem,
   ServerDescriptor,

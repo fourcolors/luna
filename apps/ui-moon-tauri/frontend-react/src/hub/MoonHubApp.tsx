@@ -12,7 +12,7 @@
  * (src/state/store.ts's useSyncExternalStore bindings), the same pattern
  * AgentsPanel.tsx established for panel-local (non-shared-UIState) state.
  */
-import { useEffect, useMemo, useRef } from "react"
+import { useEffect, useRef } from "react"
 import { useLocalStore, useMoonSelector } from "../state/store"
 import { reduceHub, initialHubState, type HubAction, type HubState } from "./hubReducer"
 import { HubController, Logger } from "./hubEngines"
@@ -247,4 +247,3 @@ export function MoonHubApp(): React.JSX.Element {
 
 // Re-exported for wizardHelpers-adjacent modules/tests that need the pure
 // initial-state constructor without importing the reducer module directly.
-export { initialHubState } from "./hubReducer"

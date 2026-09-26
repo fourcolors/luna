@@ -113,4 +113,4 @@ export function createDom() {
   }
 }
 
-export type ChatWindowDom = ReturnType<typeof createDom>
+type ChatWindowDom = ReturnType<typeof createDom>

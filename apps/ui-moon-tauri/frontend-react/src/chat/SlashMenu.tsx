@@ -71,7 +71,7 @@ import type { ComposerConfigBridge } from "./ComposerConfig"
  * into - what the menu renders, what `filterCommands`/`completeCommand`
  * consume, and what `dispatch` keys off. Mirrors vanilla's `toItem` output
  * exactly (kind/id/arghint/desc/executor/source, no leading '/' on id). */
-export interface SlashCommandItem {
+interface SlashCommandItem {
   readonly kind: string
   readonly id: string
   readonly arghint: string
@@ -105,7 +105,7 @@ function getLunaCapabilities(): LunaCapabilitiesGlobal | null {
 }
 
 /** The live, read-only slice of chat.html's `State` this module reads. */
-export interface SlashMenuStateSlice {
+interface SlashMenuStateSlice {
   activeThreadId: string | null
   serverSupportsWorkflows: boolean
 }
@@ -590,7 +590,7 @@ function SlashMenuView({
 // (slash-menu.test.ts) already call.
 // ============================================================================
 
-export interface SlashMenuBridge {
+interface SlashMenuBridge {
   isOpen: () => boolean
   open: (items?: readonly SlashCommandItem[]) => void
   close: () => void

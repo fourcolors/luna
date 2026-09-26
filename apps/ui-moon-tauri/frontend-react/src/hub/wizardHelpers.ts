@@ -71,18 +71,6 @@ export function localStepCopy(update: boolean): {
       }
 }
 
-export function pathCardLocalDesc(env: { serverRunning: boolean; repoExists: boolean }): string {
-  if (env.serverRunning) return "Luna already lives here - connect, or update her"
-  if (env.repoExists) return "Luna is installed here - wake her up, or update her"
-  return "Everything stays private, right on this computer"
-}
-
-export function detectNoteText(env: { serverRunning: boolean; repoExists: boolean }): string | null {
-  if (env.serverRunning) return "✓ Good news - Luna is already running on this Mac."
-  if (env.repoExists) return "✓ Luna is installed on this Mac - she just isn’t awake."
-  return null
-}
-
 /** Where wizard-connect Back should land, given the chosen path + install history. */
 export function connectBackStep(
   chosenPath: "local" | "remote" | "connect" | null,

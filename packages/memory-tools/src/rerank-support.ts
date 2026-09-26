@@ -62,7 +62,7 @@ const warnedIgnoredLegacy = new Set<string>()
  *    cross-encoder and then switched to Jev in the Models tab silently ran
  *    Jev at depth 8 with a threshold of 40, which dropped most memories.
  */
-export function rerankTuningEnv(
+function rerankTuningEnv(
   knob: "THRESHOLD" | "MAX_CANDIDATES",
   env: Record<string, string | undefined>,
   engine: string | undefined,

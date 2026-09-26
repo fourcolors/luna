@@ -35,14 +35,14 @@
  * when it fires.
  */
 
-export interface ConnectorCapability {
+interface ConnectorCapability {
   readonly id: string
   readonly label: string
   readonly defaultGranted?: boolean
   readonly scopes?: readonly string[]
 }
 
-export interface ConnectorClientSetup {
+interface ConnectorClientSetup {
   readonly configured: boolean
 }
 
@@ -55,7 +55,7 @@ export interface ConnectorDefinition {
   readonly clientSetup?: ConnectorClientSetup
 }
 
-export type ConnectorInstanceStatus = "connected" | "needs-reauth" | "error" | string
+type ConnectorInstanceStatus = "connected" | "needs-reauth" | "error" | string
 
 export interface ConnectorInstance {
   readonly id: string
@@ -65,15 +65,15 @@ export interface ConnectorInstance {
   readonly grantedScopes?: readonly string[]
 }
 
-export type BusyState = "authorizing" | "connecting"
+type BusyState = "authorizing" | "connecting"
 
-export interface ConsentDraft {
+interface ConsentDraft {
   readonly label?: string
   readonly caps?: readonly string[]
   readonly secretRef?: string
 }
 
-export interface StatusFrame {
+interface StatusFrame {
   readonly requestId?: string
   readonly ok?: boolean
   readonly message?: string
@@ -152,7 +152,7 @@ export function overallStatus(insts: readonly ConnectorInstance[]): OverallStatu
 /** Client-side mirror of the server's labelSlug (lowercase, non-alnum runs ->
  *  '_', trimmed) - close enough to preflight the common collision: a second
  *  account left on the default label. The server check stays authoritative. */
-export function labelSlugLite(label: string | null | undefined): string {
+function labelSlugLite(label: string | null | undefined): string {
   return String(label || "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")

@@ -1,6 +1,6 @@
 import { Effect, Option, Stream } from "effect"
 import { MemoryRouterTag } from "@luna/memory"
-import type { MemoryRecord, MemoryRouter } from "@luna/memory"
+import type { MemoryRecord } from "@luna/memory"
 import { Clock } from "../clock.js"
 import { SessionStore } from "../session/session-store.js"
 import { SkillRegistry } from "../skill-registry/skill-registry.js"
@@ -18,7 +18,7 @@ import {
   MAX_SKILL_IMPROVEMENT_CHIPS,
   skillImprovementToPropose,
 } from "./skill-chip.js"
-import type { DreamOp, DreamOpKind, DreamInputs, DreamSkillSummary } from "./types.js"
+import type { DreamOp, DreamOpKind, DreamSkillSummary } from "./types.js"
 import { DREAM_OP_TRAITS } from "./types.js"
 
 const OP_KINDS = Object.keys(DREAM_OP_TRAITS) as ReadonlyArray<DreamOpKind>

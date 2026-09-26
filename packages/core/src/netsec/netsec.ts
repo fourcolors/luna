@@ -33,7 +33,6 @@ import type {
   HttpResponse,
   NetSecClientApi,
   NetSecConfig,
-  RequestOptions,
 } from "./types.js"
 import {
   EgressBlockedError,

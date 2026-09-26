@@ -134,7 +134,7 @@ interface RetrievalCallEventBase extends ObsEventBase {
 }
 
 /** The event MemoryRouter.search() itself emits - unchanged shape. */
-export interface RetrievalCallFullEvent extends RetrievalCallEventBase {
+interface RetrievalCallFullEvent extends RetrievalCallEventBase {
   readonly queryDigest: string
   readonly embedderProvider: string
   readonly embedderModel: string
@@ -152,7 +152,7 @@ export interface RetrievalCallFullEvent extends RetrievalCallEventBase {
  * than widened-to-optional on the shared shape (which would weaken the
  * embedder-field guardrail for genuine retrieval events too - see schema.ts).
  */
-export interface RetrievalCallRerankEvent extends RetrievalCallEventBase {
+interface RetrievalCallRerankEvent extends RetrievalCallEventBase {
   readonly queryDigest?: string
   readonly reranked: true
   /** Wall-clock ms the rerank call itself took. */
@@ -164,7 +164,7 @@ export interface RetrievalCallRerankEvent extends RetrievalCallEventBase {
   readonly dropped: number
 }
 
-export type RetrievalCallEvent = RetrievalCallFullEvent | RetrievalCallRerankEvent
+type RetrievalCallEvent = RetrievalCallFullEvent | RetrievalCallRerankEvent
 
 export interface ErrorEvent extends ObsEventBase {
   readonly kind: "Error"

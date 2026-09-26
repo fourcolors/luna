@@ -312,5 +312,3 @@ export function UpdatesPanel({ ctx }: { ctx: PanelCtx }) {
     </div>
   )
 }
-
-export default UpdatesPanel

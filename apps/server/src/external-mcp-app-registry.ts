@@ -24,7 +24,7 @@ import type { McpAppHostDeps } from "@luna/ui-ws"
 
 /** The slice of an MCP client this relay uses. The official SDK `Client`
  *  satisfies it structurally; tests pass a fake. */
-export interface ExternalMcpClient {
+interface ExternalMcpClient {
   readResource(params: { uri: string }): Promise<{
     contents: ReadonlyArray<{
       uri: string

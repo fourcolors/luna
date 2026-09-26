@@ -74,7 +74,7 @@ const ALIVE_STATES = new Set(["", "suggesting"])
  *  purely-decorative thing on the face, so it has to stay a surprise. */
 export const FLOURISH_AFTER_MS = 4 * 60 * 1000
 export const FLOURISH_EVERY_MS = 90 * 1000
-export const FLOURISH_CHANCE = 1 / 3
+const FLOURISH_CHANCE = 1 / 3
 const SHOOT_MS = 2400
 
 export function createMoonLife(DOM: MoonLifeDom): MoonLifeApi {

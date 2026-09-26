@@ -98,7 +98,7 @@ export const atomicWriteFileSync = (path: string, contents: string): void => {
  * bash's collapsed single-state behavior (readKeyValue below, matching
  * status_value) catch and discard this rethrow themselves.
  */
-export const readFileIfReadable = (path: string): string | undefined => {
+const readFileIfReadable = (path: string): string | undefined => {
   try {
     return readFileSync(path, "utf8")
   } catch (err) {

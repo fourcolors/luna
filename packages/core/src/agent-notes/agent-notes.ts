@@ -17,7 +17,6 @@ import type {
   AgentNote,
   AgentNotesApi,
   GatedNoteResult,
-  NoteKind,
   UnparsedPayload,
 } from "./types.js"
 import { DEFAULT_HEARTBEAT_MS, NoteError } from "./types.js"

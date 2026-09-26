@@ -18,7 +18,7 @@ import { mountReactPanel } from "./panel-mount"
 import { PANEL_TITLE, SettingsModelsPanel } from "./settings-models/SettingsModelsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_MODELS_TITLE = PANEL_TITLE
+const SETTINGS_MODELS_TITLE = PANEL_TITLE
 export const SETTINGS_MODELS_PANEL_TYPES = ["settings.models"] as const
 
 export function isSettingsModelsPanelType(type: string): boolean {

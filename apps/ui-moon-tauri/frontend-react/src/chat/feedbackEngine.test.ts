@@ -15,7 +15,7 @@
  * We test the engine object returned by createFeedbackEngine directly,
  * monkey-patching `_captureScreenshot` so we never need a Tauri runtime.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { createFeedbackEngine, type FeedbackEngineDeps } from "./feedbackEngine"
 
 // ---------------------------------------------------------------------------

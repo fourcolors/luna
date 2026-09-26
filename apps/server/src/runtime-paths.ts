@@ -1,7 +1,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-export interface RuntimePathEnv {
+interface RuntimePathEnv {
   readonly LUNA_HOME?: string
   readonly LUNA_DB_PATH?: string
   readonly LUNA_MEMORY_DB?: string

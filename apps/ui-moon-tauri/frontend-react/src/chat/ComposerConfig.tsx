@@ -103,7 +103,7 @@ import { isEffortOption, type EffortOption } from "@luna/tools/protocol-descript
 // Types
 // ============================================================================
 
-export interface ModelEntry {
+interface ModelEntry {
   readonly id: string
   readonly label: string
   /** Narrowed at the hello/cache boundary by `normalizeModelEntry` - see
@@ -114,7 +114,7 @@ export interface ModelEntry {
 }
 
 /** Public account summary from the server `account-list` frame (no secrets). */
-export interface AccountSummary {
+interface AccountSummary {
   readonly id: string
   readonly label: string
   readonly kind: string
@@ -131,7 +131,7 @@ export interface AccountSummary {
  * the test suite pokes them directly as a "the server already told us"
  * back door (see composer-config.test.ts's "per-thread model/effort truth"
  * describe block). */
-export interface ComposerStateSlice {
+interface ComposerStateSlice {
   activeThreadId: string | null
   threadModels: Record<string, string>
   threadEfforts: Record<string, string>
@@ -165,7 +165,7 @@ export interface ComposerConfigCtx {
 type FrameEffort = NonNullable<Extract<ClientFrame, { type: "set-thread-config" }>["effort"]>
 type MutuallyAssignable<A extends B, B extends C, C = A> = true
 /** Fails `tsc` if the two effort vocabularies ever diverge. */
-export type EffortVocabularyIsInSync = MutuallyAssignable<EffortOption, FrameEffort, EffortOption>
+type EffortVocabularyIsInSync = MutuallyAssignable<EffortOption, FrameEffort, EffortOption>
 
 interface RejectedField {
   readonly field?: unknown

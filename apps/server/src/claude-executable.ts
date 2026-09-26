@@ -16,7 +16,7 @@ import { createRequire } from "node:module"
 import { delimiter, dirname, join } from "node:path"
 
 /** True iff `p` resolves to an executable file. fs-backed; injectable in tests. */
-export const isExecutableFile = (p: string): boolean => {
+const isExecutableFile = (p: string): boolean => {
   try {
     accessSync(p, fsConstants.X_OK)
     return true
@@ -108,7 +108,7 @@ const scanNodeModulesForGlibcClaude = (
  * Extracted (and injectable) so the detector is deterministic in tests across
  * platforms.
  */
-export const defaultResolveGlibcPackageBin = (): string | null => {
+const defaultResolveGlibcPackageBin = (): string | null => {
   try {
     const req = createRequire(import.meta.url)
     const pkg = req.resolve("@anthropic-ai/claude-agent-sdk-linux-x64/package.json")

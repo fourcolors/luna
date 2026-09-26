@@ -59,7 +59,7 @@ import {
   startLimitLatchedLine,
 } from "../../src/update/flow-lines.js"
 import { type RestartOutcome, type RestartServiceOptions, restartServiceSync } from "../../src/update/restart.js"
-import { type GuardVerdict, guardVerdictLine } from "../../src/update/session-guard.js"
+import { guardVerdictLine } from "../../src/update/session-guard.js"
 import { INFO_PREFIX, WARN_PREFIX, bashLogLine } from "./bash-source-oracle.js"
 import { READINESS_PORT, cleanupTempDirs, makeFixture, runUpdate } from "./bash-fixtures.js"
 import { repoRoot, makeTempDir } from "./temp-dirs.js"

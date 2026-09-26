@@ -13,7 +13,7 @@
  * abstention iff `question_id` contains `_abs` (see evaluate_qa.py).
  */
 
-export type LmeQuestionType =
+type LmeQuestionType =
   | "single-session-user"
   | "single-session-assistant"
   | "single-session-preference"
@@ -21,7 +21,7 @@ export type LmeQuestionType =
   | "knowledge-update"
   | "multi-session"
 
-export interface LmeTurn {
+interface LmeTurn {
   readonly role: string
   readonly content: string
   /** Present on the turn(s) that hold the gold evidence. */

@@ -48,9 +48,9 @@ import { flushSync } from "react-dom"
 // Types
 // ============================================================================
 
-export type AttachmentKind = "image" | "text" | "pdf" | "binary"
+type AttachmentKind = "image" | "text" | "pdf" | "binary"
 
-export interface AttachmentItem {
+interface AttachmentItem {
   readonly id: string
   readonly kind: AttachmentKind
   readonly name: string
@@ -61,12 +61,12 @@ export interface AttachmentItem {
   readonly text?: string
 }
 
-export interface WireAttachment {
+interface WireAttachment {
   readonly mediaType: string
   readonly data: string
 }
 
-export interface AttachmentPreview {
+interface AttachmentPreview {
   readonly kind: string
   readonly name: string
   readonly src: string | null
@@ -333,7 +333,7 @@ function AttachmentsErrorView({ store, container }: { store: AttachmentsStore; c
 // script and the test suite already call.
 // ============================================================================
 
-export interface AttachmentsBridge {
+interface AttachmentsBridge {
   get items(): readonly AttachmentItem[]
   set items(items: readonly AttachmentItem[])
   readonly IMAGE_TYPES: ReadonlySet<string>

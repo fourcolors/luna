@@ -90,7 +90,6 @@
  * `enabled=1 AND next_run_at <= now` and skips `kind="cron"` rows defensively
  * so any stragglers left in an existing DB stay inert.
  */
-import { TestClock } from "effect/testing"
 import { Context, Duration, Effect, FiberMap, Layer, Option, Ref, Schedule } from "effect"
 import * as Semaphore from "effect/Semaphore"
 import * as EffectClock from "effect/Clock"

@@ -70,7 +70,7 @@ export const EXIT_DEFERRED = 3
 export const rolledBackMarker = (ref: string, prev: string, serviceName: string): string =>
   `update to ${ref} failed — ROLLED BACK to ${prev} (${serviceName} healthy)`
 
-export type Supervisor = "systemd" | "launchd"
+type Supervisor = "systemd" | "launchd"
 
 export interface RemediationContext {
   readonly supervisor: Supervisor
