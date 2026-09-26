@@ -19,7 +19,7 @@ import { mountReactPanel } from "./panel-mount"
 import { SettingsAppsPanel } from "./SettingsAppsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_APPS_PANEL_TYPE = "settings.apps"
+const SETTINGS_APPS_PANEL_TYPE = "settings.apps"
 export const SETTINGS_APPS_TITLE = "Apps"
 
 export function isSettingsAppsPanelType(type: string): boolean {

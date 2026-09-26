@@ -24,14 +24,6 @@
  * before it could move (the OUTBOUND-EDGE RULE).
  */
 
-/** WebSocketEngine.updateStatus's vocabulary. A version-warning still chats,
- *  so it reads as connected (awake). */
-export type ConnectionStatusClass =
-  | "connected"
-  | "connecting"
-  | "disconnected"
-  | "version-warning"
-
 export interface MoonFaceDom {
   readonly lunaFace: HTMLElement | null
   /** Visually-hidden polite live region. The face itself is aria-hidden, so
@@ -66,7 +58,7 @@ export const TRANSIENT_MS: Record<TransientState, number> = {
 /** The orbit channel. Rings sit AROUND the moon rather than eating into it, so
  *  the body stays whole whatever the connection is doing. `none` is idle on
  *  purpose: a ring that is always there cannot mean anything when it appears. */
-export type OrbitState = "none" | "thinking" | "long" | "connecting" | "offline" | "listening"
+type OrbitState = "none" | "thinking" | "long" | "connecting" | "offline" | "listening"
 
 /** A turn running longer than this earns the heavier three-ring treatment. */
 export const LONG_TURN_MS = 45000

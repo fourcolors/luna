@@ -275,7 +275,7 @@ const startedMarkerPath = (root: string): string => join(root, "started.marker")
 
 /** Where the container-side paths the bash script hardcodes get rewritten to, so an `incus exec` payload can run against the fixture's own dirs. See INCUS PASSTHROUGH in the header. */
 export const INCUS_CONTAINER_REPO_DIR = "/root/luna"
-export const INCUS_CONTAINER_LUNA_HOME = "/root/.luna"
+const INCUS_CONTAINER_LUNA_HOME = "/root/.luna"
 
 /**
  * A hermetic `incus`: log the RAW argv, then run the payload on the host.
@@ -695,7 +695,7 @@ exit 1
  * The stub's own exit code is deliberately not configurable: nothing in the
  * re-pin path EXECUTES claude, it only resolves and stats it.
  */
-export interface ClaudeFixtureOptions {
+interface ClaudeFixtureOptions {
   readonly stub?: "present" | "absent"
   readonly envPin?: "detected" | "stale" | "wrong-version"
 }
@@ -1138,19 +1138,6 @@ export const makeFixturePair = (opts: FixtureOptions): FixturePair => {
 }
 
 // --- the drive definitions ----------------------------------------------------
-
-/**
- * `runUpdate` under the name test files that ALSO import `run-update.ts`'s
- * `runUpdate` must use, which is concern 19. The legacy helper keeps its old
- * name because three green PR1 suites drive it across 23 call sites and
- * renaming them would be a cosmetic edit to code this PR has no business
- * touching.
- *
- * NOTE that this is NOT Drive A. It spreads `process.env` and pins
- * `LUNA_TEST_WS_COUNT=0`, which is exactly the asymmetry `driveEnv` exists to
- * remove. Drive A is `runBashDrive`, below.
- */
-export const runBashUpdate = runUpdate
 
 /**
  * ONE environment map, both drives, and it does NOT spread `process.env`.

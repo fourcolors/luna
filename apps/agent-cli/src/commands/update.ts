@@ -108,7 +108,7 @@ export interface ServerLatestJson {
  * sortServerTagsDesc skip them too (defense-in-depth, so the comparators stay
  * total and order-independent even if a malformed tag ever reaches them).
  */
-export const SERVER_VERSION_TAG = /^server-v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
+const SERVER_VERSION_TAG = /^server-v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/
 
 /**
  * Pure: compare two server-v* tag names by numeric semver.

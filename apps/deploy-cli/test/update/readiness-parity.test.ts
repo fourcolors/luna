@@ -28,7 +28,6 @@ import { spawnSync } from "node:child_process"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
-  type ReadyzCapture,
   readinessOkSync,
   readinessRestartBaseline,
 } from "../../src/update/readiness.js"

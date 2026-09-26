@@ -97,7 +97,6 @@ export interface MakeLocalShellStateOptions {
   readonly approvalMode: LocalShellApprovalMode
 }
 
-const DEFAULT_TIMEOUT_MS = 30_000
 const FORCE_KILL_GRACE_MS = 250
 const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASS|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH|COOKIE|SESSION)/i
 

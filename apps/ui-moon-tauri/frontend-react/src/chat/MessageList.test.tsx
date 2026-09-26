@@ -40,7 +40,6 @@ let onOpenAgentsPanel: ReturnType<typeof vi.fn>
 // shape (a `.msg-meta` row: optional `.msg-delivery` chip, then `.msg-copy`,
 // then an optional `.msg-time`).
 function stubBuildMessageMeta(
-  text: string,
   ts: number | undefined,
   delivery: { label?: string } | null,
 ): HTMLElement {

@@ -53,42 +53,13 @@
  */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { expect } from 'vitest'
 import { flushSync } from 'react-dom'
-import { mountAttachments, type AttachmentsMount } from '../../frontend-react/src/chat/Attachments'
-import { chatHostComposerCtx, chatHostSlashMenuCtx, getChatHost } from '../../frontend-react/src/chat/chat-host'
-import { mountComposerConfig, type ComposerConfigMount } from '../../frontend-react/src/chat/ComposerConfig'
-import { mountMessageList, type ChatMessageListMount } from '../../frontend-react/src/chat/MessageList'
-import { mountSlashMenu, type SlashMenuMount } from '../../frontend-react/src/chat/SlashMenu'
-import { mountSmartBar, type SmartBarMount } from '../../frontend-react/src/chat/SmartBarEngine'
-// Pure drawer selection/ordering logic. chat.html forward-declares
-// `var ThreadListLogic` and ThreadDrawerEngine delegates to it, so the harness
-// must publish it exactly as main-chat.tsx does in the shipped page (S17).
-import * as ThreadListLogic from '../../frontend-react/src/chat/threadList'
-import * as ThreadStrip from '../../frontend-react/src/chat/threadStrip'
-import * as ThreadCacheLogic from '../../frontend-react/src/chat/threadCache'
-import * as ThreadCreateLogic from '../../frontend-react/src/chat/threadCreate'
-import * as ThreadDrag from '../../frontend-react/src/chat/threadDrag'
-import { createResultToasts } from '../../frontend-react/src/chat/resultToasts'
-import { createUpdateBanner } from '../../frontend-react/src/chat/updateBanner'
-import { createFeedbackEngine, describeTarget, cropAndEncodeFeedbackScreenshot } from '../../frontend-react/src/chat/feedbackEngine'
-import { Logger as LunaLogger } from '../../frontend-react/src/chat/logger'
-import { createSurveyEngine, buildSurveyVerdicts as __bsv } from '../../frontend-react/src/chat/surveyEngine'
-import { createSecretPromptEngine } from '../../frontend-react/src/chat/secretPromptEngine'
-import { createSuggestedActionsEngine } from '../../frontend-react/src/chat/suggestedActionsEngine'
-import { createLocalShell } from '../../frontend-react/src/chat/localShell'
-import { createNotifier } from '../../frontend-react/src/chat/notifier'
-import { MoonClient as __moonClientConst } from '../../frontend-react/src/chat/moonClient'
-import { createThreadDrawer, moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
+import { describeTarget, cropAndEncodeFeedbackScreenshot } from '../../frontend-react/src/chat/feedbackEngine'
+import { buildSurveyVerdicts as __bsv } from '../../frontend-react/src/chat/surveyEngine'
+import { moonDragDebugNote as __mddn } from '../../frontend-react/src/chat/threadDrawer'
 import { bootChat } from '../../frontend-react/src/chat/bootChat'
-import { createWire } from '../../frontend-react/src/chat/wire'
-import { createFrames } from '../../frontend-react/src/chat/frames'
-import { installWiring } from '../../frontend-react/src/chat/wiring'
-import { createChatEngine, CSS_escape as __cssesc, splitSpeakableSentences as __splitsp, toSpeakable as __tospk } from '../../frontend-react/src/chat/chatEngine'
+import { CSS_escape as __cssesc, splitSpeakableSentences as __splitsp, toSpeakable as __tospk } from '../../frontend-react/src/chat/chatEngine'
 import { buildMessageCopyButton as __bmcb, buildMessageMeta as __bmm, formatRelTime as __frt } from '../../frontend-react/src/chat/messageMeta'
-import { createMoonFace } from '../../frontend-react/src/chat/moonFace'
-import { createMoonBar } from '../../frontend-react/src/chat/moonBar'
-import { createArtifactsEngine } from '../../frontend-react/src/chat/artifactsEngine'
 
 const CHAT_HTML_PATH = path.resolve(__dirname, '../../frontend-react/chat.html')
 const VENDOR_DIR = path.resolve(__dirname, '../../frontend/vendor')
@@ -116,53 +87,6 @@ export function mountChatDomFromHtml(htmlContent: string): void {
 export function loadVendorInto(target: Window & typeof globalThis, file: string): void {
   const src = fs.readFileSync(path.resolve(VENDOR_DIR, file), 'utf8')
   new Function('globalThis', src)(target)
-}
-
-// ── React module graph: src/chat/MessageList.tsx's mountMessageList ────────
-//
-// Mirrors main-chat.tsx's own getChatHost/openAgentsPanelForCurrentThread
-// wiring exactly (see that file's module doc) so the "view ↗" agent-panel
-// link and the grouped/ungrouped timeline planning behave identically to the
-// shipped boot path, not a test-only stand-in.
-
-function invokeTauriFromHarness(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
-  const w = window as unknown as {
-    __TAURI__?: { core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } }
-  }
-  const core = w.__TAURI__?.core
-  if (!core) return Promise.reject(new Error('not in Tauri'))
-  return args === undefined ? core.invoke(cmd) : core.invoke(cmd, args)
-}
-
-function openAgentsPanelForCurrentThread(): void {
-  const state = getChatHost()?.state()
-  const thread = state?.activeThreadId || state?.pinnedThread || null
-  if (!thread) return
-  invokeTauriFromHarness('open_widget', { kind: 'agents', params: { thread } }).catch((err: unknown) => {
-    console.warn('open agents panel failed:', err)
-  })
-}
-
-/** Mounts the REAL MessageList.tsx tree into `container` (chat.html's
- * `#chat-messages`, already in the DOM via mountChatDomFromHtml) exactly the
- * way main-chat.tsx mounts it in the shipped page - wrapped in `flushSync`
- * so the initial commit (replacing the static welcome bubble) has actually
- * happened by the time this returns (see this file's SYNCHRONOUS COMMITS
- * note). Throws rather than degrading to a no-op - a null container here
- * means the harness itself is broken (body markup didn't load), not a
- * legitimate missing-host case. */
-export function mountChatMessageListBridge(container: HTMLElement | null): ChatMessageListMount {
-  let mount: ChatMessageListMount | null = null
-  flushSync(() => {
-    mount = mountMessageList(container, {
-      getGrouped: () => getChatHost()?.state().serverSupportsTurnComplete !== false,
-      onOpenAgentsPanel: openAgentsPanelForCurrentThread,
-    })
-  })
-  if (!mount) {
-    throw new Error('chat-harness: mountMessageList degraded to null - is #chat-messages missing from the loaded body?')
-  }
-  return mount
 }
 
 /**

@@ -411,7 +411,7 @@ export const assertVaultBootIntegrity = async (
 }
 
 /** Boot capability snapshot handed to {@link buildStorageStatus}. */
-export interface StorageStatusProbe {
+interface StorageStatusProbe {
   readonly onePassword: OnePasswordProbe
   readonly osKeychain: boolean
 }

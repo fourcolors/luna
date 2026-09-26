@@ -249,7 +249,7 @@ export const lunaRunLine = (argv: ReadonlyArray<string>): string =>
  * otherwise argv untouched. The `--` separator is part of the contract, not
  * decoration - without it `incus exec` swallows the payload's own flags.
  */
-export const targetArgv = (ctx: TargetContext, argv: ReadonlyArray<string>): ReadonlyArray<string> =>
+const targetArgv = (ctx: TargetContext, argv: ReadonlyArray<string>): ReadonlyArray<string> =>
   ctx.incusContainer !== "" ? ["incus", "exec", ctx.incusContainer, "--", ...argv] : [...argv]
 
 /**

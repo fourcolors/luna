@@ -49,7 +49,7 @@ export const HELP_TEXT = [
   "/local-shell full-access <on|off> - allow local shell in any directory",
 ].join("\n")
 
-export { SLASH_COMMANDS, type SlashSpec } from "./slash-registry.js"
+export { SLASH_COMMANDS } from "./slash-registry.js"
 
 const splitCommand = (line: string): readonly [string, string] => {
   const trimmed = line.trim()

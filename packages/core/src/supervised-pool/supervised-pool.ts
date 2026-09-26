@@ -28,7 +28,6 @@
 import {
   Cause,
   Effect,
-  Exit,
   Fiber,
   FiberSet,
   Queue,
@@ -38,7 +37,6 @@ import {
 import * as Semaphore from "effect/Semaphore"
 import type * as Scope from "effect/Scope"
 import type {
-  PoolJob,
   PoolResult,
   SubmitOutcome,
   SupervisedPool,

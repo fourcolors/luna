@@ -17,7 +17,7 @@ import { mountReactPanel } from "./panel-mount"
 import { ConnectorsPanel, PANEL_TITLE } from "./settings-connectors/ConnectorsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_CONNECTORS_PANEL_TYPES = ["settings.connectors"] as const
+const SETTINGS_CONNECTORS_PANEL_TYPES = ["settings.connectors"] as const
 
 export function isSettingsConnectorsPanelType(type: string): boolean {
   return (SETTINGS_CONNECTORS_PANEL_TYPES as readonly string[]).includes(type)

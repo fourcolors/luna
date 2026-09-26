@@ -1,4 +1,4 @@
-export interface ChannelContext {
+interface ChannelContext {
   /** Human-readable interface name, e.g. "Telegram". */
   readonly interface: string
   /** Platform chat/channel id. */

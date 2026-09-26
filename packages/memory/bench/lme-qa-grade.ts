@@ -109,7 +109,7 @@ export interface QaRef {
   readonly abstention: boolean
 }
 
-export const QUESTION_TYPES = [
+const QUESTION_TYPES = [
   "single-session-user",
   "single-session-preference",
   "single-session-assistant",

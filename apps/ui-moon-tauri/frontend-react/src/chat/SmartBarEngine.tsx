@@ -54,7 +54,7 @@ import { flushSync } from "react-dom"
 // 1:1 with the vanilla object's untyped reads.
 // ============================================================================
 
-export interface SmartBarItem {
+interface SmartBarItem {
   readonly id: string
   readonly kind: string
   readonly label?: string
@@ -66,7 +66,7 @@ export interface SmartBarItem {
   readonly priority?: number
 }
 
-export interface SmartBarFrame {
+interface SmartBarFrame {
   readonly items?: readonly SmartBarItem[]
 }
 
@@ -178,7 +178,7 @@ function SmartBarView({ store, container }: { store: SmartBarStore; container: H
 // frame handler already calls against the vanilla object.
 // ============================================================================
 
-export interface SmartBarBridge {
+interface SmartBarBridge {
   /** Replaces the current bar contents wholesale from a `smart-bar` frame's
    * item list and toggles visibility - matches vanilla's `applyFrame`. */
   applyFrame: (frame: SmartBarFrame) => void

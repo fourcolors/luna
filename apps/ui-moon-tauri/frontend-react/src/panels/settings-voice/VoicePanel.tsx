@@ -331,5 +331,3 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
     </div>
   )
 }
-
-export default VoicePanel

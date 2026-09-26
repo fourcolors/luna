@@ -123,7 +123,7 @@ import {
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -203,7 +203,6 @@ import {
   JobsStoreService,
   JobTicker,
   JobTickerLayer,
-  WorkerRegistry,
   makeWorkerRegistry,
   WorkspaceRegistryService,
   AlignmentStore,
@@ -270,7 +269,6 @@ import {
   ThreadRegistryService,
   importJsonMap,
   runAutoArchive,
-  AUTO_ARCHIVE_IDLE_MS,
   MCPRegistry,
   openUiFeedbackStatusStore,
   UI_FEEDBACK_SENTINEL_SESSION,
@@ -278,7 +276,6 @@ import {
   feedbackAutoJobEnabled,
   FeedbackJobObserverLayer,
   runFeedbackCreateJobNoThrow,
-  type FeedbackListRow,
   type FeedbackJobsDep,
   type FeedbackSetStatusDep,
   MemoryReranker,
@@ -296,7 +293,7 @@ import {
   type ValidationError,
 } from "@luna/core"
 import { McpServerStore, syncMcpMounts, RESERVED_SLUGS } from "@luna/mcp-servers"
-import { createDnaLoader, loadDna } from "./dna-loader.js"
+import { createDnaLoader } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
 import { loadWorkspaces } from "./workspaces-loader.js"
 import {
@@ -323,14 +320,6 @@ import {
   type DiscoveredOpToken,
   type RoutedOpAccountLayer,
 } from "./secret-chain.js"
-export { createDnaLoader, loadDna } from "./dna-loader.js"
-export { loadSystem } from "./system-loader.js"
-export { loadWorkspaces } from "./workspaces-loader.js"
-export {
-  buildMainMemoryBlock,
-  loadMainMemory,
-  resolveMainMemoryPath,
-} from "./agent-memory-loader.js"
 import {
   DreamReasonerDefault,
   SDKAdapter,
@@ -592,8 +581,6 @@ export {
   effortsForModel,
   EFFORT_LEVELS as ALL_EFFORTS,
 } from "@luna/chat-service"
-export type { EffortLevel as Effort } from "@luna/chat-service"
-
 /** A single selectable model entry (with server-computed effort matrix). */
 export interface UiModelEntry {
   readonly id: string
@@ -790,7 +777,7 @@ const BELIEF_REFRESH_INTERVAL_MS = 30_000
  *   places. Default undefined: byte-identical to before this param existed -
  *   no reranker in context, both gates are no-ops regardless of env.
  */
-export const ThreadToolsProviderLayer = (
+const ThreadToolsProviderLayer = (
   refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS,
   memoryRerankerL?: Layer.Layer<MemoryReranker, never, never>,
   // Hot-tier bulletin (BULLETIN.md): decorate() reads holder.current
@@ -2024,7 +2011,7 @@ const secretRequestBridge = createSecretRequestBridge({
 // MemoryRouter while keeping the real Survey.Default so the real dep graph is
 // proven composable. `as never` on the Memory double sidesteps the param-type
 // narrowing.
-export interface BuildSurveyLayerOpts {
+interface BuildSurveyLayerOpts {
   readonly alignmentStoreL: Layer.Layer<AlignmentStore, ConfigError, Clock | LunaSqliteBootstrap>
   readonly beliefWriterL: Layer.Layer<
     BeliefWriter,
@@ -2039,7 +2026,7 @@ export interface BuildSurveyLayerOpts {
   readonly clockL: Layer.Layer<Clock>
 }
 
-export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
+const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
   Survey.Default.pipe(
     Layer.provide(opts.alignmentStoreL),
     Layer.provide(opts.beliefWriterL),
@@ -2195,7 +2182,7 @@ const buildRoutedOpAccountLayers = (
     }).pipe(Layer.provide(clockL)),
   }))
 
-export const buildBaseLayer = (
+const buildBaseLayer = (
   opAccountLayers: ReadonlyArray<RoutedOpAccountLayer>,
   /** The server's secret resolver (vault / Keychain / env by mode); absent in tests, where env alone is read. */
   resolveEnvSecret?: (name: string) => Promise<Redacted.Redacted<string> | undefined>,
@@ -3159,7 +3146,7 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
 // (undefined) → the real factory built from CLAUDE_EXE + paths.lunaDbPath is
 // used. Pass an explicit factory in tests/smokes to avoid spawning real
 // `claude` / calling real process.exit; pass `null` to wire no pty at all.
-export const buildSetupServerLayer = (
+const buildSetupServerLayer = (
   wsPort: number = SETUP_WS_PORT,
   controlPort: number = 4754,
   setupPtyFactory?: {
@@ -4945,10 +4932,6 @@ const buildServerLayer = (
     Layer.provide(LunaSqliteBootstrapLive),
   ) as Layer.Layer<ServerHandle>
 
-const SEED_HINT =
-  "  bun run --filter '@luna/agent-cli' luna-account add \\\n" +
-  "    --id default --label \"Default\" --kind anthropic \\\n" +
-  "    --secret-ref claude-code:login"
 
 const buildMain = (
   resolveEnvSecret: (

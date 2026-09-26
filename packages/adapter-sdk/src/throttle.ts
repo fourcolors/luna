@@ -19,8 +19,6 @@ const RETRY_AFTER_MAX_MS = 10 * 60 * 1000 // 10 min
 // The phrase table itself lives in @luna/core (throttle-kind.ts) so this
 // classifier and core's overflow-chain rotation predicate read from ONE list.
 // Re-exported so existing `@luna/adapter-sdk` importers keep working.
-export type { ThrottleKind }
-
 export interface ThrottleClassification {
   readonly throttled: boolean
   readonly kind?: ThrottleKind

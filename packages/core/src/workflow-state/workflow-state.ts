@@ -30,7 +30,6 @@ import { Clock } from "../clock.js"
 import type {
   WorkflowEvent,
   WorkflowId,
-  WorkflowQuery,
   WorkflowRecord,
   WorkflowStateApi,
   WorkflowStatus,

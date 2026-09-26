@@ -17,7 +17,7 @@
  */
 
 /** Lucene/Elasticsearch `_english_` stop set (33 words). */
-export const STOPWORDS_LUCENE: ReadonlySet<string> = new Set([
+const STOPWORDS_LUCENE: ReadonlySet<string> = new Set([
   "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in",
   "into", "is", "it", "no", "not", "of", "on", "or", "such", "that", "the",
   "their", "then", "there", "these", "they", "this", "to", "was", "will",
@@ -29,7 +29,7 @@ export const STOPWORDS_LUCENE: ReadonlySet<string> = new Set([
  * filler of conversational questions ("did I", "do you", "have my").
  * Still keeps what/when/where/who/why/how.
  */
-export const STOPWORDS_EXTENDED: ReadonlySet<string> = new Set([
+const STOPWORDS_EXTENDED: ReadonlySet<string> = new Set([
   ...STOPWORDS_LUCENE,
   "i", "me", "my", "mine", "we", "us", "our", "you", "your", "he", "she",
   "him", "her", "his", "its", "them", "do", "does", "did", "have", "has",
@@ -38,7 +38,7 @@ export const STOPWORDS_EXTENDED: ReadonlySet<string> = new Set([
 ])
 
 /** Extended plus the question words, to MEASURE whether keeping them helps. */
-export const STOPWORDS_QUESTION: ReadonlySet<string> = new Set([
+const STOPWORDS_QUESTION: ReadonlySet<string> = new Set([
   ...STOPWORDS_EXTENDED,
   "what", "when", "where", "who", "whom", "whose", "why", "how", "which",
 ])
@@ -112,7 +112,7 @@ export function termsMatch(terms: ReadonlyArray<string>): string {
 }
 
 /** Terms considered when requiring a minimum match: C(12, 2) = 66 AND-pairs at most. */
-export const MAX_MIN_MATCH_TERMS = 12
+const MAX_MIN_MATCH_TERMS = 12
 
 /**
  * MATCH requiring at least `minMatch` (1 or 2) DISTINCT query terms in a
@@ -136,7 +136,7 @@ export function minMatchTermsMatch(terms: ReadonlyArray<string>, minMatch: numbe
 
 /** Caps on expansion keywords: FTS5 sums repeated/overlapping terms, so volume = weight. */
 export const MAX_EXPANSION_PHRASES = 8
-export const MAX_EXPANSION_PHRASE_WORDS = 6
+const MAX_EXPANSION_PHRASE_WORDS = 6
 
 /**
  * Expansion keywords (agent-supplied synonyms, entities, alternate
@@ -202,7 +202,7 @@ export const HYBRID_WEIGHTED_DEFAULTS: LexicalFusionOptions = {
 }
 
 /** RRF constant (Cormack et al.; every major engine's default). */
-export const RRF_K = 60
+const RRF_K = 60
 
 /**
  * Weighted Reciprocal Rank Fusion: sum over lists of weight / (k + rank),

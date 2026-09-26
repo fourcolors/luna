@@ -49,7 +49,6 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import {
   type ChatFrame,
   type CreateThreadOptions,
-  type ThreadToolsBinding,
   type ThreadToolsProvider,
 } from "./types.js"
 import {

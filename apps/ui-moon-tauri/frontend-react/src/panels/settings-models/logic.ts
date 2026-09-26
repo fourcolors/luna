@@ -144,22 +144,17 @@ function knownActiveClassifier(engine: string): string {
   return (ACTIVE_CLASSIFIER_ENGINES as ReadonlyArray<string>).includes(engine) ? engine : "model"
 }
 
-/** Display label for an engine id. */
-export function classifierEngineLabel(engine: string): string {
-  return CLASSIFIER_ENGINES.find((r) => r.engine === engine)?.label ?? engine
-}
-
-export interface ProviderDraft {
+interface ProviderDraft {
   enabled: boolean
   credentialRef: string
   /** '' means "not set" (mirrors the vanilla module's empty-string sentinel). */
   monthlyCapUsd: number | ""
 }
 
-export type ProvidersDraft = Record<string, ProviderDraft>
-export type RoleModelDraft = Record<string, string>
+type ProvidersDraft = Record<string, ProviderDraft>
+type RoleModelDraft = Record<string, string>
 
-export interface StatusMessage {
+interface StatusMessage {
   readonly message: string
   readonly kind: "ok" | "error" | "info"
 }

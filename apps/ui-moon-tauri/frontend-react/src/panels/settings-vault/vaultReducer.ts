@@ -33,22 +33,22 @@
  * requestId either way.
  */
 
-export type StatusKind = "ok" | "error" | "info"
+type StatusKind = "ok" | "error" | "info"
 
-export interface StatusLine {
+interface StatusLine {
   readonly text: string
   readonly kind: StatusKind
 }
 
 export type VaultKind = "env-secret" | "op-token"
 
-export interface VaultStatusFrameLike {
+interface VaultStatusFrameLike {
   readonly requestId?: unknown
   readonly ok?: unknown
   readonly message?: unknown
 }
 
-export interface VaultListItemLike {
+interface VaultListItemLike {
   readonly id?: unknown
 }
 
@@ -153,7 +153,7 @@ export function initialVaultPanelState(): VaultPanelState {
 
 /** 'Notion API Key' → 'NOTION_API_KEY' (best-effort; validated before send).
  *  Ported verbatim from the vanilla module's deriveVarName. */
-export function deriveVarName(name: string): string {
+function deriveVarName(name: string): string {
   let v = String(name || "")
     .trim()
     .toUpperCase()
@@ -171,7 +171,7 @@ export function effectiveVarName(state: VaultPanelState): string {
 }
 
 /** Human phrasing for where a new secret will land - ported verbatim. */
-export function writeTierLabel(tier: unknown): string {
+function writeTierLabel(tier: unknown): string {
   if (tier === "keychain") return "New secrets → macOS Keychain"
   if (tier === "luna-vault") return "New secrets → Luna encrypted vault"
   return "New secrets → plaintext .env (LUNA_VAULT_STORAGE=env)"

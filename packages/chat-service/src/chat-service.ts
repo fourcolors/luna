@@ -70,7 +70,6 @@ import {
   ObservabilityService,
   TelemetryService,
   extractText,
-  projectChatMessages,
   projectOne,
   SuggestedActions,
   toView,

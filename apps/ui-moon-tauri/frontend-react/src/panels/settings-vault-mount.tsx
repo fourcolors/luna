@@ -14,7 +14,7 @@ import { mountReactPanel } from "./panel-mount"
 import { SettingsVaultPanel, SETTINGS_VAULT_TITLE } from "./settings-vault/SettingsVaultPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_VAULT_PANEL_TYPES = ["settings.vault"] as const
+const SETTINGS_VAULT_PANEL_TYPES = ["settings.vault"] as const
 
 export function isSettingsVaultPanelType(type: string): boolean {
   return (SETTINGS_VAULT_PANEL_TYPES as readonly string[]).includes(type)

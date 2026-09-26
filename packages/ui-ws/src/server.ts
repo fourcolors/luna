@@ -52,7 +52,6 @@ import {
   MAX_TURN_RAW_BYTES,
   MAX_ATTACHMENTS_PER_TURN,
 } from "@luna/core"
-import type { ObsEvent } from "@luna/core"
 import type {
   ChatService,
   ChatFrame,

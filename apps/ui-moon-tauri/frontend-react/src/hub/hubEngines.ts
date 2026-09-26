@@ -124,7 +124,6 @@ export class HubController {
   private readonly dispatch: (action: HubAction) => void
   private readonly pendingInputs = new Set<string>()
   private _widgetDirectory: Array<{ kind: string; title: string; description: string }> | undefined
-  private lastSize = { w: 140, h: 185 }
   private frameRegistry: any = null
 
   // ── SetupWizard bookkeeping not owned by the reducer (async-flow guards) ──
@@ -138,7 +137,6 @@ export class HubController {
   // ── Tauri window services ────────────────────────────────────────────
   async setWindowSize(width: number, height: number): Promise<void> {
     if (!getTauri()) return
-    this.lastSize = { w: width, h: height }
     try {
       const { getCurrentWindow, LogicalSize } = getTauri().window
       const appWindow = getCurrentWindow()

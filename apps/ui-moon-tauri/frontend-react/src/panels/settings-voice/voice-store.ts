@@ -25,21 +25,21 @@ import { formatMb } from "@luna/ui-shared/core"
 
 export type VoiceMode = "off" | "ptt" | "auto"
 
-export const VOICE_MODES: readonly VoiceMode[] = ["off", "ptt", "auto"]
+const VOICE_MODES: readonly VoiceMode[] = ["off", "ptt", "auto"]
 
 export function isVoiceMode(value: string): value is VoiceMode {
   return (VOICE_MODES as readonly string[]).includes(value)
 }
 
-export interface VoiceOption {
+interface VoiceOption {
   readonly id: string
   readonly name?: string
   readonly quality?: string
 }
 
-export type VoiceModelStatus = "checking" | "ready" | "missing" | "downloading" | "error"
+type VoiceModelStatus = "checking" | "ready" | "missing" | "downloading" | "error"
 
-export interface VoiceProgress {
+interface VoiceProgress {
   readonly downloadedBytes: number
   readonly totalBytes: number
 }
@@ -65,9 +65,9 @@ export interface VoiceState {
   readonly modelProgress: VoiceProgress | null
 }
 
-export const DEFAULT_SILENCE_HANG_MS = 600
-export const MIN_SILENCE_HANG_MS = 300
-export const MAX_SILENCE_HANG_MS = 1200
+const DEFAULT_SILENCE_HANG_MS = 600
+const MIN_SILENCE_HANG_MS = 300
+const MAX_SILENCE_HANG_MS = 1200
 
 export const initialVoiceState: VoiceState = {
   available: false,
@@ -112,7 +112,7 @@ export function clampSilenceHang(value: number): number {
 }
 
 /** Progress status text, mirrors voice-model-progress's non-error/non-done branch. */
-export function progressStatusText(downloadedBytes: number, totalBytes: number): string {
+function progressStatusText(downloadedBytes: number, totalBytes: number): string {
   return totalBytes > 0
     ? `Downloading… ${formatMb(downloadedBytes)} / ${formatMb(totalBytes)} MB`
     : `Downloading… ${formatMb(downloadedBytes)} MB`

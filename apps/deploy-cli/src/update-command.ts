@@ -122,7 +122,7 @@ const realRunEngine = (path: string, args: ReadonlyArray<string>): EngineRunResu
  * THROWS unless `env` is the very `process.env` object - see this module's
  * header for why that is a hard refusal rather than a warning.
  */
-export const realUpdateIo = (env: Readonly<Record<string, string | undefined>>): UpdateIo => {
+const realUpdateIo = (env: Readonly<Record<string, string | undefined>>): UpdateIo => {
   if (env !== (process.env as Readonly<Record<string, string | undefined>>)) {
     throw new Error(
       "realUpdateIo: refusing to build the real IO layer against an environment that is not process.env; " +
@@ -165,7 +165,7 @@ export const realUpdateIo = (env: Readonly<Record<string, string | undefined>>):
  * trailing newline, and add nothing. wiring.ts's `info`/`warn` are the two
  * adapters that add `scripts/lib/luna-deploy.sh:4-5`'s prefixes.
  */
-export const realSeams = (): RealSeams => ({
+const realSeams = (): RealSeams => ({
   env: process.env,
   writeStdout: (text) => {
     process.stdout.write(text)

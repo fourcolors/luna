@@ -23,7 +23,7 @@ import { mountReactPanel } from "./panel-mount"
 import { SETTINGS_APPEARANCE_TITLE, SettingsAppearancePanel } from "./SettingsAppearancePanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_APPEARANCE_PANEL_TYPES = ["settings.appearance"] as const
+const SETTINGS_APPEARANCE_PANEL_TYPES = ["settings.appearance"] as const
 
 export function isSettingsAppearancePanelType(type: string): boolean {
   return (SETTINGS_APPEARANCE_PANEL_TYPES as readonly string[]).includes(type)

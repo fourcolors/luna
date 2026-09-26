@@ -11,7 +11,7 @@
  * @effect/workflow@0.18.1) replaces the internal dispatch fiber; the public
  * surface stays the same.
  */
-import type { Effect, Stream } from "effect"
+import type { Effect } from "effect"
 
 export type WorkflowId = string
 export type WorkflowStatus =
