@@ -265,7 +265,7 @@ export const makeCommandExists = (
  * (target.ts:286-288), and the writeStdout default writes to the process's own
  * stdout, which would bypass the seam every parity drive captures through.
  */
-const buildTargetContext = (config: UpdateConfig, seams: RealSeams): TargetContext => ({
+export const buildTargetContext = (config: UpdateConfig, seams: RealSeams): TargetContext => ({
   incusContainer: config.incusContainer,
   dryRun: config.dryRun,
   layout: config.layout,
