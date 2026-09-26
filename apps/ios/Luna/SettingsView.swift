@@ -17,7 +17,7 @@ struct SettingsView: View {
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                TextField("Port", value: $port, format: .number)
+                TextField("Port", value: $port, format: .number.grouping(.never))
                     .keyboardType(.numberPad)
                 SecureField("Access token (≥16 chars)", text: $token)
                     .textInputAutocapitalization(.never)

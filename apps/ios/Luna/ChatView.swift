@@ -44,9 +44,9 @@ struct ChatView: View {
                     .padding(.vertical, 8)
                 }
                 .onChange(of: scrollKey) { _, _ in
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
+                    // No animation: an animated scrollTo racing rapid LazyVStack
+                    // updates can blank the whole timeline.
+                    proxy.scrollTo("bottom", anchor: .bottom)
                 }
                 .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
             }
@@ -140,7 +140,19 @@ struct ChatView: View {
 private struct MessageBubble: View {
     let message: ChatMessage
 
+    /// Tool-use-only or text-only turns still render; only a fully empty
+    /// payload collapses (avoids blank pills between activity rows).
+    private var isEmpty: Bool {
+        message.text.isEmpty
+            && (message.toolUses?.isEmpty ?? true)
+            && (message.attachments?.isEmpty ?? true)
+            && message.delivery == nil
+    }
+
     var body: some View {
+        if isEmpty {
+            EmptyView()
+        } else {
         HStack {
             if message.isUser { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 6) {
@@ -175,6 +187,7 @@ private struct MessageBubble: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             if !message.isUser { Spacer(minLength: 40) }
         }
+        }
     }
 }
 
@@ -205,24 +218,23 @@ private struct ToolActivityRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { expanded.toggle() } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: icon)
-                        .foregroundStyle(color)
-                        .font(.caption)
-                    Text(activity.name)
-                        .font(.caption.weight(.medium))
-                    Spacer()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.08))
-                .clipShape(Capsule())
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                    .font(.caption)
+                Text(activity.name)
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(Capsule())
+            .contentShape(Capsule())
+            .onTapGesture { expanded.toggle() }
 
             if expanded {
                 VStack(alignment: .leading, spacing: 4) {

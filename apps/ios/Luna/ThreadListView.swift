@@ -15,16 +15,18 @@ struct ThreadListView: View {
                 }
             }
             ForEach(store.threads) { thread in
-                NavigationLink(value: thread.id) {
-                    ThreadRow(thread: thread)
-                }
-                .swipeActions(edge: .trailing) {
-                    Button(role: .destructive) {
-                        store.archive(threadId: thread.id)
-                    } label: {
-                        Label("Archive", systemImage: "archivebox")
+                ThreadRow(thread: thread)
+                    // Plain row + manual navigation: NavigationLink rows swallow
+                    // taps on the revealed swipe-action button.
+                    .contentShape(Rectangle())
+                    .onTapGesture { store.path.append(thread.id) }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            store.archive(threadId: thread.id)
+                        } label: {
+                            Label("Archive", systemImage: "archivebox")
+                        }
                     }
-                }
             }
         }
         .listStyle(.plain)
