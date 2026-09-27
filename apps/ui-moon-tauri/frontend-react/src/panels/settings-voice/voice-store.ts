@@ -169,7 +169,9 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
     case "speak-replies-changed":
       return { ...state, speakReplies: action.value }
     case "engine-changed":
-      return { ...state, ttsEngine: action.engine }
+      // The picker serves the active engine's catalog; keeping the old
+      // list would flash the previous engine's voices until repopulation.
+      return { ...state, ttsEngine: action.engine, voices: [] }
     case "tts-info-resolved":
       // The backend engine is authoritative: a stale persisted value
       // (or a rejected set) shows what is actually speaking.
@@ -179,9 +181,14 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
         fishKeyConfigured: action.fishKeyConfigured,
       }
     case "fish-key-resolved":
-      return action.voices
-        ? { ...state, fishKeyConfigured: action.configured, voices: action.voices }
-        : { ...state, fishKeyConfigured: action.configured }
+      if (action.voices) {
+        return { ...state, fishKeyConfigured: action.configured, voices: action.voices }
+      }
+      // A cleared key means the fish catalog is unusable — drop the list
+      // so stale voice ids can't be picked and 400 at speak time.
+      return action.configured
+        ? { ...state, fishKeyConfigured: true }
+        : { ...state, fishKeyConfigured: false, voices: [] }
     case "voice-selected":
       return state.ttsEngine === "fish"
         ? { ...state, fishVoiceId: action.id }
