@@ -160,8 +160,19 @@ fn active_entry<'a>(inner: &'a TtsRouterInner) -> Option<&'a EngineEntry> {
 
 impl TtsEngine for TtsRouter {
     fn speak(&mut self, text: &str, interrupt: bool) {
-        if let Some(e) = active_entry(&self.inner) {
-            lock_unpoisoned(&e.engine).speak(text, interrupt);
+        // Re-resolve `active` while holding the engine's lock: set_engine
+        // swaps the name BEFORE stopping the outgoing engine, so a speak
+        // that captured the pre-switch name would otherwise queue an
+        // utterance that outlives the switch.
+        loop {
+            let name = lock_unpoisoned(&self.inner.active).clone();
+            let Some(e) = entry(&self.inner, &name) else { return };
+            let mut engine = lock_unpoisoned(&e.engine);
+            if *lock_unpoisoned(&self.inner.active) == name {
+                engine.speak(text, interrupt);
+                return;
+            }
+            drop(engine);
         }
     }
 
@@ -190,9 +201,17 @@ impl TtsEngine for TtsRouter {
     }
 
     fn set_voice(&mut self, id: &str) -> bool {
-        active_entry(&self.inner)
-            .map(|e| lock_unpoisoned(&e.engine).set_voice(id))
-            .unwrap_or(true)
+        // Same recheck as speak: a voice pick must land on the engine that
+        // is active at apply time, not the one named when the call began.
+        loop {
+            let name = lock_unpoisoned(&self.inner.active).clone();
+            let Some(e) = entry(&self.inner, &name) else { return true };
+            let mut engine = lock_unpoisoned(&e.engine);
+            if *lock_unpoisoned(&self.inner.active) == name {
+                return engine.set_voice(id);
+            }
+            drop(engine);
+        }
     }
 }
 
@@ -216,10 +235,13 @@ impl TtsRouterHandle {
                 valid.join(", ")
             ));
         }
+        // Swap first, then stop: speak/set_voice re-read `active` under the
+        // engine lock, so after this store no new work can queue on the
+        // outgoing engine — only its already-queued audio needs killing.
+        *lock_unpoisoned(&self.inner.active) = name.to_string();
         for e in &self.inner.engines {
             lock_unpoisoned(&e.engine).stop();
         }
-        *lock_unpoisoned(&self.inner.active) = name.to_string();
         Ok(name.to_string())
     }
 

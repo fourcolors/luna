@@ -222,9 +222,14 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
           })
           .catch(() => {})
         const savedVoiceId = ttsEngine === "fish" ? fishVoiceId : voiceId
-        if (savedVoiceId) ctx.invoke("voice_set_voice", { id: savedVoiceId }).catch(() => {})
         ctx.invoke("voice_set_config", { silenceHangMs }).catch(() => {})
-        return engineChain.then(() => populateVoices()).catch(() => {})
+        // voice_set_voice stays INSIDE the engine chain: it targets the
+        // active engine, so it must not issue until voice_set_tts_engine
+        // has settled (a fish id on the system engine becomes its voice).
+        return engineChain
+          .then(() => (savedVoiceId ? ctx.invoke("voice_set_voice", { id: savedVoiceId }) : null))
+          .then(() => populateVoices())
+          .catch(() => {})
       })
       .catch(() => {
         if (!cancelledRef.current) dispatch({ type: "availability-resolved", available: false })
@@ -254,7 +259,7 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
 
   function handleVoiceChange(id: string): void {
     dispatch({ type: "voice-selected", id })
-    const key = state.ttsEngine === "fish" ? LS_FISH_VOICE_ID : LS_VOICE_ID
+    const key = store.getState().ttsEngine === "fish" ? LS_FISH_VOICE_ID : LS_VOICE_ID
     if (id) lsSet(key, id)
     else lsDel(key)
     if (state.available) ctx.invoke("voice_set_voice", { id }).catch(() => {})
@@ -269,7 +274,10 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
     ;(ctx.invoke("voice_set_tts_engine", { engine }) as Promise<unknown>)
       .then(() => populateVoices())
       .then(() => {
-        const id = engine === "fish" ? state.fishVoiceId : state.voiceId
+        // Read the store, not the render closure: a second toggle landing
+        // while this chain was in flight must win.
+        const s = store.getState()
+        const id = s.ttsEngine === "fish" ? s.fishVoiceId : s.voiceId
         return ctx.invoke("voice_set_voice", { id })
       })
       .catch(() => {})
