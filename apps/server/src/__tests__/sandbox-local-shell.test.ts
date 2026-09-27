@@ -159,6 +159,36 @@ describe("sandbox local shell", () => {
       cwd: `${root}-evil`,
       markerExists,
     }).enabled).toBe(false)
+
+    // Boundary cases of the strip: multiple trailing slashes, a trailing
+    // slash on the cwd as well, and dot segments above the root.
+    expect(resolveSandboxLocalShell({
+      env: { ...baseEnv, LUNA_REPO_ROOT: `${root}//` },
+      homeDir: home,
+      cwd: `${root}/`,
+      markerExists,
+    }).enabled).toBe(true)
+    expect(resolveSandboxLocalShell({
+      env: baseEnv,
+      homeDir: home,
+      cwd: join(root, "sub", ".."),
+      markerExists,
+    }).enabled).toBe(true)
+
+    // The "/" fallback in the strip is pinned: a "/" root only ever matches
+    // cwd "/", never anything else (pre-existing behavior, unchanged).
+    expect(resolveSandboxLocalShell({
+      env: { ...baseEnv, LUNA_REPO_ROOT: "/" },
+      homeDir: home,
+      cwd: "/",
+      markerExists,
+    }).enabled).toBe(true)
+    expect(resolveSandboxLocalShell({
+      env: { ...baseEnv, LUNA_REPO_ROOT: "/" },
+      homeDir: home,
+      cwd: root,
+      markerExists,
+    }).enabled).toBe(false)
   })
 
   it("approves a request cwd under a trailing-slash sandbox root", async () => {
