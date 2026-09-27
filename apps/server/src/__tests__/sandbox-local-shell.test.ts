@@ -124,6 +124,63 @@ describe("sandbox local shell", () => {
     })
   })
 
+  it("treats a trailing-slash sandbox root as the same root", () => {
+    const home = tempDir()
+    const root = tempDir()
+    const markerPath = join(home, ".luna", "allow-dangerous-local-shell")
+    const markerExists = (path: string): boolean => path === markerPath
+    const baseEnv = {
+      LUNA_PROFILE: "dev",
+      LUNA_RUNTIME_SCOPE: "incus-container",
+      LUNA_DEV_DANGEROUS_AUTO_APPROVE_LOCAL_SHELL: "1",
+      LUNA_REPO_ROOT: `${root}/`,
+    }
+    // path.posix.normalize preserves a trailing slash, so the root must be
+    // compared on its stripped form: a trailing slash must neither disable
+    // the shell at boot nor deny requests for the root or anything under it.
+    expect(resolveSandboxLocalShell({
+      env: baseEnv,
+      homeDir: home,
+      cwd: root,
+      markerExists,
+    })).toMatchObject({ enabled: true, sandboxRoot: `${root}/` })
+
+    expect(resolveSandboxLocalShell({
+      env: baseEnv,
+      homeDir: home,
+      cwd: join(root, "sub"),
+      markerExists,
+    }).enabled).toBe(true)
+
+    // A sibling-prefix path is still outside the root.
+    expect(resolveSandboxLocalShell({
+      env: baseEnv,
+      homeDir: home,
+      cwd: `${root}-evil`,
+      markerExists,
+    }).enabled).toBe(false)
+  })
+
+  it("approves a request cwd under a trailing-slash sandbox root", async () => {
+    const root = tempDir()
+    await expect(executeSandboxLocalShellRequest({
+      type: "local-shell-request",
+      requestId: "req_trailing",
+      threadId: "thr_1",
+      command: "printf trailing-ok",
+      timeoutMs: 1_000,
+    }, {
+      cwd: root,
+      sandboxRoot: `${root}/`,
+      env: { PATH: process.env.PATH },
+      timeoutMs: 1_000,
+    })).resolves.toMatchObject({
+      approved: true,
+      exitCode: 0,
+      stdout: "trailing-ok",
+    })
+  })
+
   it("settles after SIGKILL even when a reparented grandchild holds stdio open", async () => {
     const root = tempDir()
     try {
