@@ -38,6 +38,7 @@ Gotchas:
 - **Unsigned builds can't use the Keychain:** `CODE_SIGNING_ALLOWED=NO` produces no keychain entitlement, so `SecItem*` calls fail ("Requestor lacks required entitlement" in `simctl spawn <udid> log show`). The app falls back to UserDefaults for the token — expected on sim, not a bug.
 - Slow stepped drags (`left_mouse_down` + several `mouse_move`) are needed for List swipe actions; quick `left_click_drag` misses.
 - Prefer a full swipe for Archive (auto-commits); thread rows use onTapGesture navigation so the revealed swipe button also works.
+- Seeding the sim pasteboard: `printf '%s' '<text>' | xcrun simctl pbcopy <udid>`. Programmatic `UIPasteboard` reads (e.g. Settings → Paste Link) trigger an iOS paste-consent prompt on every call — tap "Allow Paste" to proceed.
 
 ## Server-side protocol checks (corroborate UI claims)
 
