@@ -31,6 +31,7 @@ import {
   DreamError,
   deriveBeliefId,
   makeBeliefRecord,
+  isActiveBelief,
   AccountBroker,
   DEFAULT_DISTILL_OPTIONS,
   DREAM_PROMPT_TOKEN_BUDGET,
@@ -580,6 +581,29 @@ function parseRawOps(text: string): Effect.Effect<ReadonlyArray<RawOp>, DreamErr
 // Map RawOp → DreamOp (with before-snapshot for belief_candidate)
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve the materialized end-state for a belief_candidate op.
+ *
+ * Belief ids are deterministic on (domain, statement), so a re-derived claim
+ * lands on the SAME id as the existing belief. When that belief is already
+ * ACTIVE (survey-validated), the idempotent desired end-state is the existing
+ * record itself — writing a fresh "proposed" record would demote the belief
+ * out of prompt injection and wipe its confidence + validationHistory. The
+ * reasoner cannot avoid re-deriving: the "CURRENT MEMORY STATE" block renders
+ * `MEMORY id namespace kind` with no status field, so the model never sees
+ * that the belief is already validated. New, proposed, and retired targets
+ * keep the fresh proposed record (a re-derived retired belief is a
+ * legitimate revival).
+ *
+ * Pure, exported for tests.
+ */
+export function resolveBeliefCandidateAfter(
+  existing: MemoryRecord | null,
+  candidate: MemoryRecord,
+): MemoryRecord {
+  return existing !== null && isActiveBelief(existing) ? existing : candidate
+}
+
 function materializeOp(
   raw: RawOp,
   mem: import("@luna/memory").MemoryRouter,
@@ -590,7 +614,7 @@ function materializeOp(
     // presentation and must not change a belief's identity, or a reworded
     // question would fork a duplicate belief.
     const id = deriveBeliefId(domain, statement)
-    const after: MemoryRecord = makeBeliefRecord({
+    const candidate: MemoryRecord = makeBeliefRecord({
       statement,
       // Conditional spread for exactOptionalPropertyTypes — see the same
       // pattern in validateRawOpsArray.
@@ -616,7 +640,9 @@ function materializeOp(
           kind: "belief_candidate",
           targetId: id,
           before: existing ?? null,
-          after,
+          // Never demote an already-ACTIVE belief on re-derivation — see
+          // resolveBeliefCandidateAfter.
+          after: resolveBeliefCandidateAfter(existing, candidate),
           rationale,
         }),
       ),

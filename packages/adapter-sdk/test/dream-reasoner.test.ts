@@ -32,6 +32,7 @@ import {
   BELIEF_DOMAINS,
   buildDreamPrompt,
   DreamReasonerDefault,
+  resolveBeliefCandidateAfter,
 } from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
 import type { DreamInputs, DistilledSession } from "@luna/core"
@@ -308,6 +309,46 @@ describe("DreamReasonerDefault", () => {
     )
     expect(ops).toHaveLength(1)
     expect(ops[0]!.before).toBeNull()
+  })
+
+  it("re-deriving an ACTIVE belief keeps the existing record as `after` (never demotes to proposed)", async () => {
+    const active = makeBeliefRecord({
+      statement: RAW_BELIEF_OP.statement,
+      confidence: 0.9,
+      domain: RAW_BELIEF_OP.domain,
+      status: "active",
+      now: 100,
+    })
+    const activeWithHistory: MemoryRecord = {
+      ...active,
+      content: {
+        ...(active.content as Record<string, unknown>),
+        validationHistory: [{ at: 200, verdict: "confirmed", via: "survey" as const }],
+      },
+    }
+    // deriveBeliefId is deterministic: the re-derived candidate hits this id.
+    expect(activeWithHistory.id).toBe(EXPECTED_ID)
+
+    const json = JSON.stringify([RAW_BELIEF_OP])
+    const ops = await Effect.runPromise(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(json), FakeMemory([activeWithHistory])),
+    )
+    expect(ops).toHaveLength(1)
+    const op = ops[0]!
+    // before-snapshot is still the existing record...
+    expect((op.before as MemoryRecord).id).toBe(EXPECTED_ID)
+    // ...and `after` is the SAME existing record, not a fresh "proposed" one:
+    // the active belief keeps its status, confidence, and validation history.
+    const after = op.after as MemoryRecord
+    expect(after.id).toBe(EXPECTED_ID)
+    const content = after.content as {
+      status: string
+      confidence: number
+      validationHistory: ReadonlyArray<unknown>
+    }
+    expect(content.status).toBe("active")
+    expect(content.confidence).toBe(0.9)
+    expect(content.validationHistory).toHaveLength(1)
   })
 
   it("malformed (non-JSON) model output → DreamError with op:'parse'", async () => {
@@ -999,5 +1040,45 @@ describe("buildDreamPrompt - structured-output prompt shortening", () => {
     )
     expect(m).not.toBeNull()
     expect([...BELIEF_DOMAINS]).toContain(m![1])
+  })
+})
+
+describe("resolveBeliefCandidateAfter", () => {
+  const candidateFor = (status: "proposed" | "active" | "retired") =>
+    makeBeliefRecord({
+      statement: "Operator prefers terse answers",
+      confidence: 0.85,
+      domain: "comms",
+      status,
+      now: 100,
+    })
+
+  it("null existing → the fresh candidate record", () => {
+    const candidate = candidateFor("proposed")
+    expect(resolveBeliefCandidateAfter(null, candidate)).toBe(candidate)
+  })
+
+  it("proposed existing → the fresh candidate record (refresh)", () => {
+    const candidate = candidateFor("proposed")
+    expect(resolveBeliefCandidateAfter(candidateFor("proposed"), candidate)).toBe(candidate)
+  })
+
+  it("retired existing → the fresh candidate record (legitimate revival)", () => {
+    const candidate = candidateFor("proposed")
+    expect(resolveBeliefCandidateAfter(candidateFor("retired"), candidate)).toBe(candidate)
+  })
+
+  it("active existing → the EXISTING record (never demotes, never wipes history)", () => {
+    const existing = candidateFor("active")
+    const candidate = candidateFor("proposed")
+    const resolved = resolveBeliefCandidateAfter(existing, candidate)
+    expect(resolved).toBe(existing)
+    expect((resolved.content as { status: string }).status).toBe("active")
+  })
+
+  it("non-belief record at the same id → the fresh candidate record", () => {
+    const candidate = candidateFor("proposed")
+    const nonBelief: MemoryRecord = memRecordFixture(candidate.id)
+    expect(resolveBeliefCandidateAfter(nonBelief, candidate)).toBe(candidate)
   })
 })
