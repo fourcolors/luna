@@ -81,6 +81,43 @@ describe("parseJevClassifierAnswers", () => {
     ).toThrow(/undeclared option "sleep"/)
   })
 
+  it("rejects prototype-chain keys as choice winners — `in` would accept them on any criteria object", () => {
+    for (const choice of ["toString", "constructor", "hasOwnProperty", "valueOf", "__proto__"]) {
+      expect(() =>
+        parseJevClassifierAnswers({ answers: { route: { choice } } }, { route: routingQuestion }),
+      ).toThrow(new RegExp(`undeclared option "${choice}"`))
+    }
+  })
+
+  it("still accepts a declared option that shadows a prototype member", () => {
+    const q: ClassifierQuestion = {
+      type: "choice",
+      instructions: "Which lane?",
+      criteria: { toString: "The string lane", chat: "Ordinary conversation" },
+    }
+    const { answers } = parseJevClassifierAnswers({ answers: { route: { choice: "toString" } } }, { route: q })
+    expect(answers["route"]).toMatchObject({ type: "choice", choice: "toString" })
+  })
+
+  it("still accepts declared options on a null-prototype criteria object", () => {
+    const nullProto = Object.assign(Object.create(null), { chat: "Ordinary conversation", job: "A durable job or task" })
+    const q: ClassifierQuestion = { type: "choice", instructions: "Which lane?", criteria: nullProto }
+    const { answers } = parseJevClassifierAnswers({ answers: { route: { choice: "job" } } }, { route: q })
+    expect(answers["route"]).toMatchObject({ type: "choice", choice: "job" })
+    // ...while a prototype key is still rejected there (no hasOwnProperty method to fall back on)
+    expect(() => parseJevClassifierAnswers({ answers: { route: { choice: "toString" } } }, { route: q })).toThrow(
+      /undeclared option "toString"/,
+    )
+  })
+
+  it("rejects a non-string or empty choice before the option check", () => {
+    for (const choice of ["", 42, null, ["job"]]) {
+      expect(() =>
+        parseJevClassifierAnswers({ answers: { route: { choice } } }, { route: routingQuestion }),
+      ).toThrow(/missing or malformed choice answer route/)
+    }
+  })
+
   it("fails on a score index outside the rubric's level range", () => {
     expect(() =>
       parseJevClassifierAnswers({ answers: { urgency: { score: 3 } } }, { urgency: scoreQuestion }),
