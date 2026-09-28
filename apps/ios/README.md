@@ -23,11 +23,23 @@ panels beyond the connection itself.
 
 ## Connect
 
-The chat server binds `127.0.0.1:4753` by default. For a phone to reach it:
+**QR pairing (recommended):** on the machine running the chat server,
+
+```sh
+bun run apps/server/scripts/pair-qr.ts            # auto-detects LAN IP
+bun run apps/server/scripts/pair-qr.ts --host 100.x.y.z   # tailnet/manual
+```
+
+then in the app: Settings → Pair this device → **Scan QR Code** (or
+**Paste Link**). The `luna://connect?host&port&token&tls` payload fills all
+four fields and connects. The link carries your `UI_WS_TOKEN` — treat it
+like the token itself.
+
+**Manual:** the chat server binds `127.0.0.1:4753` by default. For a phone to reach it:
 
 - **Simulator on the same Mac**: host `127.0.0.1`, port `4753` just works.
 - **Physical iPhone on LAN**: run the server bound to `0.0.0.0`
-  (`--bind 0.0.0.0` / `LUNA_UI_WS_BIND=0.0.0.0`) — it is bearer-token only,
+  (`LUNA_UI_WS_HOST=0.0.0.0`) — it is bearer-token only,
   prefer a tailnet/tunnel for anything beyond a trusted LAN — then set host
   to your machine's LAN IP.
 - Token: the server's `UI_WS_TOKEN` (≥16 chars), sent as

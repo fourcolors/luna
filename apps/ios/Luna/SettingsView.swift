@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SettingsView: View {
     @Environment(AppState.self) private var store
@@ -8,10 +9,36 @@ struct SettingsView: View {
     @State private var port = 4753
     @State private var useTLS = false
     @State private var token = ""
+    @State private var showScanner = false
+    @State private var pairError: String?
 
     var body: some View {
         @Bindable var store = store
         Form {
+            Section {
+                Button {
+                    if QRScannerView.isAvailable {
+                        showScanner = true
+                    } else {
+                        pairError = "Camera scanning isn't available on this device — use Paste Link instead."
+                    }
+                } label: {
+                    Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                }
+                Button { pasteLink() } label: {
+                    Label("Paste Link", systemImage: "doc.on.clipboard")
+                }
+                if let pairError {
+                    Text(pairError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Text("Pair this device")
+            } footer: {
+                Text("On your server run `bun run apps/server/scripts/pair-qr.ts` — scan or paste the luna://connect link it prints.")
+            }
+
             Section {
                 TextField("Host (e.g. 192.168.1.10)", text: $host)
                     .keyboardType(.URL)
@@ -64,6 +91,43 @@ struct SettingsView: View {
             useTLS = store.useTLS
             token = store.token
         }
+        .sheet(isPresented: $showScanner) {
+            NavigationStack {
+                QRScannerView { payload in
+                    showScanner = false
+                    applyPairing(payload)
+                }
+                .ignoresSafeArea()
+                .navigationTitle("Scan pairing code")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { showScanner = false }
+                    }
+                }
+            }
+        }
+    }
+
+    private func pasteLink() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else {
+            pairError = "Clipboard is empty."
+            return
+        }
+        applyPairing(text)
+    }
+
+    private func applyPairing(_ payload: String) {
+        guard let info = PairingInfo(urlString: payload) else {
+            pairError = "Not a Luna pairing link — expected luna://connect?…"
+            return
+        }
+        host = info.host
+        port = info.port
+        token = info.token
+        useTLS = info.tls
+        pairError = nil
+        save()
     }
 
     private func save() {
