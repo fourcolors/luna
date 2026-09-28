@@ -91,6 +91,16 @@ export const applyOps = (
 
     for (const op of ops) {
       if (MATERIALIZE_OPS.has(op.kind)) {
+        // No-op guard: the reasoner can emit an op whose before/after are the
+        // SAME snapshot — a re-derived ACTIVE belief kept as-is (before ===
+        // after by reference). Writing it is content-identical, but recording
+        // it as "applied" would let revert() restore the stale `before` over
+        // state written since, silently erasing later validations. Skip the
+        // write AND the audit row: nothing changed, so there is nothing to
+        // undo and nothing to ledger. (Deletes keep their row even when
+        // before is null: the pinned dream-worker contract records every
+        // materialized delete as applied.)
+        if (op.before !== null && op.before === op.after) continue
         // Idempotent state-set: null after = delete; else upsert to desired state.
         if (op.after === null) {
           yield* mem.delete(op.targetId)

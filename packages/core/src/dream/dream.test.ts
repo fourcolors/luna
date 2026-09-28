@@ -8,7 +8,7 @@ import { applyOps, revert, deriveDreamId, runDream } from "./dream.js"
 import type { DreamOp } from "./types.js"
 import { SessionStore } from "../session/session-store.js"
 import { FakeReasoner } from "./reasoner.js"
-import { makeBeliefRecord } from "../beliefs/types.js"
+import { makeBeliefRecord, readBelief } from "../beliefs/types.js"
 import { SuggestedActions } from "../suggested-actions/suggested-actions.js"
 import { SuggestedActionsStore } from "../suggested-actions/suggested-actions-store.js"
 
@@ -233,6 +233,112 @@ describe("applyOps", () => {
     expect(out.chips).toHaveLength(2)
   })
 
+})
+
+describe("applyOps no-op guard", () => {
+  it("skips a no-op belief_candidate (before === after): no write, no audit row", async () => {
+    // PR #739's no-demote path: a re-derived ACTIVE belief yields an op whose
+    // before/after are the same snapshot. Recording it "applied" would let a
+    // later revert() restore the stale before over newer state.
+    const active0 = makeBeliefRecord({
+      statement: "Operator prefers terse answers", confidence: 0.9,
+      domain: "comms", status: "active", now: 0,
+    })
+    const active = {
+      ...active0,
+      content: {
+        ...readBelief(active0),
+        validationHistory: [{ at: 1, verdict: "confirmed" as const, via: "survey" as const }],
+      },
+    }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          const existing = (yield* mem.get(active.id)) as MemoryRecord
+          yield* applyOps("dream-0-100", [
+            { kind: "belief_candidate", targetId: active.id, before: existing, after: existing, rationale: "re-derived" },
+          ])
+          const stored = (yield* mem.get(active.id)) as MemoryRecord
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          return { stored, rows }
+        }),
+        FakeMemory([active]),
+      ),
+    )
+    expect(out.rows).toHaveLength(0) // nothing to undo -> nothing ledgered
+    expect(out.stored).toBeDefined()
+    expect(readBelief(out.stored).validationHistory).toHaveLength(1)
+  })
+
+  it("a validation added after a no-op dream op is never clobbered", async () => {
+    // End-to-end of the reported defect: no-op op, then a survey confirmation,
+    // then (hypothetically) a revert. With the guard there is no audit row, so
+    // there is nothing revert() could restore the stale snapshot from.
+    const active0 = makeBeliefRecord({
+      statement: "Operator prefers terse answers", confidence: 0.9,
+      domain: "comms", status: "active", now: 0,
+    })
+    const active = {
+      ...active0,
+      content: {
+        ...readBelief(active0),
+        validationHistory: [{ at: 1, verdict: "confirmed" as const, via: "survey" as const }],
+      },
+    }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          const existing = (yield* mem.get(active.id)) as MemoryRecord
+          yield* applyOps("dream-0-100", [
+            { kind: "belief_candidate", targetId: active.id, before: existing, after: existing, rationale: "re-derived" },
+          ])
+          // Survey records a second confirmation after the dream.
+          const cur = (yield* mem.get(active.id)) as MemoryRecord
+          yield* mem.put({
+            ...cur,
+            content: {
+              ...readBelief(cur),
+              validationHistory: [
+                { at: 1, verdict: "confirmed" as const, via: "survey" as const },
+                { at: 2, verdict: "confirmed" as const, via: "survey" as const },
+              ],
+            },
+          })
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          const final = readBelief((yield* mem.get(active.id)) as MemoryRecord)
+          return { rows: rows.length, validations: final.validationHistory.length }
+        }),
+        FakeMemory([active]),
+      ),
+    )
+    expect(out.rows).toBe(0)
+    expect(out.validations).toBe(2) // the later confirmation survives
+  })
+
+  it("a delete op with null before still records its audit row", async () => {
+    // Deletes keep the pinned contract (see dream-worker test (c)): a
+    // materialized delete is recorded "applied" even when the target never
+    // existed. The no-op guard above applies only to same-snapshot writes.
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const store = yield* DreamStore
+          yield* applyOps("dream-0-100", [
+            { kind: "memory_dedup", targetId: "never-existed", before: null, after: null, rationale: "dup of nothing" },
+          ])
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          return { rows: rows.length, status: rows[0]?.status }
+        }),
+        FakeMemory([]),
+      ),
+    )
+    expect(out.rows).toBe(1)
+    expect(out.status).toBe("applied")
+  })
 })
 
 describe("revert", () => {
