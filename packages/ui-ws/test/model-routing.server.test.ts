@@ -68,6 +68,7 @@ const makeFakeModelRoutingService = (
   let memoryReranker: MemoryRerankerSettingsItem = { engine: "cross-encoder" }
   const saves: Array<Record<string, unknown>> = []
   const scheduleRestart = vi.fn()
+  let notifyChanged: (() => void) | null = null
 
   const svc = {
     list: (): ModelRoutingListFrame => ({
@@ -91,8 +92,17 @@ const makeFakeModelRoutingService = (
       return { ok: true, message: "Model routing settings saved. Restart to apply." }
     },
     scheduleRestart,
+    changes: (notify: () => void) => {
+      notifyChanged = notify
+    },
   }
-  return { svc, scheduleRestart, saves }
+  // Flip the laya-sidecar verdict + fire the registered notifier, the same
+  // two-step the chat-server probe does on an up/down transition.
+  const flipLayaSidecar = (verdict: "up" | "down") => {
+    memoryReranker = { ...memoryReranker, layaSidecar: verdict }
+    notifyChanged?.()
+  }
+  return { svc, scheduleRestart, saves, flipLayaSidecar }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -222,6 +232,24 @@ describe("model-routing server routing", () => {
     expect(list.roleBindings).toHaveLength(1)
     expect(list.roleBindings[0]?.role).toBe("daily-driver")
     expect(list.roleBindings[0]?.preferenceList[0]?.model).toBe("claude-sonnet-4-6")
+
+    client.close()
+  })
+
+  it("service changes() ping broadcasts a fresh model-routing-list to every connected client", async () => {
+    const { svc, flipLayaSidecar } = makeFakeModelRoutingService()
+    rig = await startModelRoutingRig(svc)
+    const client = await openClient(rig.url)
+    // Baseline post-hello list arrives with no sidecar verdict.
+    await client.waitFor((f) => f.type === "model-routing-list")
+
+    flipLayaSidecar("up")
+    const broadcast = (await client.waitFor(
+      (f) =>
+        f.type === "model-routing-list" &&
+        f.memoryReranker?.layaSidecar === "up",
+    )) as ModelRoutingListFrame
+    expect(broadcast.memoryReranker?.layaSidecar).toBe("up")
 
     client.close()
   })

@@ -137,7 +137,7 @@ export function resolveRerankMaxCandidates(
 /**
  * Whether a lane reranks: "1" forces it on, "0" forces it off, and unset
  * follows the engine (MemoryRerankerApi.defaults.enabled) - on for an engine
- * the operator explicitly configured (LUNA_RERANK_ENGINE=jev), off for the
+ * the operator explicitly configured (LUNA_RERANK_ENGINE=jev or laya), off for the
  * always-bound default cross-encoder, which keeps today's opt-in behavior.
  */
 export function rerankLaneEnabled(

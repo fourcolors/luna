@@ -373,6 +373,7 @@ describe("memory reranker engine", () => {
 
   it("the operator's saved choice wins over LUNA_RERANK_ENGINE (store overrides env)", () => {
     expect(resolveMemoryRerankerEngine(withEngine("jev"), { LUNA_RERANK_ENGINE: "cross-encoder" })).toBe("jev")
+    expect(resolveMemoryRerankerEngine(withEngine("laya"), { LUNA_RERANK_ENGINE: "jev" })).toBe("laya")
     expect(resolveMemoryRerankerEngine(withEngine("cross-encoder"), { LUNA_RERANK_ENGINE: "jev" })).toBe("cross-encoder")
   })
 
@@ -387,6 +388,7 @@ describe("memory reranker engine", () => {
     expect(resolveMemoryRerankerEngine(null, { LUNA_RERANK_ENGINE: "Jev" })).toBe("cross-encoder")
     expect(boundMemoryRerankerEngine({ LUNA_RERANK_ENGINE: "typo" })).toBe("cross-encoder")
     expect(boundMemoryRerankerEngine({ LUNA_RERANK_ENGINE: "jev" })).toBe("jev")
+    expect(boundMemoryRerankerEngine({ LUNA_RERANK_ENGINE: "laya" })).toBe("laya")
     expect(boundMemoryRerankerEngine({})).toBe("cross-encoder")
   })
 
@@ -407,6 +409,7 @@ describe("memory reranker engine", () => {
 
   it("isMemoryRerankerEngine accepts exactly the bindable engines", () => {
     expect(isMemoryRerankerEngine("jev")).toBe(true)
+    expect(isMemoryRerankerEngine("laya")).toBe(true)
     expect(isMemoryRerankerEngine("cross-encoder")).toBe(true)
     expect(isMemoryRerankerEngine("Jev")).toBe(false)
     expect(isMemoryRerankerEngine(undefined)).toBe(false)

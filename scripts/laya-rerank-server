@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""laya-rerank-server — local Jev-protocol sidecar backed by the laya package.
+
+Luna's LUNA_RERANK_ENGINE=laya reranker (packages/adapter-sdk/src/
+laya-reranker.ts) POSTs the exact request body the hosted Jev engine takes
+(`{model, state, questions: {<id>: {type: "noul", instructions: {task,
+memory}, criteria}}}`) to this server on 127.0.0.1, and gets Jev-shaped
+`{model, answers: {<id>: {type: "noul", noul: P(true)}}}` back — judged
+locally by the Laya checkpoints, so memory text never leaves the machine.
+
+Setup (Python 3.10+; first run downloads the checkpoints from Hugging Face):
+
+    pip install laya
+
+Run:
+
+    scripts/laya-rerank-server            # 127.0.0.1:8182
+    LAYA_PORT=8183 scripts/laya-rerank-server
+    LAYA_DEVICE=cuda scripts/laya-rerank-server     # cuda | mps | cpu
+    LAYA_PRELOAD=1 scripts/laya-rerank-server       # keep every checkpoint hot
+
+Luna points at it with LUNA_LAYA_URL (default http://127.0.0.1:8182). The
+request's `model` selects the checkpoint the Router uses: "auto" (the
+default) routes per request, or pin a LUNA_LAYA_MODEL like "multilingual" or
+"typed-decisions"; a LUNA_LAYA_MODEL that is a path to a checkpoint dir is
+loaded straight from disk (local fine-tunes). Requests are answered serially
+on purpose — a forward
+pass serializes on the GPU anyway, and batching is already done client-side.
+"""
+
+import argparse
+import json
+import os
+import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+DEFAULT_PORT = 8182
+
+_router = None
+_router_lock = threading.Lock()
+_agents = {}
+
+
+def get_router(preload: bool, device: str | None):
+    """Lazy-build the Router so the socket binds before the (slow) first
+    checkpoint load; a lazy load on the first request is still a failure mode
+    the Luna reranker's warm-up call pays once, not every search."""
+    global _router
+    with _router_lock:
+        if _router is None:
+            try:
+                import laya  # noqa: F401
+                from laya import Router
+            except ImportError:
+                sys.stderr.write(
+                    "laya-rerank-server: `import laya` failed — pip install laya "
+                    "(Python >=3.10)\n"
+                )
+                sys.exit(2)
+            kwargs = {"preload": preload}
+            if device:
+                kwargs["device"] = device
+            _router = Router(**kwargs)
+        return _router
+
+
+def get_agent(path: str, device: str | None):
+    """Checkpoint dir on disk (rl_agent_config.json + model.safetensors):
+    load it with Agent directly. The Router's name registry only accepts the
+    shipped checkpoints, so a locally fine-tuned checkpoint — the output of
+    the Jev→Laya bootstrap — is served from its path instead of a name."""
+    if path not in _agents:
+        from laya.agent import Agent
+
+        kwargs = {}
+        if device:
+            kwargs["device"] = device
+        _agents[path] = Agent(path, **kwargs)
+    return _agents[path]
+
+
+def noul_instructions(question: dict) -> str:
+    """Fold a Jev noul question into the single instruction string Laya takes.
+
+    Jev passes structured fields — `instructions: {task, memory}` plus a
+    true/false `criteria` dict — while Laya takes one instruction string, so
+    the memory text and the criteria wording are appended verbatim.
+    """
+    instructions = question.get("instructions")
+    if isinstance(instructions, dict):
+        task = str(instructions.get("task") or "")
+        memory = instructions.get("memory")
+    else:
+        task = str(instructions or "")
+        memory = None
+    parts = [task] if task else []
+    if memory is not None:
+        parts.append(f"Memory:\n{memory}")
+    criteria = question.get("criteria")
+    if isinstance(criteria, dict):
+        true_c = criteria.get("true")
+        false_c = criteria.get("false")
+        if true_c:
+            parts.append(f"The answer is true when: {true_c}")
+        if false_c:
+            parts.append(f"The answer is false when: {false_c}")
+    return "\n\n".join(parts)
+
+
+def judge(body: dict) -> dict:
+    """Run one Laya predict for a Jev-shaped request; return Jev-shaped answers."""
+    questions = {}
+    for qid, question in (body.get("questions") or {}).items():
+        if not isinstance(question, dict) or question.get("type") != "noul":
+            raise ValueError(f"unsupported question type for {qid!r}; only noul is served")
+        questions[qid] = {"type": "noul", "instructions": noul_instructions(question)}
+    if not questions:
+        raise ValueError("no questions in request")
+    model = body.get("model")
+    if isinstance(model, str) and os.path.isdir(model):
+        answers = get_agent(model, _device).system_one(body.get("state"), questions)["answers"]
+        routed_name = model
+    else:
+        router = get_router(preload=_preload, device=_device)
+        kwargs = {} if model in (None, "auto") else {"model": model}
+        result = router.predict(body.get("state"), questions, **kwargs)
+        answers = result["answers"]
+        routed_name = (result.get("routing") or {}).get("model", model or "laya")
+    out = {}
+    for qid in questions:
+        answer = answers.get(qid)
+        noul = answer.get("noul") if isinstance(answer, dict) else None
+        if not isinstance(noul, (int, float)):
+            raise ValueError(f"laya returned no noul for {qid!r}")
+        out[qid] = {"type": "noul", "noul": float(noul)}
+    return {"model": routed_name, "answers": out}
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "laya-rerank-server"
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path.rstrip("/") in ("", "/health"):
+            self._send_json(200, {"status": "ok"})
+        else:
+            self._send_json(404, {"error": "not found"})
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            length = int(self.headers.get("content-length") or 0)
+            body = json.loads(self.rfile.read(length) or b"{}")
+            self._send_json(200, judge(body))
+        except Exception as exc:  # the reranker reads the status, never the body
+            self._send_json(500, {"error": exc.__class__.__name__})
+
+    def log_message(self, fmt: str, *args) -> None:
+        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+
+
+def main() -> None:
+    global _preload, _device
+    parser = argparse.ArgumentParser(description="Local Laya sidecar for Luna's memory reranker")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("LAYA_PORT", DEFAULT_PORT)))
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--device", default=os.environ.get("LAYA_DEVICE") or None)
+    parser.add_argument("--preload", action="store_true", default=os.environ.get("LAYA_PRELOAD") == "1")
+    args = parser.parse_args()
+    _preload, _device = args.preload, args.device
+
+    if args.preload:
+        # Load every checkpoint now rather than on the first rerank.
+        get_router(preload=True, device=args.device)
+
+    server = ThreadingHTTPServer((args.host, args.port), Handler)
+    sys.stderr.write(f"laya-rerank-server listening on http://{args.host}:{args.port}\n")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

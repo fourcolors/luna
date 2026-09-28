@@ -37,6 +37,14 @@ export {
   type JevClassifierOptions,
 } from "./jev-classifier.js"
 export {
+  LayaRerankerLayer,
+  layaUrl,
+  DEFAULT_LAYA_URL,
+  DEFAULT_LAYA_TIMEOUT_MS,
+  LAYA_DEFAULT_MAX_CANDIDATES,
+  type LayaRerankerOptions,
+} from "./laya-reranker.js"
+export {
   WakeReasonerDefault,
   buildWakePrompt,
   parseDigest as parseWakeDigest,
