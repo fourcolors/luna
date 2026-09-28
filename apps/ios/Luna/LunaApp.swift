@@ -28,8 +28,12 @@ struct RootView: View {
                 set: { store.path = $0 }
             )) {
                 ThreadListView()
-                    .navigationDestination(for: String.self) { threadId in
-                        ChatView(threadId: threadId)
+                    .navigationDestination(for: String.self) { dest in
+                        if dest == AppState.newChatRoute {
+                            NewChatView()
+                        } else {
+                            ChatView(threadId: dest)
+                        }
                     }
             }
             .onAppear { store.connect() }

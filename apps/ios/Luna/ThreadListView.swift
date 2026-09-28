@@ -2,7 +2,6 @@ import SwiftUI
 
 struct ThreadListView: View {
     @Environment(AppState.self) private var store
-    @State private var showNewThread = false
     @State private var showSettings = false
 
     var body: some View {
@@ -40,7 +39,7 @@ struct ThreadListView: View {
                     Button { showSettings = true } label: {
                         Image(systemName: "gearshape")
                     }
-                    Button { showNewThread = true } label: {
+                    Button { store.path.append(AppState.newChatRoute) } label: {
                         Image(systemName: "square.and.pencil")
                     }
                     .disabled(store.connection != .connected)
@@ -48,7 +47,6 @@ struct ThreadListView: View {
             }
         }
         .refreshable { store.refreshThreads() }
-        .sheet(isPresented: $showNewThread) { NewThreadView() }
         .sheet(isPresented: $showSettings) {
             NavigationStack { SettingsView() }
         }

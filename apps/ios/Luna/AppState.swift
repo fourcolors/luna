@@ -40,7 +40,10 @@ final class AppState {
     var threads: [SessionSummary] = []
     var entries: [String: [ChatEntry]] = [:]
     var runningThreads: Set<String> = []
-    var path: [String] = [] // NavigationStack path of thread ids
+    var isCreatingThread = false
+    /// NavigationStack path: thread ids plus the new-chat draft sentinel.
+    static let newChatRoute = "new-chat"
+    var path: [String] = []
 
     // Settings (persisted)
     var host: String { didSet { defaults.set(host, forKey: "luna.host") } }
@@ -55,7 +58,7 @@ final class AppState {
     private var subscribed: Set<String> = []
     private var retryTask: Task<Void, Never>?
     private var intentionallyClosed = false
-    private var pendingOpen = false
+    private var pendingSend: (text: String, attachments: [WireAttachment]?)?
     private var supportsTurnComplete = false
 
     var isConfigured: Bool { !host.trimmingCharacters(in: .whitespaces).isEmpty && token.count >= 16 }
@@ -128,13 +131,15 @@ final class AppState {
         client.send(ListThreadsFrameOut(limit: 200, status: nil))
     }
 
-    func createThread(title: String, modelID: String?, effort: String?) {
-        pendingOpen = true
-        client.send(NewThreadFrameOut(
-            model: modelID,
-            effort: effort,
-            title: title.trimmingCharacters(in: .whitespaces).isEmpty ? nil : title.trimmingCharacters(in: .whitespaces)
-        ))
+    /// ChatGPT-style new chat: the first message creates the thread — the
+    /// draft view sends this, then threadCreated swaps the draft route for
+    /// the real thread id and flushes the queued message.
+    func createThreadAndSend(text: String, attachments: [WireAttachment], modelID: String?, effort: String?) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !attachments.isEmpty, !isCreatingThread else { return }
+        isCreatingThread = true
+        pendingSend = (trimmed, attachments.isEmpty ? nil : attachments)
+        client.send(NewThreadFrameOut(model: modelID, effort: effort, title: nil))
     }
 
     func openThread(_ threadId: String) {
@@ -190,13 +195,22 @@ final class AppState {
             if !threads.contains(where: { $0.id == thread.id }) {
                 threads.insert(thread, at: 0)
             }
-            if pendingOpen {
-                pendingOpen = false
-                openThread(thread.id)
-                path.append(thread.id)
+            if isCreatingThread {
+                isCreatingThread = false
+                if let pending = pendingSend {
+                    pendingSend = nil
+                    openThread(thread.id)
+                    send(threadId: thread.id, text: pending.text, attachments: pending.attachments ?? [])
+                }
+                if let i = path.lastIndex(of: Self.newChatRoute) {
+                    path[i] = thread.id
+                } else {
+                    path.append(thread.id)
+                }
             }
         case .threadCreateError(let message):
-            pendingOpen = false
+            isCreatingThread = false
+            pendingSend = nil
             banner = message
         case .threadSnapshot(let threadId, _, let messages):
             subscribed.insert(threadId)
