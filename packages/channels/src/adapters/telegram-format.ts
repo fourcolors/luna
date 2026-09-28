@@ -160,9 +160,16 @@ export const markdownToTelegramHtml = (md: string): string => {
     if (fence !== null) {
       const marker = (fence[1] ?? "```").slice(0, 3)
       const lang = fenceLang(fence[2] ?? "")
+      // A closing fence is a marker run of the SAME char with NO info string
+      // (CommonMark). The old trim().startsWith(marker) scan treated a
+      // "```typescript" line inside an open block as a closer, mangling
+      // "markdown about markdown" (which the agent writes constantly when
+      // explaining code). Matches scanFences' rule 2 in delivery.ts, which
+      // already enforces this for chunk repair.
+      const closerRe = marker[0] === "~" ? /^\s*~{3,}\s*$/ : /^\s*`{3,}\s*$/
       const buf: string[] = []
       i++
-      while (i < lines.length && !(lines[i] ?? "").trim().startsWith(marker)) {
+      while (i < lines.length && !closerRe.test(lines[i] ?? "")) {
         buf.push(lines[i] ?? "")
         i++
       }
