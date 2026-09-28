@@ -60,6 +60,13 @@ final class AppState {
     private var intentionallyClosed = false
     private var pendingSend: (text: String, attachments: [WireAttachment]?)?
     private var supportsTurnComplete = false
+    /// Deltas are coalesced ~20Hz — a hot stream would otherwise re-render
+    /// the whole timeline per wire frame and saturate the main thread.
+    private var pendingDeltas: [String: (turnId: String, text: String)] = [:]
+    private var deltaFlushScheduled = false
+    /// Turns that already finished — late deltas (e.g. racing an interrupt)
+    /// must not resurrect a streaming row or the running state.
+    private var doneTurns: [String: Set<String>] = [:]
 
     var isConfigured: Bool { !host.trimmingCharacters(in: .whitespaces).isEmpty && token.count >= 16 }
 
@@ -216,16 +223,22 @@ final class AppState {
             subscribed.insert(threadId)
             entries[threadId] = messages.sorted { $0.seq < $1.seq }.map { .message($0) }
             seenIDs[threadId] = Set(messages.map(\.id))
+            doneTurns[threadId] = []
+            pendingDeltas.removeValue(forKey: threadId)
             runningThreads.remove(threadId)
         case .userAccepted(let threadId, _, let message):
             appendMessage(threadId: threadId, message)
         case .assistantDelta(let threadId, let turnId, let text):
-            appendDelta(threadId: threadId, turnId: turnId, text: text)
+            queueDelta(threadId: threadId, turnId: turnId, text: text)
         case .assistantDone(let threadId, let turnId, _, let message):
+            doneTurns[threadId, default: []].insert(turnId)
+            pendingDeltas.removeValue(forKey: threadId)
             removeStreaming(threadId: threadId, turnId: turnId)
             appendMessage(threadId: threadId, message)
             if !supportsTurnComplete { runningThreads.remove(threadId) }
-        case .assistantError(let threadId, let kind, let message):
+        case .assistantError(let threadId, let turnId, let kind, let message):
+            if let turnId { doneTurns[threadId, default: []].insert(turnId) }
+            pendingDeltas.removeValue(forKey: threadId)
             removeStreaming(threadId: threadId, turnId: nil)
             runningThreads.remove(threadId)
             banner = "\(kind): \(message)"
@@ -252,6 +265,7 @@ final class AppState {
                 entries[threadId] = list
             }
         case .turnComplete(let threadId):
+            pendingDeltas.removeValue(forKey: threadId)
             runningThreads.remove(threadId)
         case .threadArchived(let threadId):
             threads.removeAll { $0.id == threadId }
@@ -276,7 +290,31 @@ final class AppState {
         entries[threadId] = list
     }
 
-    private func appendDelta(threadId: String, turnId: String, text: String) {
+    private func queueDelta(threadId: String, turnId: String, text: String) {
+        if doneTurns[threadId]?.contains(turnId) == true { return }
+        var cur = pendingDeltas[threadId] ?? (turnId: turnId, text: "")
+        cur.turnId = turnId
+        cur.text += text
+        pendingDeltas[threadId] = cur
+        guard !deltaFlushScheduled else { return }
+        deltaFlushScheduled = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            self?.flushDeltas()
+        }
+    }
+
+    private func flushDeltas() {
+        deltaFlushScheduled = false
+        let batch = pendingDeltas
+        pendingDeltas.removeAll()
+        for (threadId, delta) in batch {
+            applyDelta(threadId: threadId, turnId: delta.turnId, text: delta.text)
+        }
+    }
+
+    private func applyDelta(threadId: String, turnId: String, text: String) {
+        if doneTurns[threadId]?.contains(turnId) == true { return }
         runningThreads.insert(threadId)
         var list = entries[threadId] ?? []
         if let idx = list.lastIndex(where: { $0.id == "s-\(turnId)" }),

@@ -137,7 +137,9 @@ private struct StreamingBubble: View {
                 if text.isEmpty {
                     ProgressView().controlSize(.small)
                 } else {
-                    MarkdownText(text)
+                    // Plain Text while streaming — markdown re-parse every
+                    // delta was the hot path saturating the main thread.
+                    Text(text)
                 }
             }
             .padding(.horizontal, 12)
@@ -232,13 +234,24 @@ private struct AttachmentView: View {
 }
 
 struct MarkdownText: View {
-    private let content: AttributedString
+    private let text: String
 
-    init(_ text: String) {
-        content = (try? AttributedString(
+    /// AttributedString(markdown:) is expensive — every row re-parsed on every
+    /// render (i.e. every delta). Memoized so finished messages parse once.
+    private static let cache = NSCache<NSString, NSAttributedString>()
+
+    init(_ text: String) { self.text = text }
+
+    private var content: AttributedString {
+        if let hit = Self.cache.object(forKey: text as NSString) {
+            return AttributedString(hit)
+        }
+        let parsed = (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(text)
+        Self.cache.setObject(NSAttributedString(parsed), forKey: text as NSString)
+        return parsed
     }
 
     var body: some View {

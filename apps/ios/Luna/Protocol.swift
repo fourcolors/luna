@@ -131,7 +131,7 @@ enum ServerFrame {
     case userAccepted(threadId: String, seq: Int, message: ChatMessage)
     case assistantDelta(threadId: String, turnId: String, text: String)
     case assistantDone(threadId: String, turnId: String, seq: Int, message: ChatMessage)
-    case assistantError(threadId: String, kind: String, message: String)
+    case assistantError(threadId: String, turnId: String?, kind: String, message: String)
     case toolCall(threadId: String, turnId: String, toolCallId: String, name: String, input: JSONValue?)
     case toolResult(threadId: String, toolCallId: String, ok: Bool, output: String, truncated: Bool)
     case turnComplete(threadId: String)
@@ -239,7 +239,7 @@ enum FrameCodec {
             return .assistantDone(threadId: f.threadId, turnId: f.turnId, seq: f.seq, message: f.message)
         case "assistant-error":
             guard let f: AssistantErrorFrameIn = d(AssistantErrorFrameIn.self) else { return nil }
-            return .assistantError(threadId: f.threadId, kind: f.error.kind, message: f.error.message)
+            return .assistantError(threadId: f.threadId, turnId: f.turnId, kind: f.error.kind, message: f.error.message)
         case "tool-call":
             guard let f: ToolCallFrameIn = d(ToolCallFrameIn.self) else { return nil }
             return .toolCall(threadId: f.threadId, turnId: f.turnId, toolCallId: f.toolCallId, name: f.name, input: f.input)
