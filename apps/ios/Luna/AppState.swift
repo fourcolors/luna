@@ -67,6 +67,9 @@ final class AppState {
     /// Turns that already finished — late deltas (e.g. racing an interrupt)
     /// must not resurrect a streaming row or the running state.
     private var doneTurns: [String: Set<String>] = [:]
+    /// Threads the user just interrupted — their trailing assistant-error
+    /// (the SDK's aborted-stream diagnostic) isn't a real error for the UI.
+    private var interruptedThreads: Set<String> = []
 
     var isConfigured: Bool { !host.trimmingCharacters(in: .whitespaces).isEmpty && token.count >= 16 }
 
@@ -175,6 +178,7 @@ final class AppState {
     }
 
     func interrupt(threadId: String) {
+        interruptedThreads.insert(threadId)
         client.send(InterruptFrameOut(threadId: threadId))
     }
 
@@ -241,7 +245,9 @@ final class AppState {
             pendingDeltas.removeValue(forKey: threadId)
             removeStreaming(threadId: threadId, turnId: nil)
             runningThreads.remove(threadId)
-            banner = "\(kind): \(message)"
+            if interruptedThreads.remove(threadId) == nil {
+                banner = "\(kind): \(message)"
+            }
         case .toolCall(let threadId, _, let toolCallId, let name, let input):
             runningThreads.insert(threadId)
             var list = entries[threadId] ?? []

@@ -34,6 +34,8 @@ struct ComposerView: View {
                 PhotosPicker(selection: $pickedItem, matching: .images) {
                     Image(systemName: "photo")
                         .font(.title3)
+                        .frame(width: 36, height: 36)
+                        .contentShape(Rectangle())
                 }
                 .onChange(of: pickedItem) { _, item in
                     guard let item else { return }
@@ -55,13 +57,18 @@ struct ComposerView: View {
                         Image(systemName: "stop.circle.fill")
                             .font(.title2)
                             .foregroundStyle(.red)
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
                     }
                 } else if isSending {
                     ProgressView()
+                        .frame(width: 40, height: 40)
                 } else {
                     Button { send() } label: {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.title2)
+                            .frame(width: 40, height: 40)
+                            .contentShape(Rectangle())
                     }
                     .disabled(
                         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
