@@ -70,7 +70,10 @@ venv_python() {
 # (kill -9, crash, reboot) and the OS can later recycle the pid for an
 # unrelated process. Liveness alone is not enough - `stop` would signal an
 # innocent process - so verify the command line names the sidecar and treat
-# a mismatch as stale (drop the pidfile, report not running).
+# a mismatch as stale (drop the pidfile, report not running). Match the full
+# $SIDECAR path (cmd_start always launches it absolute), not the bare
+# filename: a bare-name match would also trust e.g. an editor or grep that
+# merely mentions laya-rerank-server.
 pid_cmdline() {
   case "$(uname -s)" in
     Darwin) ps -p "$1" -o command= 2>/dev/null ;;
@@ -88,7 +91,7 @@ running_pid() {
     return 1
   fi
   case "$(pid_cmdline "$pid")" in
-    *laya-rerank-server*) ;;
+    *"$SIDECAR"*) ;;
     *)
       rm -f "$PIDFILE"
       return 1
