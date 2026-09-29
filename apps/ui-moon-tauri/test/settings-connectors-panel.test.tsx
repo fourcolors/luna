@@ -30,7 +30,11 @@ import {
   isSettingsConnectorsPanelType,
   mountSettingsConnectorsPanel,
 } from "../frontend-react/src/panels/settings-connectors-mount"
-import { formatOauthConsentError } from "../frontend-react/src/panels/settings-connectors/connectorsReducer"
+import {
+  formatOauthConsentError,
+  initialConnectorsState,
+  reduceConnectors,
+} from "../frontend-react/src/panels/settings-connectors/connectorsReducer"
 import type { LunaFrameRegistry, PanelCtx } from "../frontend-react/src/panels/panel-ctx"
 
 // ── Real LunaWS.createFrameRegistry() - loaded from the actual vendor file so
@@ -754,5 +758,58 @@ describe("mountSettingsConnectorsPanel (panel.html contract parity)", () => {
       resolvedRouteKey: null,
       lastNotice: null,
     })
+  })
+})
+
+describe("reduceConnectors status-frame OAuth attribution", () => {
+  // Flow B (oauth_B, google) in flight; flow A was superseded for the same
+  // connector and its completion frame arrives late with A's requestId.
+  function inFlightB() {
+    let s = initialConnectorsState()
+    s = reduceConnectors(s, { type: "oauth-authorizing-start", defId: "google" })
+    s = reduceConnectors(s, { type: "oauth-begin-set", requestId: "oauth_B", defId: "google" })
+    s = reduceConnectors(s, { type: "oauth-code-sent" })
+    return s
+  }
+  const instA = { definitionId: "google", id: "inst_A", label: "personal" } as any
+  const instB = { definitionId: "google", id: "inst_B", label: "work" } as any
+
+  it("a superseded flow's success frame does not tear down the newer flow", () => {
+    const s = reduceConnectors(inFlightB(), {
+      type: "status-frame",
+      frame: { requestId: "oauth_A", ok: true, instance: instA },
+    } as any)
+    expect(s.oauthRequestId).toBe("oauth_B")
+    expect(s.oauthDefinitionId).toBe("google")
+    expect(s.busy["google"]).toBe("authorizing")
+  })
+
+  it("a superseded flow's failure frame keeps the newer flow but still shows the message", () => {
+    const s = reduceConnectors(inFlightB(), {
+      type: "status-frame",
+      frame: { requestId: "oauth_A", ok: false, message: "A failed", instance: instA },
+    } as any)
+    expect(s.oauthRequestId).toBe("oauth_B")
+    expect(s.busy["google"]).toBe("authorizing")
+    expect(s.error).toBe("A failed")
+  })
+
+  it("the in-flight flow's own success frame still completes it", () => {
+    const s = reduceConnectors(inFlightB(), {
+      type: "status-frame",
+      frame: { requestId: "oauth_B", ok: true, instance: instB },
+    } as any)
+    expect(s.oauthRequestId).toBeNull()
+    expect(s.oauthDefinitionId).toBeNull()
+    expect(s.busy["google"]).toBeUndefined()
+  })
+
+  it("the in-flight flow's own failure frame still tears it down with the error", () => {
+    const s = reduceConnectors(inFlightB(), {
+      type: "status-frame",
+      frame: { requestId: "oauth_B", ok: false, message: "bad code" },
+    } as any)
+    expect(s.oauthRequestId).toBeNull()
+    expect(s.error).toBe("bad code")
   })
 })

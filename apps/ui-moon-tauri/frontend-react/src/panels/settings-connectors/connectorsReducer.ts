@@ -293,10 +293,17 @@ function applyStatusFrame(
   // that merely shares this handler - see the vanilla module's doc for the
   // full attribution rules (kept verbatim, including the redemption-window
   // phase gate on oauthCodeSent).
+  //
+  // A frame carrying a requestId is attributable to our flow only when the id
+  // matches: a superseded same-connector flow's completion frame must not tear
+  // down the newer flow (its redirect would then be ignored and the new flow
+  // left waiting on a dead listener).
   const attributableToOurOauth =
     state.oauthRequestId !== null &&
     ((!!frame.requestId && frame.requestId === state.oauthRequestId) ||
-      (!!frame.instance && frame.instance.definitionId === state.oauthDefinitionId) ||
+      (!frame.requestId &&
+        !!frame.instance &&
+        frame.instance.definitionId === state.oauthDefinitionId) ||
       (state.oauthCodeSent && !frame.ok && !frame.requestId && !frame.instance))
 
   let next = state
@@ -314,7 +321,17 @@ function applyStatusFrame(
   }
 
   if (frame.instance) {
-    const busy = clearBusy(next.busy, frame.instance.definitionId)
+    // A superseded flow's frame must not clear the busy spinner of our
+    // in-flight same-connector flow: the stale frame carries the superseded
+    // flow's requestId, so its busy entry belongs to the new flow.
+    const staleForInFlightOauth =
+      state.oauthRequestId !== null &&
+      state.oauthDefinitionId === frame.instance.definitionId &&
+      !!frame.requestId &&
+      frame.requestId !== state.oauthRequestId
+    const busy = staleForInFlightOauth
+      ? next.busy
+      : clearBusy(next.busy, frame.instance.definitionId)
     const consentDraft = { ...next.consentDraft }
     delete consentDraft[frame.instance.definitionId]
     next = { ...next, busy, consentDraft }
