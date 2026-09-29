@@ -66,12 +66,34 @@ venv_python() {
   return 1
 }
 
+# The pidfile can go stale: the sidecar may die without removing it
+# (kill -9, crash, reboot) and the OS can later recycle the pid for an
+# unrelated process. Liveness alone is not enough - `stop` would signal an
+# innocent process - so verify the command line names the sidecar and treat
+# a mismatch as stale (drop the pidfile, report not running).
+pid_cmdline() {
+  case "$(uname -s)" in
+    Darwin) ps -p "$1" -o command= 2>/dev/null ;;
+    *) tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null ;;
+  esac
+}
+
 running_pid() {
   [ -f "$PIDFILE" ] || return 1
   local pid
   pid="$(cat "$PIDFILE" 2>/dev/null || true)"
   [ -n "$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$PIDFILE"
+    return 1
+  fi
+  case "$(pid_cmdline "$pid")" in
+    *laya-rerank-server*) ;;
+    *)
+      rm -f "$PIDFILE"
+      return 1
+      ;;
+  esac
   printf '%s\n' "$pid"
 }
 
