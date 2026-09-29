@@ -184,7 +184,10 @@ cmd_stop() {
   local pid
   if ! pid="$(running_pid)"; then
     printf 'not running.\n'
-    rm -f "$PIDFILE"
+    # No rm -f here: running_pid already dropped the pidfile when the pid it
+    # vetted was stale, and drop_stale_pidfile deliberately keeps a pidfile a
+    # concurrent `start` has since replaced - deleting it would orphan the
+    # new sidecar.
     return 0
   fi
   kill "$pid" 2>/dev/null || true
