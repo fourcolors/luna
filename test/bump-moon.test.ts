@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { checkSync, extractVersion, replaceVersion, VERSION_FILES } from "../scripts/bump-moon.ts"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 
 const PKG_JSON = `{\n  "name": "ui-moon-tauri",\n  "version": "0.0.12",\n  "private": true\n}\n`
 const TAURI_JSON = `{\n  "productName": "Luna Moon",\n  "version": "0.0.12",\n  "identifier": "ai.luna.moon"\n}\n`
@@ -92,5 +94,25 @@ describe("checkSync", () => {
   it("FAILS when a file is missing its version", () => {
     const res = checkSync(m(PKG_JSON, CARGO_TOML, `{"name":"x"}`, CARGO_LOCK))
     expect(res.ok).toBe(false)
+  })
+})
+
+// Test that bun.lock's workspace version matches package.json (#718).
+describe("bun.lock workspace version sync", () => {
+  it("bun.lock workspace version must match package.json", () => {
+    const pkgPath = join(process.cwd(), "apps/ui-moon-tauri/package.json")
+    const lockPath = join(process.cwd(), "bun.lock")
+    
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"))
+    const lock = readFileSync(lockPath, "utf8")
+    
+    // Extract workspace version from bun.lock
+    // Format: "apps/ui-moon-tauri": { "name": "...", "version": "x.y.z", ...
+    const match = lock.match(/"apps\/ui-moon-tauri":\s*{[^}]*"version":\s*"(\d+\.\d+\.\d+)"/)
+    
+    expect(match, "bun.lock must have apps/ui-moon-tauri workspace entry with version").not.toBeNull()
+    const lockVersion = match?.[1]
+    
+    expect(lockVersion).toBe(pkg.version)
   })
 })
