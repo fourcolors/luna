@@ -812,4 +812,152 @@ describe("reduceConnectors status-frame OAuth attribution", () => {
     expect(s.oauthRequestId).toBeNull()
     expect(s.error).toBe("bad code")
   })
+
+  it("a superseded flow's frame preserves the newer flow's consent draft", () => {
+    const draft = { label: "work", caps: ["calendar"] } as any
+    const s = reduceConnectors(
+      { ...inFlightB(), consentDraft: { google: draft } },
+      {
+        type: "status-frame",
+        frame: { requestId: "oauth_A", ok: true, instance: instA },
+      } as any,
+    )
+    expect(s.consentDraft["google"]).toBe(draft)
+  })
+
+  it("the in-flight flow's own completion still clears its consent draft", () => {
+    const s = reduceConnectors(
+      { ...inFlightB(), consentDraft: { google: { label: "work", caps: ["calendar"] } as any } },
+      {
+        type: "status-frame",
+        frame: { requestId: "oauth_B", ok: true, instance: instB },
+      } as any,
+    )
+    expect(s.consentDraft["google"]).toBeUndefined()
+  })
+
+  it("a completion with no in-flight flow still clears the leftover draft", () => {
+    const idle = { ...initialConnectorsState(), consentDraft: { google: { label: "old" } as any } }
+    const s = reduceConnectors(idle, {
+      type: "status-frame",
+      frame: { ok: true, instance: instA },
+    } as any)
+    expect(s.consentDraft["google"]).toBeUndefined()
+  })
+})
+
+describe("ConnectorsPanel connector-status begin watchdog", () => {
+  // Fire frames through the mounted panel (not the reducer directly) so the
+  // status callback's begin-timer gating is covered alongside reducer state.
+  // These tests run under fake timers, so they use a microtask-only flush:
+  // the shared flush() helper waits on a real setTimeout, which fake timers
+  // never fire.
+  async function flushMicro(): Promise<void> {
+    await act(async () => {
+      for (let i = 0; i < 100; i++) await Promise.resolve()
+    })
+  }
+
+  async function startOauthFlow(conn: FakeConn, defId: string) {
+    act(() => connectBtn(defId).click())
+    act(() => goBtn(defId).click())
+    await flushMicro()
+  }
+
+  it("a superseded flow's late status does not disarm the newer flow's watchdog", async () => {
+    vi.useFakeTimers()
+    try {
+      const conn = mountEnabled({ invoke: (cmd) => (cmd === "oauth_loopback_start" ? 54321 : null) })
+      act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF] }))
+      const cancelBtn = (defId: string) =>
+        document.querySelector(`[data-testid="connector-cancel-btn-${defId}"]`) as HTMLButtonElement
+
+      // Flow A (gws): begin sent, 30s watchdog armed.
+      await startOauthFlow(conn, "gws")
+      const beginA = conn.sentFrames().find((f) => f.type === "connector-oauth-begin")!
+      // The operator cancels A and immediately starts flow B for the same
+      // connector: fresh begin, fresh watchdog.
+      act(() => cancelBtn("gws").click())
+      await flushMicro()
+      await startOauthFlow(conn, "gws")
+      const begins = conn.sentFrames().filter((f) => f.type === "connector-oauth-begin")
+      expect(begins).toHaveLength(2)
+      expect(begins[1].requestId).not.toBe(beginA.requestId)
+      conn.invoke.mockClear()
+
+      // A's late completion arrives while B still awaits its redirect.
+      act(() =>
+        conn.fireFrame({
+          type: "connector-status",
+          requestId: beginA.requestId,
+          ok: true,
+          instance: { definitionId: "gws", id: "inst_A", label: "personal" },
+        }),
+      )
+
+      // B's watchdog must still be armed: after 30s it cancels B with a timeout.
+      await act(async () => {
+        vi.advanceTimersByTime(30000)
+      })
+      await flushMicro()
+      expect(conn.invoke).toHaveBeenCalledWith("oauth_loopback_cancel")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("the in-flight flow's own status still disarms its watchdog", async () => {
+    vi.useFakeTimers()
+    try {
+      const conn = mountEnabled({ invoke: (cmd) => (cmd === "oauth_loopback_start" ? 54321 : null) })
+      act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF] }))
+
+      await startOauthFlow(conn, "gws")
+      const begin = conn.sentFrames().find((f) => f.type === "connector-oauth-begin")!
+
+      act(() =>
+        conn.fireFrame({
+          type: "connector-status",
+          requestId: begin.requestId,
+          ok: true,
+          instance: { definitionId: "gws", id: "inst_B", label: "work" },
+        }),
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(60000)
+      })
+      await flushMicro()
+      expect(conn.invoke).not.toHaveBeenCalledWith("oauth_loopback_cancel")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("an unrelated status does not disarm the in-flight flow's watchdog", async () => {
+    vi.useFakeTimers()
+    try {
+      const conn = mountEnabled({ invoke: (cmd) => (cmd === "oauth_loopback_start" ? 54321 : null) })
+      act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF, API_KEY_DEF] }))
+
+      await startOauthFlow(conn, "gws")
+
+      // A plain-disconnect ack for another connector shares the handler.
+      act(() =>
+        conn.fireFrame({
+          type: "connector-status",
+          ok: true,
+          instance: { definitionId: "slack", id: "inst_slack", label: "team" },
+        }),
+      )
+
+      await act(async () => {
+        vi.advanceTimersByTime(30000)
+      })
+      await flushMicro()
+      expect(conn.invoke).toHaveBeenCalledWith("oauth_loopback_cancel")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
