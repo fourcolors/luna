@@ -149,26 +149,37 @@ fn write_atomic_0600(path: &std::path::Path, body: &str) -> Result<(), String> {
 /// Write `Authorization: Bearer <key>` to a 0600 temp file and return its
 /// path, so curl can take the bearer key via `-H @file` instead of on its
 /// argv — argv is visible to every same-user process in `ps` for the whole
-/// request lifetime. `create_new` fails closed on a name collision rather
-/// than clobbering; pid + a process-wide counter make collisions impossible
-/// in practice. The file is removed by [`AuthHeaderFile`]'s Drop once curl
-/// no longer needs it.
+/// request lifetime. `create_new` never clobbers: on a name collision (a
+/// crashed predecessor can leave a stale file behind, and pids get reused)
+/// the counter marches forward until an unused name is found, bounded at 100
+/// attempts before failing closed. The file is removed by [`AuthHeaderFile`]'s
+/// Drop once curl no longer needs it.
 fn write_auth_header_file(key: &str) -> Result<std::path::PathBuf, String> {
     use std::os::unix::fs::OpenOptionsExt as _;
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "luna-fish-auth-{}-{}.hdr",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .and_then(|mut f| f.write_all(format!("Authorization: Bearer {key}\n").as_bytes()))
-        .map_err(|e| format!("failed to write fish auth header file: {e}"))?;
-    Ok(path)
+    for _ in 0..100 {
+        let path = std::env::temp_dir().join(format!(
+            "luna-fish-auth-{}-{}.hdr",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("failed to write fish auth header file: {e}")),
+        };
+        if let Err(e) = f.write_all(format!("Authorization: Bearer {key}\n").as_bytes()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("failed to write fish auth header file: {e}"));
+        }
+        return Ok(path);
+    }
+    Err("failed to write fish auth header file: too many name collisions".to_string())
 }
 
 /// Owns the temp file from [`write_auth_header_file`]; removes it on drop.
@@ -1016,6 +1027,27 @@ mod tests {
             !guarded.exists(),
             "guard must remove the header file on drop"
         );
+        // A stale file left by a crashed predecessor (same pid, next counter
+        // value) must not fail the write: the counter marches past it.
+        let stale = {
+            let name = path.file_name().expect("file name").to_str().expect("utf8");
+            let counter: u64 = name
+                .trim_start_matches(&format!("luna-fish-auth-{}-", std::process::id()))
+                .trim_end_matches(".hdr")
+                .parse()
+                .expect("counter parses");
+            path.with_file_name(format!(
+                "luna-fish-auth-{}-{}.hdr",
+                std::process::id(),
+                counter + 1
+            ))
+        };
+        std::fs::write(&stale, b"stale").expect("plant stale file");
+        let skipped = write_auth_header_file("sekret3").expect("write past stale");
+        assert_ne!(skipped, stale, "must not reuse the stale name");
+        assert!(skipped.exists());
+        std::fs::remove_file(&stale).expect("cleanup stale");
+        std::fs::remove_file(&skipped).expect("cleanup");
         std::fs::remove_file(&path).expect("cleanup");
     }
 
