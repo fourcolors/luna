@@ -1054,24 +1054,49 @@ mod tests {
     // -- engine e2e over a stub HTTP server ---------------------------------
 
     /// Serve `n` HTTP requests on 127.0.0.1, each returning `response`;
-    /// returns the bound port. Bodies are bytes — a WAV or a JSON error.
-    fn stub_http(responses: Vec<Vec<u8>>) -> (u16, std::thread::JoinHandle<()>) {
+    /// returns the bound port, the server thread, and the captured request
+    /// heads (headers only, up to the `\r\n\r\n` terminator) so tests can
+    /// assert on the headers curl actually transmitted. Bodies are bytes —
+    /// a WAV or a JSON error.
+    fn stub_http(
+        responses: Vec<Vec<u8>>,
+    ) -> (
+        u16,
+        std::thread::JoinHandle<()>,
+        Arc<Mutex<Vec<Vec<u8>>>>,
+    ) {
         use std::io::Read as _;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let captured: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let heads = captured.clone();
         let handle = std::thread::spawn(move || {
             for response in responses {
                 let Ok((mut conn, _)) = listener.accept() else {
                     return;
                 };
-                let mut req = [0u8; 8192];
-                // Read the request headers (body may follow; curl writes it
-                // in the same segment for our small JSON payloads).
-                let _ = conn.read(&mut req);
+                // Capture the request head: read until the end of the
+                // headers so header assertions are not at the mercy of a
+                // single short read.
+                let mut head = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let Ok(n) = conn.read(&mut chunk) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    head.extend_from_slice(&chunk[..n]);
+                    if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 65536 {
+                        break;
+                    }
+                }
+                heads.lock().unwrap().push(head);
                 let _ = conn.write_all(&response);
             }
         });
-        (port, handle)
+        (port, handle, captured)
     }
 
     fn http_ok_wav(wav: &[u8]) -> Vec<u8> {
@@ -1099,7 +1124,7 @@ mod tests {
         // 0.25s of 16k samples through a real curl→stub→parse→sink path.
         let pcm: Vec<i16> = (0..4000).map(|i| ((i % 100) as i16 - 50) * 300).collect();
         let wav = wav_bytes(16000, 1, &pcm);
-        let (port, server) = stub_http(vec![http_ok_wav(&wav)]);
+        let (port, server, captured) = stub_http(vec![http_ok_wav(&wav)]);
         let cfg = test_config(format!("http://127.0.0.1:{port}"), Some("k"));
 
         let collected: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1138,6 +1163,15 @@ mod tests {
         assert!((got[0] - expect0).abs() < 1e-6);
         drop(tts);
         let _ = server.join();
+        // The Bearer key must reach the server as a transmitted header — the
+        // point of the -H @file change. Fail loudly if curl omits it.
+        let heads = captured.lock().unwrap();
+        assert_eq!(heads.len(), 1, "stub must see exactly one request");
+        let head = String::from_utf8_lossy(&heads[0]);
+        assert!(
+            head.contains("Authorization: Bearer k\r\n"),
+            "curl must transmit the bearer header, got:\n{head}"
+        );
     }
 
     #[test]
@@ -1188,7 +1222,7 @@ mod tests {
         .into_iter()
         .chain(body)
         .collect();
-        let (port, server) = stub_http(vec![resp]);
+        let (port, server, captured) = stub_http(vec![resp]);
         let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
         struct TestSink(Arc<Mutex<Vec<(String, serde_json::Value)>>>);
         impl EventSink for TestSink {
@@ -1224,6 +1258,14 @@ mod tests {
         assert!(msg.contains("invalid api key"), "expected api error text, got: {msg}");
         drop(tts);
         let _ = server.join();
+        // The error-path request must also carry the bearer header.
+        let heads = captured.lock().unwrap();
+        assert_eq!(heads.len(), 1, "stub must see exactly one request");
+        let head = String::from_utf8_lossy(&heads[0]);
+        assert!(
+            head.contains("Authorization: Bearer bad\r\n"),
+            "curl must transmit the bearer header, got:\n{head}"
+        );
     }
 
     #[test]
