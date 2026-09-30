@@ -707,7 +707,16 @@ fn error_body_summary(body: &str) -> String {
     }
     let t = body.trim();
     if t.len() > ERROR_BODY_TAIL {
-        format!("{}…", &t[..ERROR_BODY_TAIL])
+        // ERROR_BODY_TAIL is a byte index: floor it to the previous char
+        // boundary, otherwise slicing panics when a multibyte char straddles
+        // it (any non-JSON error body over 300 bytes with e.g. 'é' at byte 300
+        // kills the pump thread and drops the utterance). Byte 0 is always a
+        // boundary, so the loop terminates.
+        let mut end = ERROR_BODY_TAIL;
+        while !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &t[..end])
     } else if t.is_empty() {
         "empty response body".to_string()
     } else {
@@ -906,6 +915,18 @@ mod tests {
         assert_eq!(error_body_summary(j), "invalid api key");
         assert_eq!(error_body_summary("  boom "), "boom");
         assert_eq!(error_body_summary(""), "empty response body");
+    }
+
+    #[test]
+    fn error_body_summary_floors_to_a_char_boundary() {
+        // 'é' is two bytes in UTF-8; byte 300 lands mid-char. Pre-fix this
+        // panicked the pump thread ("end byte index 300 is not a char
+        // boundary"); now it truncates at the previous boundary.
+        let body = "x".repeat(299) + "é" + &"y".repeat(100);
+        assert_eq!(error_body_summary(&body), "x".repeat(299) + "…");
+        // ASCII-only bodies still truncate at exactly 300 bytes.
+        let ascii = "z".repeat(400);
+        assert_eq!(error_body_summary(&ascii), "z".repeat(300) + "…");
     }
 
     // -- model list parse ---------------------------------------------------
