@@ -513,6 +513,81 @@ describe("settings.voice panel", () => {
     expect(invoke).toHaveBeenCalledWith("voice_set_voice", { id: "f1" })
     expect(order.indexOf("voice_set_tts_engine")).toBeLessThan(order.indexOf("voice_list_voices"))
   })
+
+  // ── 18. Stale catalog race: a fish fetch landing after an engine switch ──
+
+  it("drops a stale fish catalog that resolves after the engine switched to system", async () => {
+    localStorage.setItem("luna_voice_tts_engine", "fish")
+
+    const deferred = () => {
+      let resolve!: (v: unknown) => void
+      const promise = new Promise<unknown>((res) => {
+        resolve = res
+      })
+      return { promise, resolve }
+    }
+
+    const fishCatalog = [{ id: "fish-ref-1", name: "Fish Ref" }]
+    const systemCatalog = [{ id: "Samantha", name: "Samantha" }]
+
+    let voiceListCalls = 0
+    const keySaveFetch = deferred() // fetchVoices() inside handleFishKeySave
+    const switchFetch = deferred() // populateVoices() inside handleEngineChange
+    const { ctx } = makeCtx({
+      invoke: (cmd) => {
+        switch (cmd) {
+          case "voice_status":
+            return { modelPresent: true }
+          case "voice_tts_info":
+            return { engine: "fish", fishKeyConfigured: false }
+          case "voice_list_voices":
+            voiceListCalls += 1
+            if (voiceListCalls === 1) return fishCatalog // boot populate
+            if (voiceListCalls === 2) return keySaveFetch.promise
+            return switchFetch.promise
+          default:
+            return null
+        }
+      },
+    })
+    const container = mount(ctx)
+    await vi.waitFor(() => expect(modeStatus()).toContain("ready"))
+    const optionValues = () =>
+      Array.from(document.querySelectorAll("#voice-voice-select option")).map(
+        (o) => (o as HTMLOptionElement).value,
+      )
+    // boot populate resolved: picker shows the fish catalog
+    await vi.waitFor(() => expect(optionValues()).toContain("fish-ref-1"))
+
+    // save a fish key: the catalog refetch hangs in flight
+    const keyInput = document.getElementById("voice-fish-key") as HTMLInputElement
+    act(() => {
+      keyInput.value = "fresh-key"
+    })
+    act(() => {
+      ;(document.getElementById("voice-fish-key-save") as HTMLButtonElement).click()
+    })
+    await vi.waitFor(() => expect(voiceListCalls).toBe(2))
+
+    // switch to the system engine; its own refetch hangs in flight too
+    act(() => {
+      findButtonByText(container, "System").click()
+    })
+    await vi.waitFor(() => expect(voiceListCalls).toBe(3))
+
+    // the system fetch lands first, then the stale fish fetch lands last
+    await act(async () => {
+      switchFetch.resolve(systemCatalog)
+    })
+    await vi.waitFor(() => expect(optionValues()).toContain("Samantha"))
+    await act(async () => {
+      keySaveFetch.resolve(fishCatalog)
+    })
+
+    // the stale fish catalog must not displace the system one
+    expect(optionValues()).toContain("Samantha")
+    expect(optionValues()).not.toContain("fish-ref-1")
+  })
 })
 
 // ── voiceReduce: pure reducer unit tests ────────────────────────────────
@@ -615,4 +690,5 @@ describe("voiceReduce", () => {
     expect(keyed.fishKeyConfigured).toBe(true)
     expect(keyed.ttsEngine).toBe("fish")
   })
+
 })
