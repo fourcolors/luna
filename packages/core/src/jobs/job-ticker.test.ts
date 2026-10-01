@@ -1082,6 +1082,45 @@ describe("JobTicker", () => {
     )
   })
 
+  it("a quarantined job leaves a failed job_runs row that names the bad schedule", async () => {
+    // Regression: quarantine used to disable the row and set
+    // last_status='errored' with only a log line, so anyone reading the DB saw
+    // "errored" with no run and no reason (hit by a one-shot written with
+    // spec='manual', which SYSTEM.md used to recommend).
+    let runs = 0
+    const counting: Worker = () =>
+      Effect.sync(() => {
+        runs++
+        return { outputText: null }
+      })
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "manual-spec", kind: "wake", spec: "manual", payload: { label: "m" } })
+      yield* store.setV2Fields("manual-spec", { schedule: "manual", nextRunAt: 0 })
+
+      yield* ticker.drain
+      expect(runs).toBe(0)
+      const after = yield* store.getById("manual-spec")
+      expect(after?.enabled).toBe(false)
+      expect(after?.lastStatus).toBe("errored")
+
+      const rows = yield* store.listRuns("manual-spec", 10)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.status).toBe("failed")
+      expect(rows[0]?.finishedAt).not.toBeNull()
+      expect(rows[0]?.error ?? "").toContain("manual")
+      expect(rows[0]?.error ?? "").toContain("disabled")
+
+      // Disabled, so a second drain adds no further rows.
+      yield* ticker.drain
+      expect(yield* store.listRuns("manual-spec", 10)).toHaveLength(1)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: counting }))),
+    )
+  })
+
   it("a parseable-but-unschedulable cron (no upcoming match) is also quarantined", async () => {
     let runs = 0
     const counting: Worker = () =>

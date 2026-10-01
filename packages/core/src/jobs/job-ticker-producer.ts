@@ -239,13 +239,42 @@ export const makeDrainOnce = (
                 ),
               ),
             )
-          yield* Effect.logWarning(
-            `[luna/sched] job=${job.id} has an unschedulable cron (schedule=${JSON.stringify(
-              job.schedule,
-            )} spec=${JSON.stringify(
-              job.spec,
-            )}); disabled it to stop the every-tick re-fire`,
+          const reason = `unschedulable cron (schedule=${JSON.stringify(
+            job.schedule,
+          )} spec=${JSON.stringify(
+            job.spec,
+          )}); disabled it to stop the every-tick re-fire`
+          yield* Effect.logWarning(`[luna/sched] job=${job.id} has an ${reason}`)
+          // Write a closed, failed run row carrying the reason. Without it
+          // the only trace of a quarantine is the log line above, and the
+          // DB shows a disabled job with last_status='errored' and no run
+          // to explain why. A typical cause is a one-shot written with a
+          // placeholder spec like 'manual' instead of an empty
+          // schedule+spec. Best-effort: a failed audit write must not stop
+          // the quarantine itself.
+          const audit = yield* store.recordRunStart({
+            jobId: job.id,
+            startedAt: tickAt,
+            attempt: job.retryAttempt + 1,
+          }).pipe(
+            Effect.catch((err) =>
+              Effect.as(
+                Effect.logWarning(
+                  `[luna/sched] quarantine audit row failed for job=${job.id}: ${err.message}`,
+                ),
+                null,
+              ),
+            ),
           )
+          if (audit) {
+            const finishedAt = yield* clock.nowMs()
+            yield* store.recordRunEnd(audit.id, {
+              finishedAt,
+              status: "failed",
+              error: `quarantined: ${reason}. A one-shot needs an EMPTY schedule and spec, not a placeholder.`,
+            }).pipe(Effect.catch(() => Effect.void))
+            failedInline++
+          }
           // claim() set last_status='running'; this row will NOT run, so
           // clear that marker - otherwise a UI/gallery reading
           // jobs.last_status shows a disabled, quarantined schedule as
