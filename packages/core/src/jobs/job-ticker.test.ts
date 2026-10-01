@@ -1109,6 +1109,7 @@ describe("JobTicker", () => {
       expect(rows).toHaveLength(1)
       expect(rows[0]?.status).toBe("failed")
       expect(rows[0]?.finishedAt).not.toBeNull()
+      expect(rows[0]?.error ?? "").toMatch(/^quarantined: /)
       expect(rows[0]?.error ?? "").toContain("manual")
       expect(rows[0]?.error ?? "").toContain("disabled")
 
@@ -1119,6 +1120,51 @@ describe("JobTicker", () => {
     await Effect.runPromise(
       prog.pipe(Effect.provide(buildStack({ wake: counting }))),
     )
+  })
+
+  it("a failing quarantine audit write never blocks the quarantine itself", async () => {
+    let runs = 0
+    const counting: Worker = () =>
+      Effect.sync(() => {
+        runs++
+        return { outputText: null }
+      })
+    const prog = Effect.gen(function* () {
+      const real = yield* JobsStoreService
+      const wrapped: JobsStoreApi = {
+        ...real,
+        recordRunStart: () =>
+          Effect.fail(new JobsStoreError({ op: "run_start", message: "simulated storage blip" })),
+      }
+      yield* real.record({ id: "manual-blip", kind: "wake", spec: "manual", payload: { label: "mb" } })
+      yield* real.setV2Fields("manual-blip", { schedule: "manual", nextRunAt: 0 })
+
+      const summary = yield* Effect.gen(function* () {
+        const ticker = yield* JobTicker
+        return yield* ticker.drain
+      }).pipe(
+        Effect.provide(
+          JobTickerLayer({ autoStart: false }).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(JobsStoreService, wrapped),
+                makeWorkerRegistry({ wake: counting }),
+                Clock.Default,
+              ),
+            ),
+          ),
+        ),
+      )
+
+      expect(runs).toBe(0)
+      const after = yield* real.getById("manual-blip")
+      expect(after?.enabled).toBe(false)
+      expect(after?.lastStatus).toBe("errored")
+      expect(yield* real.listRuns("manual-blip", 10)).toHaveLength(0)
+      // No row was written, so nothing is counted as an inline failure.
+      expect(summary.failedInline).toBe(0)
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: counting }))))
   })
 
   it("a parseable-but-unschedulable cron (no upcoming match) is also quarantined", async () => {

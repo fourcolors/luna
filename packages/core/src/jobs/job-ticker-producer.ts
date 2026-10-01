@@ -22,9 +22,10 @@ import type { WorkerEntry, WorkerRegistryApi } from "./worker-registry.js"
 /**
  * Compute the next fire time for a `jobs` row from its `schedule` field.
  * Falls back to the legacy `spec` column when `schedule` is null (legacy
- * rows). Returns null when neither parse succeeds — the ticker will leave
- * `next_run_at` alone in that case (and the row stays due forever, which is
- * the right pain signal — operators will see it spinning in logs).
+ * rows). Returns null when neither parse succeeds, or when the cron has no
+ * upcoming match. For a non-empty schedule/spec the producer then
+ * QUARANTINES the row (disable + failed audit run row + last_status
+ * 'errored'); an empty schedule AND spec is a one-shot instead.
  */
 const computeNextRunAt = (
   job: PersistedJob,
@@ -74,9 +75,10 @@ export interface ProducerDeps {
 
 /**
  * job-ticker-producer-executor-276 - the PRODUCER. One tick: read
- * `listDue`, then for each row either (a) a GUARD path - one-shot
- * re-encounter or quarantine - that plain-claims and returns
- * synchronously, no run row, no fork; (b) an UNKNOWN-KIND path that
+ * `listDue`, then for each row either (a) a GUARD path that claims and
+ * returns synchronously with no fork: a one-shot re-encounter (no run
+ * row) or a quarantine (writes an inline failed audit run row naming the
+ * bad schedule); (b) an UNKNOWN-KIND path that
  * claims + writes an inline failed `job_runs` row (there is no worker
  * to dispatch, so nothing to fork); or (c) a REAL DISPATCH that
  * atomically claims-and-starts the run (`claimAndStartRun`, amendment
@@ -174,9 +176,9 @@ export const makeDrainOnce = (
         const isOneShot = scheduleEmpty && specEmpty
         // Quarantine: the schedule/spec is NON-empty (not a one-shot) but
         // computeNextRunAt could not produce a next fire - the cron is
-        // unparseable OR has no upcoming match (e.g. "0 0 30 2 *"). A job
-        // with a NON-empty-but-unparseable cron is left alone otherwise
-        // (the deliberate pain-signal for a misconfigured schedule).
+        // unparseable OR has no upcoming match (e.g. "0 0 30 2 *"). Such a
+        // row would otherwise be due on every tick, so it is disabled and
+        // gets a failed audit run row (the quarantine branch below).
         const quarantine = !isOneShot && nextRunAt === null
         const reEncounter = isOneShot && dispatchedOneShots.has(job.id)
 
@@ -218,8 +220,8 @@ export const makeDrainOnce = (
         }
 
         if (quarantine) {
-          // GUARD PATH - verbatim disable + log + touch from the
-          // pre-split handleJob.
+          // GUARD PATH - disable + log + failed audit run row + touch.
+          // Never dispatched and never retried.
           const won = yield* store.claim(job.id, {
             claimAt: tickAt,
             nextRunAt,
@@ -271,7 +273,7 @@ export const makeDrainOnce = (
             yield* store.recordRunEnd(audit.id, {
               finishedAt,
               status: "failed",
-              error: `quarantined: ${reason}. A one-shot needs an EMPTY schedule and spec, not a placeholder.`,
+              error: `quarantined: ${reason}. If this was meant as a one-shot, leave schedule and spec EMPTY instead of a placeholder.`,
             }).pipe(Effect.catch(() => Effect.void))
             failedInline++
           }
