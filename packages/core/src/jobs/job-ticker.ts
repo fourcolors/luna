@@ -195,8 +195,9 @@ export interface TickSummary {
   /** Legacy `kind="cron"` rows (from the removed V1 path) skipped — there is no
    *  "cron" worker, so they are never claimed or dispatched here. */
   readonly skippedV1Cron: number
-  /** job-ticker-producer-executor-276 - unknown-kind closes written INLINE by
-   *  the producer (no worker to dispatch, so no fork): the only failures the
+  /** job-ticker-producer-executor-276 - unknown-kind closes, and quarantine
+   *  audit rows for unschedulable crons, written INLINE by the producer (no
+   *  worker to dispatch, so no fork): the only failures the
    *  producer itself can observe by the time `drain` returns. Every other
    *  outcome (worker success/failure, retry scheduling) happens later inside
    *  a forked executor and is visible only via `listRuns` after `awaitIdle`. */

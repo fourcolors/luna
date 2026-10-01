@@ -319,21 +319,26 @@ VALUES (
 );
 ```
 
-**One-shot: there is no one-shot spec.** Every enabled row recurs. A row
-whose `schedule`/`spec` is not valid cron (e.g. `'once'`) is due on
-**every** tick — it re-fires every ~60 s forever. To run work once, make
-the job's *first* step disable its own row:
+**One-shot: leave `schedule` and `spec` EMPTY.** A row whose `schedule`
+and `spec` are both empty strings (and `next_run_at` NULL) is a one-shot:
+it fires on the next tick, the ticker disables it, and it is never
+retried, even if the run fails.
 
 ```sql
-INSERT INTO jobs (id, kind, spec, payload_json, enabled, created_at, updated_at)
+INSERT INTO jobs (id, kind, spec, schedule, payload_json, enabled, created_at, updated_at)
 VALUES (
-  'my-once-job', 'workflow', 'manual',
-  '{"steps":[
-     {"kind":"shell","cmd":"sqlite3 ~/.luna/luna.db \"UPDATE jobs SET enabled=0 WHERE id=''my-once-job''\""},
-     {"kind":"shell","cmd":"echo hello"}]}',
+  'my-once-job', 'workflow', '', '',
+  '{"steps":[{"kind":"shell","cmd":"echo hello"}]}',
   1, unixepoch()*1000, unixepoch()*1000
 );
 ```
+
+Do **not** use a placeholder such as `'manual'` or `'once'`. A non-empty
+`schedule`/`spec` that is not valid cron (or never matches, like
+`0 0 30 2 *`) is **quarantined**: the ticker disables the row, sets
+`last_status='errored'`, does not run it, and writes a `failed`
+`job_runs` row whose `error` starts with `quarantined:` and names the
+bad schedule.
 
 `payload_json` must be strictly valid JSON: the ticker's due-list read
 parses every row as a unit, so one malformed row silently halts dispatch
