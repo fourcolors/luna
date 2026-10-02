@@ -69,7 +69,7 @@ final class AppState {
     private var doneTurns: [String: Set<String>] = [:]
     /// Threads the user just interrupted — their trailing assistant-error
     /// (the SDK's aborted-stream diagnostic) isn't a real error for the UI.
-    private var interruptedThreads: Set<String> = []
+    private var interruptedAt: [String: Date] = [:]
 
     var isConfigured: Bool { !host.trimmingCharacters(in: .whitespaces).isEmpty && token.count >= 16 }
 
@@ -181,7 +181,15 @@ final class AppState {
     }
 
     func interrupt(threadId: String) {
-        interruptedThreads.insert(threadId)
+        interruptedAt[threadId] = Date()
+        // The server's delta turnIds don't match the turnId on assistant-done,
+        // so mark the live streaming rows' ids done — trailing deltas can't
+        // resurrect the stream after Stop.
+        if let list = entries[threadId] {
+            for case .streaming(let id, _) in list {
+                doneTurns[threadId, default: []].insert(id)
+            }
+        }
         client.send(InterruptFrameOut(threadId: threadId))
     }
 
@@ -240,7 +248,7 @@ final class AppState {
         case .assistantDone(let threadId, let turnId, _, let message):
             doneTurns[threadId, default: []].insert(turnId)
             pendingDeltas.removeValue(forKey: threadId)
-            removeStreaming(threadId: threadId, turnId: turnId)
+            removeStreaming(threadId: threadId, turnId: nil)
             appendMessage(threadId: threadId, message)
             if !supportsTurnComplete { runningThreads.remove(threadId) }
         case .assistantError(let threadId, let turnId, let kind, let message):
@@ -248,7 +256,15 @@ final class AppState {
             pendingDeltas.removeValue(forKey: threadId)
             removeStreaming(threadId: threadId, turnId: nil)
             runningThreads.remove(threadId)
-            if interruptedThreads.remove(threadId) == nil {
+            // After Stop the server emits an "interrupted" ack plus an
+            // "adapter stream failed" teardown error — the teardown lands
+            // after turnComplete, so suppress expected teardown noise for a
+            // window rather than until a specific frame.
+            let recentInterrupt = interruptedAt[threadId].map {
+                Date().timeIntervalSince($0) < 30
+            } ?? false
+            let teardown = kind == "interrupted" || message.hasPrefix("adapter stream failed")
+            if !(recentInterrupt && teardown) {
                 banner = "\(kind): \(message)"
             }
         case .toolCall(let threadId, _, let toolCallId, let name, let input):
@@ -326,8 +342,12 @@ final class AppState {
         if doneTurns[threadId]?.contains(turnId) == true { return }
         runningThreads.insert(threadId)
         var list = entries[threadId] ?? []
-        if let idx = list.lastIndex(where: { $0.id == "s-\(turnId)" }),
-           case .streaming(let id, let existing) = list[idx] {
+        // Exactly one streaming row per thread. Delta turnIds shift across a
+        // single reply, so keying rows by turnId fragments one stream into
+        // many rows (which also churned entry count and wedged the scroller).
+        if let idx = list.lastIndex(where: {
+            if case .streaming = $0 { return true } else { return false }
+        }), case .streaming(let id, let existing) = list[idx] {
             list[idx] = .streaming(id: id, text: existing + text)
         } else {
             list.append(.streaming(id: turnId, text: text))
@@ -337,6 +357,11 @@ final class AppState {
 
     private func removeStreaming(threadId: String, turnId: String?) {
         var list = entries[threadId] ?? []
+        // Record the removed rows' turnIds as done — their ids never match the
+        // done/error turnId, so this is the only way late deltas get dropped.
+        for case .streaming(let id, _) in list where turnId == nil || id == turnId {
+            doneTurns[threadId, default: []].insert(id)
+        }
         list.removeAll {
             if case .streaming(let id, _) = $0 { return turnId == nil || id == turnId }
             return false

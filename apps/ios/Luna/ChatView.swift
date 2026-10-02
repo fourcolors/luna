@@ -12,33 +12,29 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(entries) { entry in
+            // Inverted list: the ScrollView is flipped 180°, each row flipped
+            // back, and entries iterated newest-first. Offset 0 therefore IS
+            // the tail — the viewport stays glued to the newest entry while it
+            // appends, grows, replaces, or removes, with zero scroll code.
+            // (Every scrollTo/scrollPosition variant raced LazyVStack layout
+            // and intermittently blanked the whole timeline.)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(entries.reversed()) { entry in
+                        Group {
                             switch entry {
                             case .message(let m): MessageBubble(message: m)
                             case .tool(let t): ToolActivityRow(activity: t)
                             case .streaming(_, let text): StreamingBubble(text: text)
                             }
                         }
-                        Color.clear.frame(height: 1).id("bottom")
+                        .rotationEffect(.radians(.pi))
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .scrollTargetLayout()
                 }
-                // Keeps the tail in view while streaming — a per-delta manual
-                // scrollTo raced LazyVStack layout and blanked the timeline.
-                .defaultScrollAnchor(.bottom)
-                // Snap on structural changes only: a count change is rare (new
-                // entry appended, or the streaming row removed on interrupt)
-                // and re-clamps the offset when content shrinks.
-                .onChange(of: entries.count) { _, _ in
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
+            .rotationEffect(.radians(.pi))
 
             ComposerView(
                 draft: $draft,
