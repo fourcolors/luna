@@ -8,7 +8,7 @@
 import { Effect } from "effect"
 import { describe, expect, it } from "vitest"
 import { jevRerankRequest, MemoryReranker, type RerankArgs } from "@luna/core"
-import { DEFAULT_LAYA_MODEL, DEFAULT_LAYA_URL, LayaRerankerLayer } from "../src/laya-reranker.js"
+import { DEFAULT_LAYA_MODEL, DEFAULT_LAYA_URL, LayaRerankerLayer, layaHealthUp } from "../src/laya-reranker.js"
 
 const args: RerankArgs = {
   queryText: "what is my dog called",
@@ -30,6 +30,22 @@ const answering = (nouls: ReadonlyArray<number>, calls: Array<{ url: string; ini
     calls.push({ url, init })
     return new Response(JSON.stringify({ model: "laya-english", answers: Object.fromEntries(nouls.map((n, i) => [`c${i}`, { type: "noul", noul: n }])) }))
   }) as unknown as typeof fetch
+
+describe("layaHealthUp", () => {
+  it("a refused connection is sidecar-down, not a defect that aborts the caller", async () => {
+    const refused = (async () => {
+      throw Object.assign(new Error("Unable to connect"), { code: "ConnectionRefused" })
+    }) as unknown as typeof fetch
+    expect(await Effect.runPromise(layaHealthUp("http://127.0.0.1:8182", refused))).toBe(false)
+  })
+
+  it("an HTTP error is sidecar-down and an ok response is up", async () => {
+    const down = (async () => new Response("laya sidecar is not installed\n", { status: 503 })) as unknown as typeof fetch
+    const up = (async () => new Response("ok", { status: 200 })) as unknown as typeof fetch
+    expect(await Effect.runPromise(layaHealthUp("http://127.0.0.1:8182", down))).toBe(false)
+    expect(await Effect.runPromise(layaHealthUp("http://127.0.0.1:8182", up))).toBe(true)
+  })
+})
 
 describe("LayaRerankerLayer", () => {
   it("posts the shared held-out request to the local sidecar with no credential, and scores p x 100 in candidate order", async () => {

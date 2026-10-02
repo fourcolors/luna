@@ -38,6 +38,7 @@ export {
 } from "./jev-classifier.js"
 export {
   LayaRerankerLayer,
+  layaHealthUp,
   layaUrl,
   DEFAULT_LAYA_URL,
   DEFAULT_LAYA_TIMEOUT_MS,

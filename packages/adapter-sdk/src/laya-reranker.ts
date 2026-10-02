@@ -63,6 +63,26 @@ export function layaUrl(explicit?: string): string {
   return (configured?.trim() || DEFAULT_LAYA_URL).replace(/\/+$/, "")
 }
 
+/**
+ * One sample of `<url>/health`. `true` only on an HTTP-ok response.
+ * A refused connection, a timeout, or any thrown fetch is `false`.
+ *
+ * Effect 4's `Effect.promise` turns a rejection into a defect, and
+ * `Effect.catch` does not catch defects. The chat server runs this probe
+ * while it builds its layer, so a defect here aborts boot. Swallow the
+ * rejection inside the async function, before `Effect.promise` sees it.
+ */
+export function layaHealthUp(url: string, doFetch: typeof fetch = fetch): Effect.Effect<boolean> {
+  return Effect.promise(async () => {
+    try {
+      const response = await doFetch(`${url}/health`, { signal: AbortSignal.timeout(1_000) })
+      return response.ok
+    } catch {
+      return false
+    }
+  })
+}
+
 function resolveModel(explicit?: string): string {
   return explicit ?? (process.env["LUNA_LAYA_MODEL"]?.trim() || DEFAULT_LAYA_MODEL)
 }

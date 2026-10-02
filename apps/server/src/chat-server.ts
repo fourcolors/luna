@@ -333,6 +333,7 @@ import {
   JevRerankerLayer,
   JevClassifierLayer,
   LayaRerankerLayer,
+  layaHealthUp,
   layaUrl,
   BulletinWriterDefault,
   loadAgents,
@@ -2597,14 +2598,7 @@ const buildBaseLayer = (
   const layaSidecarUrl = layaUrl()
   const layaSidecarProbeL = Layer.effectDiscard(
     Effect.gen(function* () {
-      const tick = Effect.promise(async () =>
-        (
-          await fetch(`${layaSidecarUrl}/health`, {
-            signal: AbortSignal.timeout(1_000),
-          })
-        ).ok,
-      ).pipe(
-        Effect.catch(() => Effect.succeed(false)),
+      const tick = layaHealthUp(layaSidecarUrl).pipe(
         Effect.flatMap((up) =>
           Effect.sync(() => {
             if (up !== layaSidecarUp) {
