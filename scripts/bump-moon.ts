@@ -43,7 +43,6 @@ export interface VersionFile {
   readonly pkg?: string
 }
 
-// TODO(#718): bun.lock also records the Moon workspace version and is never bumped here.
 /** The four files that carry the Moon version and MUST stay in lockstep. */
 export const VERSION_FILES: readonly VersionFile[] = [
   { path: "apps/ui-moon-tauri/package.json", kind: "json" },
@@ -159,6 +158,11 @@ const main = (): void => {
     process.stdout.write(`  set ${next}  ${f.path}\n`)
   }
 
+  // Sync the workspace version in bun.lock to match package.json (fixes #718).
+  const bunLock = spawnSync("bun", ["install", "--lockfile-only"], { cwd: root, encoding: "utf8" })
+  if (bunLock.status !== 0) die(`bun install --lockfile-only failed: ${bunLock.stderr ?? bunLock.stdout}`)
+  process.stdout.write(`  synced bun.lock workspace version\n`)
+
   // Re-read and assert the write produced a synced quad.
   const res = checkSync(readContents(root))
   if (!res.ok || res.distinct[0] !== next) die(`post-write check failed (got [${res.distinct.join(", ")}]) — aborting before any tag`)
@@ -172,7 +176,7 @@ const main = (): void => {
   const tag = `moon-v${next}`
   if (git(root, "rev-parse", "-q", "--verify", `refs/tags/${tag}`).ok) die(`tag ${tag} already exists — pick a new version`)
 
-  const add = git(root, "add", ...VERSION_FILES.map((f) => f.path))
+  const add = git(root, "add", "bun.lock", ...VERSION_FILES.map((f) => f.path))
   if (!add.ok) die(`git add failed: ${add.out}`)
   const commit = git(root, "commit", "-m", `chore(ui-moon-tauri): bump to ${next}`)
   if (!commit.ok) die(`git commit failed: ${commit.out}`)
