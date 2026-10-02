@@ -182,6 +182,7 @@ final class AppState {
 
     func interrupt(threadId: String) {
         interruptedAt[threadId] = Date()
+        pendingDeltas.removeValue(forKey: threadId)
         // The server's delta turnIds don't match the turnId on assistant-done,
         // so mark the live streaming rows' ids done — trailing deltas can't
         // resurrect the stream after Stop.
@@ -191,6 +192,14 @@ final class AppState {
             }
         }
         client.send(InterruptFrameOut(threadId: threadId))
+    }
+
+    /// True while the thread sits inside the post-Stop window: the SDK keeps
+    /// flushing queued deltas (under fresh turnIds, so doneTurns can't catch
+    /// them), and applying them churns create/destroy streaming-row cycles at
+    /// the delta cadence — enough layout work to wedge the main thread.
+    private func deltasSuppressed(threadId: String) -> Bool {
+        interruptedAt[threadId].map { Date().timeIntervalSince($0) < 30 } ?? false
     }
 
     func archive(threadId: String) {
@@ -242,6 +251,9 @@ final class AppState {
             pendingDeltas.removeValue(forKey: threadId)
             runningThreads.remove(threadId)
         case .userAccepted(let threadId, _, let message):
+            // A newly accepted user message starts a fresh turn — lift the
+            // interrupt suppression so this turn's deltas stream normally.
+            interruptedAt.removeValue(forKey: threadId)
             appendMessage(threadId: threadId, message)
         case .assistantDelta(let threadId, let turnId, let text):
             queueDelta(threadId: threadId, turnId: turnId, text: text)
@@ -316,6 +328,7 @@ final class AppState {
     }
 
     private func queueDelta(threadId: String, turnId: String, text: String) {
+        if deltasSuppressed(threadId: threadId) { return }
         if doneTurns[threadId]?.contains(turnId) == true { return }
         var cur = pendingDeltas[threadId] ?? (turnId: turnId, text: "")
         cur.turnId = turnId
@@ -339,6 +352,7 @@ final class AppState {
     }
 
     private func applyDelta(threadId: String, turnId: String, text: String) {
+        if deltasSuppressed(threadId: threadId) { return }
         if doneTurns[threadId]?.contains(turnId) == true { return }
         runningThreads.insert(threadId)
         var list = entries[threadId] ?? []

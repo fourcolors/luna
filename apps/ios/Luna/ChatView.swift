@@ -16,10 +16,15 @@ struct ChatView: View {
             // back, and entries iterated newest-first. Offset 0 therefore IS
             // the tail — the viewport stays glued to the newest entry while it
             // appends, grows, replaces, or removes, with zero scroll code.
-            // (Every scrollTo/scrollPosition variant raced LazyVStack layout
-            // and intermittently blanked the whole timeline.)
+            //
+            // Plain VStack, deliberately not lazy: LazyVStack's measureEstimates
+            // pass walks every row to reconcile estimated vs actual positions,
+            // and against 800-line Text rows that pass re-invalidates forever —
+            // the timeline blanked or the main thread pegged at 100%. Entries
+            // are bounded (the server snapshot is capped), so one full layout
+            // pass is cheap and correct.
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 14) {
                     ForEach(entries.reversed()) { entry in
                         Group {
                             switch entry {
