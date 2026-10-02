@@ -328,6 +328,13 @@ impl VoiceController {
         }
 
         if mode == VoiceMode::Off {
+            // VOICE.md: off means "no TTS" — stop any in-flight utterance,
+            // not just the mic pipeline. Previously a long utterance kept
+            // playing after the UI showed voice off (the frontend had to
+            // call voice_stop_speaking separately); the mode contract now
+            // enforces it. The pipeline thread is already joined above, so
+            // nothing holds the tts lock here.
+            lock_unpoisoned(&self.tts).stop();
             lock_unpoisoned(&self.shared).mode = VoiceMode::Off;
             set_state_emit(&self.shared, &self.sink, VoiceState::Off);
             sync(VoiceMode::Off);
@@ -1058,6 +1065,24 @@ mod tests {
             "blank transcripts must never be emitted"
         );
         r.controller.set_mode_with_sync("off", |_| {}).unwrap();
+    }
+
+    #[test]
+    fn off_mode_stops_in_flight_tts() {
+        // VOICE.md documents `off` as "no TTS": toggling voice off while an
+        // utterance is playing must stop the audio, not just the mic
+        // pipeline. Regression: the Off arm used to skip tts.stop(), so a
+        // long utterance kept playing after the UI showed voice off.
+        let r = rig(true, "hello");
+        r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
+        // Simulate an in-flight utterance (e.g. a long Fish-streamed paragraph).
+        r.speaking.store(true, Ordering::SeqCst);
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
+        assert!(
+            !r.speaking.load(Ordering::SeqCst),
+            "voice off must stop in-flight TTS"
+        );
+        assert_eq!(r.controller.status().state, "off");
     }
 
     #[test]
