@@ -162,6 +162,46 @@ Synthetic `dispatchEvent(new PointerEvent('pointerup',{pointerId:999}))` on a
 row mid real-drag exercises the non-owning-pointerId guard without disturbing
 the real captured gesture.
 
+## Voice-feature E2E (composer mic / voice menu / Fish key)
+
+For testing the composer mic cluster / voice quick-setup menu / Fish key
+(PR #750-class changes) in the real built app:
+
+- **Launch with `env -u FISH_API_KEY`.** `load_fish_config()` in
+  `src/voice/tts_fish.rs` seeds `FishConfig.api_key` from the env var before
+  reading `~/.luna/fish-api-key`, so `voice_tts_info.fishKeyConfigured` is
+  true at boot even with no key file — the "no key" UI states never appear.
+  Devin sessions inject FISH_API_KEY into every shell, so strip it at launch.
+- **`window.VoiceEngine` is published** on chat webviews (assignBridge in
+  bootChat.ts) — assert `mode`, `micPaused`, `menuOpen`, `modelPresent`,
+  `fishKeyConfigured`, `available`, `rustMode` directly instead of inferring
+  from DOM. `luna_voice_*` localStorage keys are the persisted mirror.
+- **Instrument the real event stream** for pipeline assertions:
+  `window.__VE=[]; ['voice-state','voice-error','voice-model-progress'].forEach(
+  n => __TAURI__.event.listen(n, e => __VE.push({n, p: e.payload})))` —
+  proves voice_set_mode / voice_ptt_down / voice_ensure_model actually ran
+  even when hardware paths fail (VMs typically have no audio input →
+  `voice-error "no input config"` and `voice-state: error`; the error wash
+  on the mic still verifies the event→`data-voice-state` mirror).
+- **The open menu covers its own trigger.** `.voice-menu` (bottom:58, width
+  240) overlaps the mic cluster and lower composer — a click at the mic's
+  coordinates while the menu is open hits menu elements (e.g. the footer
+  "All voice settings…", which then looks like a dead mic click: menu closes,
+  settings window refocuses). Compute hit targets via
+  `document.elementFromPoint` and/or close the menu before mic-click tests;
+  arm a one-shot capture-phase `document` click logger to see where real
+  pointer events actually land.
+- **Fish key round-trip is disk-verifiable:** `voice_fish_set_key` →
+  `~/.luna/fish-api-key` atomic 0600 (`stat -f %Lp`), blank deletes.
+- **Whisper model:** `voice_ensure_model` downloads ~148MB
+  `~/.luna/models/ggml-base.en.bin` from huggingface; `model_present` needs
+  ≥10MB, so a partial/HTML file still counts as missing.
+- **`[hidden]` vs `display` trap is recurring:** any JS-hidden element whose
+  CSS sets `display` needs a `[hidden]{display:none!important}` guard —
+  audit with `getComputedStyle(el).display` while `el.hidden===true` (found
+  live on `.voice-model-row`, which kept showing a stale "Downloading…"
+  row after the model download finished).
+
 ## Devin Secrets Needed
 
 None — build, spawn and drive are all local.

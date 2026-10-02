@@ -3892,6 +3892,10 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('composer voice cluster: .voice-cluster[hidden] forces display:none over display:flex', () => {
       expect(htmlContent).toMatch(/\.voice-cluster\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
+
+    it('menu model row: .voice-model-row[hidden] forces display:none over display:flex', () => {
+      expect(htmlContent).toMatch(/\.voice-model-row\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────
