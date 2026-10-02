@@ -25,7 +25,14 @@ tauri-plugin-opener = "2"
 # the chat while the user isn't watching.
 tauri-plugin-notification = "2"
 # Local-shell executor: async spawn with a bounded timeout + piped output.
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util"] }
+# `net` is also used by the VNC screen-share bridge (vnc.rs): a loopback
+# WebSocket listener piped to a raw TCP VNC connection.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "process", "time", "io-util", "net"] }
+# VNC screen share (vnc.rs): WebSocket server half of the loopback
+# WS↔TCP bridge the panel's noVNC client connects through.
+tokio-tungstenite = "0.26"
+# StreamExt/SinkExt for the VNC bridge's ws.split() plumbing.
+futures-util = "0.3"
 # TOML parsing for ~/.luna/client.toml (Phase-2 C3 route config).
 toml = "0.8"
 # TOML editing that preserves comments and field order (used by set_default_route).

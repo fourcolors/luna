@@ -35,6 +35,7 @@ import { isSettingsConnectorsPanelType, mountSettingsConnectorsPanel } from "./p
 import { isSettingsUpdatesPanelType, mountSettingsUpdatesPanel } from "./panels/settings-updates/settings-updates-mount"
 import { isLauncherPanelType, mountLauncherPanel } from "./panels/launcher/launcher-mount"
 import { isNotificationsPanelType, mountNotificationsPanel } from "./panels/notifications/notifications-mount"
+import { isVncPanelType, mountVncPanel } from "./panels/vnc/vnc-mount"
 
 /** Returns true if `type` was a React-owned panel type this dispatched. */
 export function dispatchPanelMount(type: string, ctx: PanelCtx): boolean {
@@ -116,6 +117,10 @@ export function dispatchPanelMount(type: string, ctx: PanelCtx): boolean {
   }
   if (isNotificationsPanelType(type)) {
     mountNotificationsPanel(type, ctx)
+    return true
+  }
+  if (isVncPanelType(type)) {
+    mountVncPanel(type, ctx)
     return true
   }
   return false

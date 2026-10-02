@@ -52,6 +52,7 @@
     "allow-open-widget",
     "allow-open-artifact-widget",
     "allow-collapse-to-moon",
-    "allow-begin-native-resize"
+    "allow-begin-native-resize",
+    "allow-vnc"
   ]
 }

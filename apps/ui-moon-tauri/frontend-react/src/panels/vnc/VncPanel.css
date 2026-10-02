@@ -1,0 +1,117 @@
+/*
+ * VncPanel.css - Screen Share panel surface. Astryx components are skinned
+ * globally by ../../styles/astryx-moon-bridge.css; these rules own the two
+ * layouts noVNC needs (the connect form and the live screen viewport) plus
+ * the password prompt overlay - all theme tokens, mirroring NowPanel.css's
+ * light/dark convention.
+ */
+
+.vnc-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 8px;
+}
+
+/* The noVNC screen element noVNC appends into this box is 100%x100% flex
+ * with a centered canvas; scaleViewport scales the remote to fit it. */
+.vnc-viewport {
+  flex: 1;
+  min-height: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #15171c;
+  border: 1px solid color-mix(in oklab, var(--text) 14%, transparent);
+}
+html[data-theme="light"] .vnc-viewport {
+  background: #1c1f26;
+}
+
+.vnc-viewport:empty {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* connect form overlays the (empty) viewport so the RFB target element can
+ * stay mounted across idle->connecting->connected transitions without the
+ * mount-order dance. */
+.vnc-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.vnc-connect-card {
+  width: 100%;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: color-mix(in oklab, var(--accent) 6%, var(--paper-2));
+  border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.vnc-connect-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.vnc-connect-hint {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.vnc-field-row {
+  display: flex;
+  gap: 8px;
+}
+
+.vnc-field-row > *:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.vnc-status {
+  font-size: 0.74rem;
+  color: var(--muted);
+  min-height: 1em;
+}
+.vnc-status.error {
+  color: #b0432f;
+}
+html[data-theme="dark"] .vnc-status.error {
+  color: #f0a08f;
+}
+
+.vnc-creds-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* footer strip under the live screen */
+.vnc-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.vnc-footer-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
