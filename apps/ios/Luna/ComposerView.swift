@@ -1,7 +1,8 @@
 import PhotosUI
 import SwiftUI
 
-/// Shared message composer — photo attach, multi-line field, send/stop/spinner.
+/// Shared message composer — one rounded card holding the attach button,
+/// multi-line field, and a filled send/stop circle (ChatGPT-style).
 struct ComposerView: View {
     @Binding var draft: String
     var isRunning = false
@@ -15,33 +16,41 @@ struct ComposerView: View {
     @State private var pendingImage: UIImage?
     @FocusState private var inputFocused: Bool
 
+    private var canSend: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || pendingImage != nil
+    }
+
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if let pendingImage {
                 HStack {
                     Image(uiImage: pendingImage)
                         .resizable()
                         .scaledToFill()
-                        .frame(width: 48, height: 48)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .frame(width: 44, height: 44)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     Button { self.pendingImage = nil; pickedItem = nil } label: {
-                        Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }
+                .padding(.horizontal, 4)
             }
-            HStack(alignment: .bottom, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 6) {
                 PhotosPicker(selection: $pickedItem, matching: .images) {
-                    Image(systemName: "photo")
-                        .font(.title3)
-                        .frame(width: 36, height: 36)
+                    Image(systemName: "plus")
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
                         .contentShape(Rectangle())
                 }
                 .onChange(of: pickedItem) { _, item in
                     guard let item else { return }
                     Task {
                         if let data = try? await item.loadTransferable(type: Data.self),
-                           let image = UIImage(data: data) {
+                            let image = UIImage(data: data)
+                        {
                             pendingImage = image.downscaled()
                         }
                     }
@@ -51,34 +60,41 @@ struct ComposerView: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .focused($inputFocused)
+                    .padding(.vertical, 8)
 
                 if isRunning {
                     Button { onInterrupt() } label: {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.red)
-                            .frame(width: 40, height: 40)
+                        Image(systemName: "stop.fill")
+                            .font(.callout.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 34, height: 34)
+                            .background(Color(.label), in: Circle())
                             .contentShape(Rectangle())
                     }
                 } else if isSending {
                     ProgressView()
-                        .frame(width: 40, height: 40)
+                        .frame(width: 34, height: 34)
                 } else {
                     Button { send() } label: {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .frame(width: 40, height: 40)
+                        Image(systemName: "arrow.up")
+                            .font(.callout.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 34, height: 34)
+                            .background(
+                                canSend ? Color.accentColor : Color(.systemGray3), in: Circle()
+                            )
                             .contentShape(Rectangle())
                     }
-                    .disabled(
-                        draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            && pendingImage == nil)
+                    .disabled(!canSend)
                 }
             }
+            .padding(.leading, 4)
+            .padding(.trailing, 6)
+            .padding(.vertical, 4)
+            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
         .onAppear { if autofocus { inputFocused = true } }
     }
 

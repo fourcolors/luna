@@ -5,30 +5,17 @@ struct ThreadListView: View {
     @State private var showSettings = false
 
     var body: some View {
-        List {
-            if let banner = store.banner {
-                Section {
-                    Text(banner)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+        Group {
+            if store.connection == .connected && store.threads.isEmpty {
+                ContentUnavailableView {
+                    Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
+                } description: {
+                    Text("Tap the pencil to start a new chat.")
                 }
-            }
-            ForEach(store.threads) { thread in
-                ThreadRow(thread: thread)
-                    // Plain row + manual navigation: NavigationLink rows swallow
-                    // taps on the revealed swipe-action button.
-                    .contentShape(Rectangle())
-                    .onTapGesture { store.path.append(thread.id) }
-                    .swipeActions(edge: .trailing) {
-                        Button(role: .destructive) {
-                            store.archive(threadId: thread.id)
-                        } label: {
-                            Label("Archive", systemImage: "archivebox")
-                        }
-                    }
+            } else {
+                threadList
             }
         }
-        .listStyle(.plain)
         .navigationTitle("Luna")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -53,15 +40,51 @@ struct ThreadListView: View {
         .onAppear { store.refreshThreads() }
     }
 
+    private var threadList: some View {
+        List {
+            if let banner = store.banner {
+                Section {
+                    Text(banner)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(store.threads) { thread in
+                ThreadRow(thread: thread)
+                    // Plain row + manual navigation: NavigationLink rows swallow
+                    // taps on the revealed swipe-action button.
+                    .contentShape(Rectangle())
+                    .onTapGesture { store.path.append(thread.id) }
+                    .environment(store)
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            store.archive(threadId: thread.id)
+                        } label: {
+                            Label("Archive", systemImage: "archivebox")
+                        }
+                    }
+            }
+        }
+        .listStyle(.plain)
+    }
+
     private var connectionBadge: some View {
         HStack(spacing: 5) {
             Circle()
                 .fill(color)
-                .frame(width: 8, height: 8)
-            if let label = store.serverLabel, store.connection == .connected {
-                Text(label).font(.caption2).foregroundStyle(.secondary)
-            }
+                .frame(width: 7, height: 7)
+            Text(
+                store.connection == .connected
+                    ? (store.serverLabel?.components(separatedBy: " · ").first ?? "Connected")
+                    : store.connection.label
+            )
+            .font(.caption2)
+            .fixedSize()
+            .foregroundStyle(.secondary)
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Color(.secondarySystemBackground), in: Capsule())
         .help(store.connection.label)
     }
 
@@ -75,11 +98,31 @@ struct ThreadListView: View {
 }
 
 private struct ThreadRow: View {
+    @Environment(AppState.self) private var store
     let thread: SessionSummary
+
+    private var statusColor: Color? {
+        if store.runningThreads.contains(thread.id) { return .accentColor }
+        if thread.status == "errored" { return .red }
+        return nil
+    }
+
+    /// Markdown syntax reads as noise in a one-line preview.
+    private var preview: String {
+        (thread.lastMessagePreview ?? thread.model)
+            .replacingOccurrences(of: "*", with: "")
+            .replacingOccurrences(of: "`", with: "")
+            .replacingOccurrences(of: "#", with: "")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack {
+            HStack(spacing: 6) {
+                if let statusColor {
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                }
                 Text(thread.title ?? "Untitled")
                     .font(.headline)
                     .lineLimit(1)
@@ -90,7 +133,7 @@ private struct ThreadRow: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Text(thread.lastMessagePreview ?? thread.model)
+            Text(preview)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)

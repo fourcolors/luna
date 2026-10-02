@@ -154,6 +154,9 @@ final class AppState {
 
     func openThread(_ threadId: String) {
         if !subscribed.contains(threadId) {
+            // Mark before the snapshot arrives — a second subscribe issued in
+            // the gap would earn a second snapshot that clobbers live entries.
+            subscribed.insert(threadId)
             client.send(SubscribeFrameOut(threadId: threadId))
         }
         if entries[threadId] == nil { entries[threadId] = [] }

@@ -12,14 +12,39 @@ struct NewChatView: View {
         store.models.first { $0.id == modelID }
     }
 
+    private let suggestions = [
+        "Summarize today's Luna activity",
+        "Help me debug an issue",
+        "Brainstorm a new feature idea",
+    ]
+
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            Text("What can Luna help with?")
-                .font(.title3.weight(.medium))
-                .foregroundStyle(.secondary)
+            VStack(spacing: 16) {
+                Image(systemName: "moon.stars.fill")
+                    .font(.system(size: 42))
+                    .foregroundStyle(Color.accentColor)
+                Text("How can Luna help?")
+                    .font(.title2.weight(.semibold))
+                VStack(spacing: 8) {
+                    ForEach(suggestions, id: \.self) { s in
+                        Button { draft = s } label: {
+                            Text(s)
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 9)
+                                .background(
+                                    Color(.secondarySystemBackground), in: Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .padding(.horizontal, 24)
             Spacer()
-            Divider()
+            Spacer()
             ComposerView(
                 draft: $draft,
                 isSending: store.isCreatingThread,
@@ -71,12 +96,17 @@ struct NewChatView: View {
                 }
             }
         } label: {
-            Text(selectedModel?.label ?? "Model")
-                .font(.caption)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(Capsule())
+            HStack(spacing: 3) {
+                Text(selectedModel?.label ?? "Model")
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(.secondarySystemBackground), in: Capsule())
         }
     }
 }

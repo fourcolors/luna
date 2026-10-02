@@ -10,44 +10,26 @@ struct ChatView: View {
     private var isRunning: Bool { store.runningThreads.contains(threadId) }
     private var thread: SessionSummary? { store.threads.first { $0.id == threadId } }
 
-    /// Changes whenever the tail of the timeline changes — drives scroll-to-bottom.
-    private var scrollKey: String {
-        guard let last = entries.last else { return "empty" }
-        var len = 0
-        switch last {
-        case .streaming(_, let t): len = t.count
-        case .message(let m): len = m.text.count
-        case .tool(let t): len = t.output?.count ?? 0
-        }
-        return "\(entries.count)-\(last.id)-\(len)"
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
-                        ForEach(entries) { entry in
-                            switch entry {
-                            case .message(let m): MessageBubble(message: m)
-                            case .tool(let t): ToolActivityRow(activity: t)
-                            case .streaming(_, let text): StreamingBubble(text: text)
-                            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(entries) { entry in
+                        switch entry {
+                        case .message(let m): MessageBubble(message: m)
+                        case .tool(let t): ToolActivityRow(activity: t)
+                        case .streaming(_, let text): StreamingBubble(text: text)
                         }
-                        Color.clear.frame(height: 1).id("bottom")
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
                 }
-                .onChange(of: scrollKey) { _, _ in
-                    // No animation: an animated scrollTo racing rapid LazyVStack
-                    // updates can blank the whole timeline.
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .scrollTargetLayout()
             }
+            // Keeps the tail in view while streaming — a manual scrollTo
+            // races LazyVStack layout and can blank the whole timeline.
+            .defaultScrollAnchor(.bottom)
 
-            Divider()
             ComposerView(
                 draft: $draft,
                 isRunning: isRunning,
@@ -89,41 +71,57 @@ private struct MessageBubble: View {
     var body: some View {
         if isEmpty {
             EmptyView()
+        } else if message.isUser {
+            HStack {
+                Spacer(minLength: 48)
+                content
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .foregroundStyle(.white)
+            }
         } else {
-        HStack {
-            if message.isUser { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 6) {
-                if let delivery = message.delivery {
-                    Label(delivery.label ?? delivery.source, systemImage: "clock.arrow.circlepath")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                if !message.text.isEmpty {
-                    if message.isUser {
-                        Text(message.text)
-                    } else {
-                        MarkdownText(message.text)
-                    }
-                }
-                if let attachments = message.attachments {
-                    ForEach(Array(attachments.enumerated()), id: \.offset) { _, a in
-                        AttachmentView(attachment: a)
-                    }
-                }
-                if let toolUses = message.toolUses, !toolUses.isEmpty {
-                    ForEach(toolUses) { tool in
-                        Label(tool.name, systemImage: tool.result?.ok == false ? "wrench.trianglebadge.exclamationmark" : "wrench")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The server prepends a "[client: …]" marker line for the agent's benefit
+    /// — meaningful in the transcript, noise in the bubble.
+    private var displayText: String {
+        if message.text.hasPrefix("[client:"),
+           let nl = message.text.firstIndex(of: "\n") {
+            return String(message.text[message.text.index(after: nl)...])
+        }
+        return message.text
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let delivery = message.delivery {
+                Label(delivery.label ?? delivery.source, systemImage: "clock.arrow.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if !displayText.isEmpty {
+                if message.isUser {
+                    Text(displayText)
+                } else {
+                    MarkdownText(displayText)
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(message.isUser ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            if !message.isUser { Spacer(minLength: 40) }
-        }
+            if let attachments = message.attachments {
+                ForEach(Array(attachments.enumerated()), id: \.offset) { _, a in
+                    AttachmentView(attachment: a)
+                }
+            }
+            if let toolUses = message.toolUses, !toolUses.isEmpty {
+                ForEach(toolUses) { tool in
+                    Label(tool.name, systemImage: tool.result?.ok == false ? "wrench.trianglebadge.exclamationmark" : "wrench")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 }
@@ -132,22 +130,16 @@ private struct StreamingBubble: View {
     let text: String
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 6) {
-                if text.isEmpty {
-                    ProgressView().controlSize(.small)
-                } else {
-                    // Plain Text while streaming — markdown re-parse every
-                    // delta was the hot path saturating the main thread.
-                    Text(text)
-                }
+        VStack(alignment: .leading, spacing: 6) {
+            if text.isEmpty {
+                ProgressView().controlSize(.small)
+            } else {
+                // Plain Text while streaming — markdown re-parse every
+                // delta was the hot path saturating the main thread.
+                Text(text)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.secondary.opacity(0.12))
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            Spacer(minLength: 40)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
