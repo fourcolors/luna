@@ -420,8 +420,15 @@ fn main() {
             let mut registered = false;
             for shortcut_str in shortcuts {
                 if let Ok(shortcut) = shortcut_str.parse::<Shortcut>() {
-                    let shortcut_clone = shortcut;
-                    let _ = app
+                    // on_shortcut registers with the OS AND installs the
+                    // handler — its Result is the success signal. A separate
+                    // register() call after it would be a duplicate
+                    // registration of the same hotkey id: the OS rejects
+                    // duplicates, so the old code could never report success
+                    // (the "Failed to register" warning printed on every
+                    // launch) and the fallback chain registered every
+                    // shortcut instead of stopping at the first working one.
+                    if app
                         .global_shortcut()
                         .on_shortcut(shortcut, |app, _shortcut, event| {
                             if event.state == ShortcutState::Pressed {
@@ -440,9 +447,9 @@ fn main() {
                                     lifecycle::collapse_into_moon(app);
                                 }
                             }
-                        });
-
-                    if app.global_shortcut().register(shortcut_clone).is_ok() {
+                        })
+                        .is_ok()
+                    {
                         println!("Successfully registered global hotkey: {}", shortcut_str);
                         registered = true;
                         break;
