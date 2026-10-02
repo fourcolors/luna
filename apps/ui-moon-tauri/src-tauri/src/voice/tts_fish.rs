@@ -441,18 +441,26 @@ fn worker_main(
         }
 
         // Reap a finished pump; surface its terminal error once.
+        let mut reap = false;
         if let Some(p) = &pump {
             match p.report_rx.try_recv() {
-                Ok(Ok(())) => pump = None,
+                Ok(Ok(())) => reap = true,
                 Ok(Err(msg)) => {
                     emit_err(&msg);
-                    pump = None;
+                    reap = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    // Pump died without reporting (panic); join to be sure.
-                    pump = None;
+                    // Pump died without reporting (panic): surface it to the
+                    // UI instead of dropping the sentence silently.
+                    emit_err("Fish TTS pump thread died unexpectedly");
+                    reap = true;
                 }
+            }
+        }
+        if reap {
+            if let Some(p) = pump.take() {
+                let _ = p.join.join();
             }
         }
 
