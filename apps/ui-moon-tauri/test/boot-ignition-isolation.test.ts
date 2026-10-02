@@ -106,6 +106,19 @@ describe("boot ignition isolation from composer chrome", () => {
         "attach-btn",
         "scope-btn",
         "voice-mic-btn",
+        "voice-cluster",
+        "voice-menu-btn",
+        "voice-menu",
+        "voice-fish-section",
+        "voice-fish-key",
+        "voice-fish-save",
+        "voice-fish-clear",
+        "voice-fish-status",
+        "voice-fish-link",
+        "voice-model-row",
+        "voice-model-text",
+        "voice-model-download",
+        "voice-settings-link",
         "file-input",
       ]) {
         doc.getElementById(id)?.remove()
@@ -161,12 +174,19 @@ describe("boot ignition isolation from composer chrome", () => {
     expect((window as unknown as { WebSocketEngine?: unknown }).WebSocketEngine).toBeTruthy()
   })
 
-  it("happy path still wires attach + menu (no mic/scope chrome)", () => {
+  it("happy path wires attach + menu + voice cluster (no scope chrome)", () => {
     prepareDom()
     flushSync(() => {
       bootChat()
     })
-    expect(document.getElementById("voice-mic-btn")).toBeNull()
+    // The mic cluster is IN the DOM but hidden until the voice probe lands
+    // (no __TAURI__.core here → unavailable → cluster stays hidden).
+    const cluster = document.getElementById("voice-cluster")
+    expect(cluster).toBeTruthy()
+    expect((cluster as HTMLElement).hidden).toBe(true)
+    expect(document.getElementById("voice-mic-btn")).toBeTruthy()
+    expect(document.getElementById("voice-menu-btn")).toBeTruthy()
+    expect(document.getElementById("voice-menu")).toBeTruthy()
     expect(document.getElementById("scope-btn")).toBeNull()
     expect(document.getElementById("attach-plus-btn")).toBeTruthy()
     expect(document.getElementById("attach-menu")).toBeTruthy()

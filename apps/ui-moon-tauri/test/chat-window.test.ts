@@ -3487,8 +3487,20 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ])
     })
 
-    it('Scenario: composer has no microphone button (voice lives in Settings → Voice)', () => {
-      expect(document.getElementById('voice-mic-btn')).toBeNull()
+    it('Scenario: composer ships a mic + menu caret (hidden until the voice probe lands)', () => {
+      const cluster = document.getElementById('voice-cluster') as HTMLElement
+      const mic = document.getElementById('voice-mic-btn') as HTMLButtonElement
+      const caret = document.getElementById('voice-menu-btn') as HTMLButtonElement
+      const menu = document.getElementById('voice-menu') as HTMLElement
+      expect(cluster).not.toBeNull()
+      expect(mic).not.toBeNull()
+      expect(caret).not.toBeNull()
+      expect(menu).not.toBeNull()
+      // No __TAURI__.core in this boot → voice unavailable → cluster hidden.
+      expect(cluster.hidden).toBe(true)
+      // Menu must never submit the chat form; mic + caret are non-submit too.
+      expect(mic.getAttribute('type')).toBe('button')
+      expect(caret.getAttribute('type')).toBe('button')
     })
 
     it('Scenario: voice-error surfaces a non-blocking transcript banner', () => {
@@ -3508,11 +3520,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   describe('Feature: Voice availability + boot wiring (chat window)', () => {
     const M = () => (window as any).__MoonInternals
 
-    it('Scenario: without a Tauri voice backend the window degrades (no mic, engine unavailable)', () => {
+    it('Scenario: without a Tauri voice backend the window degrades (mic cluster hidden, engine unavailable)', () => {
       // The shared beforeEach has no __TAURI__.core: VoiceEngine.init() lands
       // in "unavailable" synchronously at boot.
       expect(M().VoiceEngine.available).toBe(false)
-      expect(document.getElementById('voice-mic-btn')).toBeNull()
+      expect((document.getElementById('voice-cluster') as HTMLElement).hidden).toBe(true)
     })
 
     it('Scenario: a Rust core whose voice_status REJECTS (older build) degrades silently, no throw', async () => {
@@ -3520,7 +3532,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ;(window as any).__TAURI__.core = { invoke }
       await M().VoiceEngine.init()
       expect(M().VoiceEngine.available).toBe(false)
-      expect(document.getElementById('voice-mic-btn')).toBeNull()
+      expect((document.getElementById('voice-cluster') as HTMLElement).hidden).toBe(true)
       // Only the probe was attempted — no follow-up voice commands to spam.
       expect(invoke.mock.calls.map((c) => c[0]).filter(c => c !== 'list_widget_windows')).toEqual(['voice_status'])
     })
@@ -3541,13 +3553,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 800 })
       expect(localStorage.getItem('luna_voice_mode')).toBe('off')
       expect(M().VoiceEngine.mode).toBe('off')
-      // Voice events ride getCurrentWindow().listen — window-targeted, no
-      // model-progress here (that is the settings.voice panel's concern).
+      // Voice events ride getCurrentWindow().listen — window-targeted,
+      // including model progress for the menu's inline Download row.
       expect(Object.keys(windowEventHandlers)).toEqual(expect.arrayContaining([
-        'voice-state', 'voice-transcript', 'voice-error',
+        'voice-state', 'voice-transcript', 'voice-error', 'voice-model-progress',
       ]))
-      expect(windowEventHandlers['voice-model-progress']).toBeUndefined()
-      expect(document.getElementById('voice-mic-btn')).toBeNull()
+      // Probe landed → the mic cluster unhides.
+      expect((document.getElementById('voice-cluster') as HTMLElement).hidden).toBe(false)
 
       // A captured voice-transcript event routes through the real send path
       // only when mode is live (Settings can still arm auto mid-session).
@@ -3562,21 +3574,25 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       }))
     })
 
-    it('Scenario: voice-state events still drive MoonFace (no composer mic)', () => {
+    it('Scenario: voice-state events drive MoonFace AND the mic state wash', () => {
       const V = M().VoiceEngine
+      const mic = document.getElementById('voice-mic-btn') as HTMLElement
       const face = M().MoonFace
       const setVoice = vi.spyOn(face, 'setVoice')
       V.onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
       expect(setVoice).toHaveBeenCalledWith('listening')
+      expect(mic.dataset.voiceState).toBe('listening')
       V.onStateEvent({ state: 'speaking', mode: 'auto' })
       expect(setVoice).toHaveBeenCalledWith('speaking')
+      expect(mic.dataset.voiceState).toBe('speaking')
       V.onStateEvent({ state: 'off', mode: 'off' })
       expect(setVoice).toHaveBeenCalledWith('')
+      expect(mic.dataset.voiceState).toBe('')
     })
 
-    // Task #59 rewrite: mic removed; boot forces off even if Settings wrote auto.
-    it('Scenario: Task #59 — no #voice-mic-btn; luna_voice_mode is off after init even if previously auto', async () => {
-      expect(document.getElementById('voice-mic-btn')).toBeNull()
+    // Task #59 pin (kept): boot forces luna_voice_mode off even if the
+    // settings window last wrote auto — the mic's presence changes nothing.
+    it('Scenario: luna_voice_mode is off after init even if previously auto', async () => {
       localStorage.setItem('luna_voice_mode', 'auto')
       const invoke = vi.fn(async (cmd: string) =>
         cmd === 'voice_status' ? { state: 'off', mode: 'off', modelPresent: true } : null)
@@ -3599,11 +3615,231 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Composer chrome — no mic/scope; Grok-style + attach
+  // Behavioral Feature: Voice composer — mic cluster + quick-setup menu.
+  // The mic toggles hands-free in one click (or detours into the menu when a
+  // start-blocker exists); the caret opens the popover that carries mode,
+  // reply-engine, the Fish key field, and the model download row.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Composer chrome (mic/scope removed, + attach menu)', () => {
-    it('Scenario: no #voice-mic-btn and no #scope-btn in the DOM', () => {
-      expect(document.getElementById('voice-mic-btn')).toBeNull()
+  describe('Feature: Voice composer mic + quick-setup menu', () => {
+    const M = () => (window as any).__MoonInternals
+    const cluster = () => document.getElementById('voice-cluster') as HTMLElement
+    const mic = () => document.getElementById('voice-mic-btn') as HTMLButtonElement
+    const caret = () => document.getElementById('voice-menu-btn') as HTMLButtonElement
+    const menu = () => document.getElementById('voice-menu') as HTMLElement
+    const seg = (mode: string) =>
+      menu().querySelector(`[data-voice-mode="${mode}"]`) as HTMLButtonElement
+    const eng = (engine: string) =>
+      menu().querySelector(`[data-voice-engine="${engine}"]`) as HTMLButtonElement
+
+    // Boot bound the UI (init() ran with no core → unavailable); simulate the
+    // probe having landed so the cluster is usable.
+    function voiceReady(opts: { modelPresent?: boolean; engine?: string; fishKey?: boolean } = {}) {
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'voice_tts_info') {
+          return { engine: opts.engine || 'system', engines: ['system', 'fish'],
+                   fishKeyConfigured: opts.fishKey === true }
+        }
+        return null
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.setAvailable(true)
+      V.modelPresent = opts.modelPresent !== false
+      V.ttsEngine = opts.engine || 'system'
+      V.fishKeyConfigured = opts.fishKey === true
+      V.mode = 'off'
+      V.paintMic()
+      V.paintVoiceMenu()
+      return { invoke, V }
+    }
+
+    it('Scenario: probe unhides the cluster; mic click with no blocker flips to hands-free', () => {
+      const { invoke, V } = voiceReady()
+      expect(cluster().hidden).toBe(false)
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(V.mode).toBe('auto')
+      expect(localStorage.getItem('luna_voice_mode')).toBe('auto')
+    })
+
+    it('Scenario: mic click while blocked (no speech model) opens the menu instead of a silent no-op', () => {
+      const { invoke, V } = voiceReady({ modelPresent: false })
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(true)
+      expect(invoke.mock.calls.filter((c: any[]) => c[0] === 'voice_set_mode')).toEqual([])
+      expect(V.mode).toBe('off')
+      // …and the blocker is what the menu is showing.
+      expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(false)
+    })
+
+    it('Scenario: mic click while blocked (fish engine, no key) opens the menu on the key field', () => {
+      const { V } = voiceReady({ engine: 'fish', fishKey: false })
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(true)
+      expect(V.mode).toBe('off')
+      expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
+      expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('Scenario: in auto, mic click parks listening (runtime only) and a second click resumes', () => {
+      const { invoke, V } = voiceReady()
+      V.mode = 'auto'
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
+      expect(V.micPaused).toBe(true)
+      expect(V.mode).toBe('auto') // persisted preference untouched
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(V.micPaused).toBe(false)
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+    })
+
+    it('Scenario: ptt mode — press-and-hold drives voice_ptt_down/up (click does nothing)', () => {
+      const { invoke, V } = voiceReady()
+      V.mode = 'ptt'
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke.mock.calls.filter((c: any[]) => c[0] === 'voice_set_mode')).toEqual([])
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      window.dispatchEvent(new MouseEvent('pointerup'))
+      expect(called(invoke, 'voice_ptt_up')).toBe(true)
+    })
+
+    it('Scenario: caret opens the menu, re-probes voice_tts_info, and paints mode/engine picks', async () => {
+      const { invoke, V } = voiceReady()
+      caret().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(true)
+      expect(menu().getAttribute('aria-hidden')).toBe('false')
+      expect(caret().getAttribute('aria-expanded')).toBe('true')
+      await vi.waitFor(() => expect(called(invoke, 'voice_tts_info')).toBe(true))
+      expect(seg('off').classList.contains('active')).toBe(true)
+      expect(eng('system').classList.contains('active')).toBe(true)
+      expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('Scenario: menu mode buttons drive setMode (same path as the mic)', () => {
+      const { invoke, V } = voiceReady()
+      V.openVoiceMenu()
+      seg('ptt').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(V.mode).toBe('ptt')
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'ptt' })
+      expect(seg('ptt').classList.contains('active')).toBe(true)
+    })
+
+    it('Scenario: picking Fish Audio switches engine, persists it, and reveals the key field', async () => {
+      const { invoke, V } = voiceReady()
+      V.openVoiceMenu()
+      eng('fish').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(V.ttsEngine).toBe('fish')
+      expect(localStorage.getItem('luna_voice_tts_engine')).toBe('fish')
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_set_tts_engine', { engine: 'fish' }))
+      expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
+    })
+
+    it('Scenario: saving a Fish key calls voice_fish_set_key, wipes the input, and repaints from tts_info', async () => {
+      const invoke = vi.fn(async (cmd: string) =>
+        cmd === 'voice_tts_info'
+          ? { engine: 'fish', engines: ['system', 'fish'], fishKeyConfigured: true }
+          : null)
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.setAvailable(true)
+      V.ttsEngine = 'fish'
+      V.fishKeyConfigured = false
+      V.paintVoiceMenu()
+
+      const input = document.getElementById('voice-fish-key') as HTMLInputElement
+      input.value = 'fa-test-key-123'
+      document.getElementById('voice-fish-save')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_fish_set_key', { key: 'fa-test-key-123' }))
+      await vi.waitFor(() => expect(V.fishKeyConfigured).toBe(true))
+      expect(input.value).toBe('')            // the key never lingers in the DOM
+      expect((document.getElementById('voice-fish-clear') as HTMLElement).hidden).toBe(false)
+      expect(localStorage.getItem('luna_voice_fish_key')).toBeNull() // never persisted to webview storage
+    })
+
+    it('Scenario: Clear sends a blank key and re-probes', async () => {
+      const { invoke, V } = voiceReady({ engine: 'fish', fishKey: true })
+      V.openVoiceMenu()
+      document.getElementById('voice-fish-clear')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith('voice_fish_set_key', { key: '' }))
+    })
+
+    it('Scenario: fish.audio link opens the api-keys page via open_external_url', () => {
+      const { invoke, V } = voiceReady({ engine: 'fish' })
+      V.openVoiceMenu()
+      document.getElementById('voice-fish-link')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('open_external_url', { url: 'https://fish.audio/app/api-keys/' })
+    })
+
+    it('Scenario: Download row calls voice_ensure_model and progress events repaint the label', async () => {
+      const { invoke, V } = voiceReady({ modelPresent: false })
+      V.openVoiceMenu()
+      const btn = document.getElementById('voice-model-download') as HTMLButtonElement
+      const text = document.getElementById('voice-model-text') as HTMLElement
+      expect(text.textContent).toBe('Speech model needed to hear you')
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(called(invoke, 'voice_ensure_model')).toBe(true)
+      // Progress stream drives the percent label.
+      V.onModelProgress({ downloadedBytes: 256, totalBytes: 1024 })
+      expect(text.textContent).toBe('Downloading speech model… 25%')
+      V.onModelProgress({ done: true })
+      expect(V.modelPresent).toBe(true)
+      expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('Scenario: Esc closes an open voice menu; a second Esc still reaches stopSpeaking', () => {
+      const { V } = voiceReady()
+      V.openVoiceMenu()
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(false)
+      expect(caret().getAttribute('aria-expanded')).toBe('false')
+    })
+
+    it('Scenario: an outside click closes the menu; clicks inside stay open', () => {
+      const { V } = voiceReady()
+      V.openVoiceMenu()
+      menu().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(true)
+      document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(false)
+    })
+
+    it('Scenario: closing the menu wipes a typed-but-unsaved Fish key', () => {
+      const { V } = voiceReady({ engine: 'fish' })
+      V.openVoiceMenu()
+      const input = document.getElementById('voice-fish-key') as HTMLInputElement
+      input.value = 'typed-but-never-saved'
+      V.closeVoiceMenu()
+      expect(input.value).toBe('')
+    })
+
+    it('Scenario: settings.voice edits in the other window repaint via the storage fan-out', () => {
+      const { V } = voiceReady()
+      window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_mode', newValue: 'auto' }))
+      expect(V.mode).toBe('auto')
+      window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_tts_engine', newValue: 'fish' }))
+      expect(V.ttsEngine).toBe('fish')
+      expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
+    })
+
+    it('Scenario: "All voice settings…" opens the settings.voice widget and closes the menu', () => {
+      const { invoke, V } = voiceReady()
+      V.openVoiceMenu()
+      document.getElementById('voice-settings-link')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('open_widget', { kind: 'settings.voice' })
+      expect(menu().classList.contains('open')).toBe(false)
+    })
+  })
+
+  const called = (invoke: any, cmd: string) =>
+    invoke.mock.calls.some((c: any[]) => c[0] === cmd)
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Behavioral Feature: Composer chrome — voice cluster + Grok-style + attach
+  // ───────────────────────────────────────────────────────────────────────────
+  describe('Feature: Composer chrome (voice cluster, + attach menu)', () => {
+    it('Scenario: #voice-cluster present (no #scope-btn in the DOM)', () => {
+      expect(document.getElementById('voice-cluster')).not.toBeNull()
       expect(document.getElementById('scope-btn')).toBeNull()
     })
 
@@ -3639,7 +3875,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
   // ───────────────────────────────────────────────────────────────────────────
   // Behavioral Feature: Voice — hidden-attribute CSS overrides (regression)
-  // Mic chrome removed; keep the setting-item [hidden] override pin.
+  // .voice-cluster{display:flex} hits the same trap .setting-item did — the
+  // [hidden] overrides must be pinned in source.
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Voice hidden-attribute CSS overrides', () => {
     // jsdom computes no layout, so the DOM-property assertions elsewhere
@@ -3652,8 +3889,8 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(htmlContent).toMatch(/\.setting-item\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
 
-    it('the mic button is absent from chat.html (no #voice-mic-btn)', () => {
-      expect(htmlContent).not.toMatch(/id="voice-mic-btn"/)
+    it('composer voice cluster: .voice-cluster[hidden] forces display:none over display:flex', () => {
+      expect(htmlContent).toMatch(/\.voice-cluster\[hidden\]\s*\{\s*display:\s*none\s*!important/)
     })
   })
 
