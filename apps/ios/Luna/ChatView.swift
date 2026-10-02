@@ -12,23 +12,33 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    ForEach(entries) { entry in
-                        switch entry {
-                        case .message(let m): MessageBubble(message: m)
-                        case .tool(let t): ToolActivityRow(activity: t)
-                        case .streaming(_, let text): StreamingBubble(text: text)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach(entries) { entry in
+                            switch entry {
+                            case .message(let m): MessageBubble(message: m)
+                            case .tool(let t): ToolActivityRow(activity: t)
+                            case .streaming(_, let text): StreamingBubble(text: text)
+                            }
                         }
+                        Color.clear.frame(height: 1).id("bottom")
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .scrollTargetLayout()
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .scrollTargetLayout()
+                // Keeps the tail in view while streaming — a per-delta manual
+                // scrollTo raced LazyVStack layout and blanked the timeline.
+                .defaultScrollAnchor(.bottom)
+                // Snap on structural changes only: a count change is rare (new
+                // entry appended, or the streaming row removed on interrupt)
+                // and re-clamps the offset when content shrinks.
+                .onChange(of: entries.count) { _, _ in
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            // Keeps the tail in view while streaming — a manual scrollTo
-            // races LazyVStack layout and can blank the whole timeline.
-            .defaultScrollAnchor(.bottom)
 
             ComposerView(
                 draft: $draft,
