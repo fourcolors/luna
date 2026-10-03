@@ -420,8 +420,9 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     silenceHangMs: 600,
     modelPresent: false,
     fishKeyConfigured: false, // voice_tts_info — key presence, never the key
-    micPaused: false,      // auto mode: mic click parks the pipeline without
-                           // rewriting the persisted preference
+    micPaused: false,      // auto mode: set when Rust refused an arm (e.g.
+                           // model missing) — the waveform shows inactive
+                           // and its click retries the arm
     menuOpen: false,       // #voice-menu quick-setup popover
     modelProgress: null,   // {downloadedBytes,totalBytes} during ensure_model
     _modelDownloading: false,
@@ -585,13 +586,16 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         // Press-and-hold = PTT (ptt mode only). pointerup is window-level
         // so releasing outside the button still ends the capture window.
         mic.addEventListener('pointerdown', (e) => {
-          if (this.available && this.mode === 'ptt') {
+          if (this.available && this.mode === 'ptt' && !this._ptt) {
             e.preventDefault();
             this.pttDown();
           }
         });
         window.addEventListener('pointerup', () => this.pttUp());
         mic.addEventListener('pointercancel', () => this.pttUp());
+      }
+      if (DOM.voiceModeBtn) {
+        DOM.voiceModeBtn.addEventListener('click', () => this.onVoiceModeClick());
       }
       const menuBtn = DOM.voiceMenuBtn;
       if (menuBtn) {
@@ -638,44 +642,42 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       this.paintVoiceMenu();
     },
 
+    // Dictate (ChatGPT's mic): tap starts a dictation capture (ptt mode +
+    // ptt_down), tap again stops it, a third tap disarms — hold-to-talk still
+    // works while armed. Dictation only needs the speech model; the fish key
+    // (a TTS concern) must not detour it into setup.
     onMicClick() {
       if (!this.available) return;
-      if (this.mode === 'ptt') return;           // press-and-hold owns ptt
-      if (this.mode === 'off') {
-        // A click flips straight into hands-free — the whole point of a mic
-        // sitting next to send is "switch between voice mode and texting" in
-        // one click. When a start-blocker exists (speech model missing, or
-        // the fish engine picked without a key), open the quick-setup menu
-        // instead: that IS the easy path to unblock, and a silently-refused
-        // set_mode leaves the button looking dead.
-        if (this._blockedReason()) {
-          this.openVoiceMenu();
-          return;
-        }
-        this.setMode('auto');
+      if (this._ptt) { this.pttUp(); return; }
+      if (this.mode === 'ptt') { this.setMode('off'); return; }
+      if (this._blockedReason(false)) {
+        this.openVoiceMenu();
         return;
       }
-      // auto: toggle listening. Runtime-only pause — the persisted
-      // preference stays "auto" so the next launch re-arms hands-free.
-      // micPaused is also set when Rust REFUSED the mode (model missing),
-      // so the resume branch doubles as the retry path.
-      if (this.micPaused) {
-        this.micPaused = false;
-        this.paintMic();
-        this.invoke('voice_set_mode', { mode: 'auto' })
-          .then((st) => this._applyModeResult('auto', st));
-      } else {
-        this.micPaused = true;
-        this.paintMic();
-        this.invoke('voice_set_mode', { mode: 'off' });
-      }
+      this.setMode('ptt');
+      this.pttDown();
     },
 
-    // Why a mic click detours into setup instead of toggling: the two states
-    // that make a start do nothing (or fail on every reply).
-    _blockedReason() {
+    // Voice (ChatGPT's waveform): one click starts/stops the hands-free
+    // conversation (auto mode). A blocked start — speech model missing, or
+    // the fish engine picked without a key — opens the quick-setup menu
+    // instead of a silently-refused set_mode.
+    onVoiceModeClick() {
+      if (!this.available) return;
+      if (this.mode === 'auto' && !this.micPaused) { this.setMode('off'); return; }
+      if (this._blockedReason(true)) {
+        this.openVoiceMenu();
+        return;
+      }
+      this.setMode('auto');
+    },
+
+    // Why a talk-path click detours into setup instead of starting: the
+    // states that make a start do nothing (or fail on every reply).
+    // includeTts=false for dictate — the key only gates spoken replies.
+    _blockedReason(includeTts) {
       if (!this.modelPresent) return 'model';
-      if (this.ttsEngine === 'fish' && !this.fishKeyConfigured) return 'fish-key';
+      if (includeTts && this.ttsEngine === 'fish' && !this.fishKeyConfigured) return 'fish-key';
       return null;
     },
 
@@ -725,13 +727,22 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (DOM.voiceFishKey) DOM.voiceFishKey.value = '';
     },
 
+    // Paints BOTH composer buttons: the mic reads dictate-armed (ptt) and
+    // the waveform reads conversation-live (auto, not paused).
     paintMic() {
       const mic = DOM.voiceMicBtn;
-      if (!mic) return;
-      mic.classList.toggle('voice-mode-off', this.mode === 'off' || this.micPaused);
-      mic.title = this.mode === 'ptt'
-        ? 'Hold to talk'
-        : (this.mode !== 'off' && !this.micPaused ? 'Pause voice' : 'Talk to Luna');
+      if (mic) {
+        const armed = this.mode === 'ptt' || this._ptt;
+        mic.classList.toggle('armed', armed);
+        mic.classList.toggle('voice-mode-off', !armed);
+        mic.title = this._ptt ? 'Stop dictating' : (armed ? 'Stop dictation' : 'Dictate');
+      }
+      const vm = DOM.voiceModeBtn;
+      if (vm) {
+        const live = this.mode === 'auto' && !this.micPaused;
+        vm.classList.toggle('active', live);
+        vm.title = live ? 'End voice conversation' : 'Voice conversation';
+      }
     },
 
     paintVoiceMenu() {
@@ -980,9 +991,11 @@ export function createChatEngine(ctx: ChatEngineCtx) {
           w.style.removeProperty('--voice-level');
         }
       }
-      // The mic mirrors the moon's voice state (listening wash / transcribing
-      // breathe / speaking ripple) — the .mic-btn[data-voice-state] CSS.
+      // The composer buttons mirror the moon's voice state (listening wash /
+      // transcribing breathe / speaking ripple) — the [data-voice-state] CSS
+      // on .mic-btn and .voice-mode-btn.
       if (DOM.voiceMicBtn) DOM.voiceMicBtn.dataset.voiceState = visual;
+      if (DOM.voiceModeBtn) DOM.voiceModeBtn.dataset.voiceState = visual;
       MoonFace.setVoice(visual);   // wide eyes when listening, chatter when speaking
     },
 

@@ -106,6 +106,7 @@ describe("boot ignition isolation from composer chrome", () => {
         "attach-btn",
         "scope-btn",
         "voice-mic-btn",
+        "voice-mode-btn",
         "voice-cluster",
         "voice-menu-btn",
         "voice-menu",
@@ -185,6 +186,7 @@ describe("boot ignition isolation from composer chrome", () => {
     expect(cluster).toBeTruthy()
     expect((cluster as HTMLElement).hidden).toBe(true)
     expect(document.getElementById("voice-mic-btn")).toBeTruthy()
+    expect(document.getElementById("voice-mode-btn")).toBeTruthy()
     expect(document.getElementById("voice-menu-btn")).toBeTruthy()
     expect(document.getElementById("voice-menu")).toBeTruthy()
     expect(document.getElementById("scope-btn")).toBeNull()

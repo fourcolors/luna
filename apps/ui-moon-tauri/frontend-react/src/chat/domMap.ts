@@ -101,6 +101,7 @@ export function createDom() {
       // quick-setup popover (talk mode, reply engine, Fish key, model download).
       voiceCluster:       document.getElementById('voice-cluster'),
       voiceMicBtn:        document.getElementById('voice-mic-btn'),
+      voiceModeBtn:       document.getElementById('voice-mode-btn'),
       voiceMenuBtn:       document.getElementById('voice-menu-btn'),
       voiceMenu:          document.getElementById('voice-menu'),
       voiceFishSection:   document.getElementById('voice-fish-section'),

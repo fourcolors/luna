@@ -3487,19 +3487,22 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       ])
     })
 
-    it('Scenario: composer ships a mic + menu caret (hidden until the voice probe lands)', () => {
+    it('Scenario: composer ships a dictate mic + voice waveform + menu caret (hidden until the voice probe lands)', () => {
       const cluster = document.getElementById('voice-cluster') as HTMLElement
       const mic = document.getElementById('voice-mic-btn') as HTMLButtonElement
+      const wave = document.getElementById('voice-mode-btn') as HTMLButtonElement
       const caret = document.getElementById('voice-menu-btn') as HTMLButtonElement
       const menu = document.getElementById('voice-menu') as HTMLElement
       expect(cluster).not.toBeNull()
       expect(mic).not.toBeNull()
+      expect(wave).not.toBeNull()
       expect(caret).not.toBeNull()
       expect(menu).not.toBeNull()
       // No __TAURI__.core in this boot → voice unavailable → cluster hidden.
       expect(cluster.hidden).toBe(true)
       // Menu must never submit the chat form; mic + caret are non-submit too.
       expect(mic.getAttribute('type')).toBe('button')
+      expect(wave.getAttribute('type')).toBe('button')
       expect(caret.getAttribute('type')).toBe('button')
     })
 
@@ -3579,15 +3582,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const mic = document.getElementById('voice-mic-btn') as HTMLElement
       const face = M().MoonFace
       const setVoice = vi.spyOn(face, 'setVoice')
+      const wave = document.getElementById('voice-mode-btn') as HTMLElement
       V.onStateEvent({ state: 'listening', mode: 'auto', level: 0.5 })
       expect(setVoice).toHaveBeenCalledWith('listening')
       expect(mic.dataset.voiceState).toBe('listening')
+      expect(wave.dataset.voiceState).toBe('listening')
       V.onStateEvent({ state: 'speaking', mode: 'auto' })
       expect(setVoice).toHaveBeenCalledWith('speaking')
       expect(mic.dataset.voiceState).toBe('speaking')
+      expect(wave.dataset.voiceState).toBe('speaking')
       V.onStateEvent({ state: 'off', mode: 'off' })
       expect(setVoice).toHaveBeenCalledWith('')
       expect(mic.dataset.voiceState).toBe('')
+      expect(wave.dataset.voiceState).toBe('')
     })
 
     // Task #59 pin (kept): boot forces luna_voice_mode off even if the
@@ -3615,15 +3622,18 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   })
 
   // ───────────────────────────────────────────────────────────────────────────
-  // Behavioral Feature: Voice composer — mic cluster + quick-setup menu.
-  // The mic toggles hands-free in one click (or detours into the menu when a
-  // start-blocker exists); the caret opens the popover that carries mode,
-  // reply-engine, the Fish key field, and the model download row.
+  // Behavioral Feature: Voice composer — ChatGPT's dictate/voice pair + the
+  // quick-setup menu. The mic is Dictate (tap captures into the composer via
+  // ptt mode; tap again stops); the waveform is the one-click hands-free
+  // conversation (auto mode). A blocked start detours into the menu instead
+  // of silently failing — the menu carries mode, reply-engine, the Fish key
+  // field, and the model download row.
   // ───────────────────────────────────────────────────────────────────────────
-  describe('Feature: Voice composer mic + quick-setup menu', () => {
+  describe('Feature: Voice composer dictate + voice + quick-setup menu', () => {
     const M = () => (window as any).__MoonInternals
     const cluster = () => document.getElementById('voice-cluster') as HTMLElement
     const mic = () => document.getElementById('voice-mic-btn') as HTMLButtonElement
+    const wave = () => document.getElementById('voice-mode-btn') as HTMLButtonElement
     const caret = () => document.getElementById('voice-menu-btn') as HTMLButtonElement
     const menu = () => document.getElementById('voice-menu') as HTMLElement
     const seg = (mode: string) =>
@@ -3648,18 +3658,40 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       V.ttsEngine = opts.engine || 'system'
       V.fishKeyConfigured = opts.fishKey === true
       V.mode = 'off'
+      V._ptt = false
+      V.micPaused = false
       V.paintMic()
       V.paintVoiceMenu()
       return { invoke, V }
     }
 
-    it('Scenario: probe unhides the cluster; mic click with no blocker flips to hands-free', () => {
+    it('Scenario: probe unhides the cluster; waveform click with no blocker flips to hands-free', () => {
       const { invoke, V } = voiceReady()
       expect(cluster().hidden).toBe(false)
-      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      wave().dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
       expect(V.mode).toBe('auto')
       expect(localStorage.getItem('luna_voice_mode')).toBe('auto')
+      expect(wave().classList.contains('active')).toBe(true)
+    })
+
+    it('Scenario: mic click starts dictating (ptt mode + immediate capture), click again stops', () => {
+      const { invoke, V } = voiceReady()
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'ptt' })
+      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      expect(V.mode).toBe('ptt')
+      expect(V._ptt).toBe(true)
+      expect(mic().classList.contains('armed')).toBe(true)
+      // Second click ends the capture; the dictate chip stays armed.
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_up')).toBe(true)
+      expect(V._ptt).toBe(false)
+      expect(V.mode).toBe('ptt')
+      // Third click disarms — dictate fully off.
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
+      expect(V.mode).toBe('off')
     })
 
     it('Scenario: mic click while blocked (no speech model) opens the menu instead of a silent no-op', () => {
@@ -3672,32 +3704,41 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(false)
     })
 
-    it('Scenario: mic click while blocked (fish engine, no key) opens the menu on the key field', () => {
+    it('Scenario: waveform click while blocked (fish engine, no key) opens the menu on the key field', () => {
       const { V } = voiceReady({ engine: 'fish', fishKey: false })
-      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      wave().dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(menu().classList.contains('open')).toBe(true)
       expect(V.mode).toBe('off')
       expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(true)
     })
 
-    it('Scenario: in auto, mic click parks listening (runtime only) and a second click resumes', () => {
-      const { invoke, V } = voiceReady()
-      V.mode = 'auto'
+    it('Scenario: a missing fish key never blocks Dictate — it only gates spoken replies', () => {
+      const { invoke, V } = voiceReady({ engine: 'fish', fishKey: false })
       mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
-      expect(V.micPaused).toBe(true)
-      expect(V.mode).toBe('auto') // persisted preference untouched
-      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(V.micPaused).toBe(false)
-      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect(menu().classList.contains('open')).toBe(false)
+      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      expect(V.mode).toBe('ptt')
     })
 
-    it('Scenario: ptt mode — press-and-hold drives voice_ptt_down/up (click does nothing)', () => {
+    it('Scenario: waveform click while the conversation is live stops it; a paused chip retries', () => {
+      const { invoke, V } = voiceReady()
+      V.mode = 'auto'
+      V.micPaused = false
+      V.paintMic()
+      wave().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
+      expect(V.mode).toBe('off')
+      // micPaused (e.g. Rust refused a previous arm) → click retries auto.
+      V.mode = 'auto'
+      V.micPaused = true
+      wave().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke.mock.calls.filter((c: any[]) => c[0] === 'voice_set_mode' && c[1]?.mode === 'auto').length).toBeGreaterThan(0)
+    })
+
+    it('Scenario: ptt mode — press-and-hold drives voice_ptt_down/up', () => {
       const { invoke, V } = voiceReady()
       V.mode = 'ptt'
-      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      expect(invoke.mock.calls.filter((c: any[]) => c[0] === 'voice_set_mode')).toEqual([])
       mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
       expect(called(invoke, 'voice_ptt_down')).toBe(true)
       window.dispatchEvent(new MouseEvent('pointerup'))

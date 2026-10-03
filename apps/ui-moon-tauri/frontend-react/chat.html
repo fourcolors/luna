@@ -2164,7 +2164,7 @@
       background: var(--paper);
       border: 1.4px solid var(--ink-faint);
       border-radius: 14px;
-      padding: 10px 96px 10px 42px;  /* left + / right mic cluster + send */
+      padding: 10px 120px 10px 42px;  /* left + / right voice cluster + send */
       font-family: var(--font-chat);
       font-size: calc(0.84rem * var(--font-scale));
       line-height: 1.4;
@@ -2279,10 +2279,11 @@
       filter: url(#wc-wobble-soft);
     }
 
-    /* ── Voice cluster (mic + menu caret) ───────────────────────────────────
-       Nested inline next to .send-btn at the input's bottom-right. The mic's
-       voice state paints as watercolor washes (flat pigment pools,
-       edge-feathered) — never a glossy LED. ── */
+    /* ── Voice cluster (dictate mic + voice waveform + menu caret) ──────────
+       Nested inline next to .send-btn at the input's bottom-right — the
+       ChatGPT pairing (Dictate button + Voice button) in Luna's watercolor
+       vocabulary: voice state paints as flat pigment washes, never a glossy
+       LED. ── */
     .voice-cluster {
       position: absolute;
       right: 40px;
@@ -2315,7 +2316,35 @@
     }
     .mic-btn svg { width: 18px; height: 18px; }
     .mic-btn.voice-mode-off { opacity: 0.45; }
-    .mic-btn[data-voice-state="listening"] {
+    /* Armed dictate (ptt): the mic reads "on" even before a capture starts. */
+    .mic-btn.armed { color: var(--accent); opacity: 1; }
+    /* The Voice (waveform) button — ChatGPT's voice-mode entry. Same ghost
+       round chip as the mic; paints the conversation state washes. */
+    .voice-mode-btn {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      margin-left: 2px;
+      background: transparent;
+      border: none;
+      border-radius: 50%;
+      color: var(--ink-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.18s, color 0.18s, opacity 0.15s ease;
+    }
+    .voice-mode-btn:hover {
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      color: var(--ink);
+    }
+    .voice-mode-btn svg { width: 18px; height: 18px; }
+    /* Live conversation (hands-free auto): waveform goes accent — the
+       button's equivalent of ChatGPT's blue voice-mode state. */
+    .voice-mode-btn.active { color: var(--accent); }
+    .mic-btn[data-voice-state="listening"],
+    .voice-mode-btn[data-voice-state="listening"] {
       color: var(--ink);
       background: radial-gradient(circle closest-side,
         color-mix(in oklab, var(--accent) 26%, transparent) 0%,
@@ -2329,7 +2358,8 @@
       0%, 100% { box-shadow: 0 0 6px color-mix(in oklab, var(--accent) 25%, transparent); }
       50%      { box-shadow: 0 0 13px color-mix(in oklab, var(--accent) 50%, transparent); }
     }
-    .mic-btn[data-voice-state="transcribing"] {
+    .mic-btn[data-voice-state="transcribing"],
+    .voice-mode-btn[data-voice-state="transcribing"] {
       color: var(--ink);
       animation: mic-transcribing-breathe 0.9s ease-in-out infinite;
     }
@@ -2337,8 +2367,10 @@
       0%, 100% { opacity: 0.55; }
       50%      { opacity: 1; }
     }
-    .mic-btn[data-voice-state="speaking"] { color: var(--ink-soft); }
-    .mic-btn[data-voice-state="speaking"]::after {
+    .mic-btn[data-voice-state="speaking"],
+    .voice-mode-btn[data-voice-state="speaking"] { color: var(--ink-soft); }
+    .mic-btn[data-voice-state="speaking"]::after,
+    .voice-mode-btn[data-voice-state="speaking"]::after {
       content: '';
       position: absolute;
       inset: -3px;
@@ -2350,7 +2382,8 @@
         color-mix(in oklab, var(--accent) 0%, transparent) 100%);
       animation: voice-speaking-ripple 1.6s ease-out infinite;
     }
-    .mic-btn[data-voice-state="error"] { color: #f87171; }
+    .mic-btn[data-voice-state="error"],
+    .voice-mode-btn[data-voice-state="error"] { color: #f87171; }
     /* The caret: half-width button tucked right against the mic — reads as a
        split control (talk | options) the way Zoom/Meet mic carets do. */
     .voice-menu-btn {
@@ -3136,17 +3169,27 @@
         </button>
         <textarea class="chat-input" id="message-input" placeholder="Message Luna…" rows="1" autocomplete="off" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="slash-menu mention-menu" aria-expanded="false"></textarea>
         <!-- Voice cluster — sits immediately left of send, inside the input
-             shell, so "switch between voice mode and texting" stays one glance /
-             one click away (the task #59 reasoning). The mic toggles hands-free
-             talk (press-and-hold is push-to-talk in ptt mode); the caret opens
-             #voice-menu (mode, engine, Fish key, model download). Hidden until
-             VoiceEngine's probe confirms the Rust voice pipeline. -->
+             shell, mirroring ChatGPT's composer pair: the mic is Dictate
+             (tap to dictate, or press-and-hold while armed) and the
+             waveform is the one-click voice conversation (hands-free
+             auto mode). The caret opens #voice-menu (mode, engine, Fish
+             key, model download). Hidden until VoiceEngine's probe
+             confirms the Rust voice pipeline. -->
         <span class="voice-cluster" id="voice-cluster" hidden>
-          <button type="button" class="mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Talk to Luna" title="Talk to Luna">
+          <button type="button" class="mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Dictate button" title="Dictate">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
               <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
               <line x1="12" y1="18" x2="12" y2="22"></line>
+            </svg>
+          </button>
+          <button type="button" class="voice-mode-btn" id="voice-mode-btn" data-voice-state="" aria-label="Voice button" title="Voice conversation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <line x1="4"  y1="10" x2="4"  y2="14"></line>
+              <line x1="8"  y1="7"  x2="8"  y2="17"></line>
+              <line x1="12" y1="4"  x2="12" y2="20"></line>
+              <line x1="16" y1="7"  x2="16" y2="17"></line>
+              <line x1="20" y1="10" x2="20" y2="14"></line>
             </svg>
           </button>
           <button type="button" class="voice-menu-btn" id="voice-menu-btn" aria-label="Voice options" title="Voice options" aria-haspopup="menu" aria-expanded="false" aria-controls="voice-menu">▾</button>

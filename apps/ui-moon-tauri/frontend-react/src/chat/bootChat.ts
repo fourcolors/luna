@@ -612,6 +612,7 @@ export function bootChat() {
       moonWrapper: document.getElementById("moon-wrapper"),
       voiceCluster: document.getElementById("voice-cluster"),
       voiceMicBtn: document.getElementById("voice-mic-btn"),
+      voiceModeBtn: document.getElementById("voice-mode-btn"),
       voiceMenuBtn: document.getElementById("voice-menu-btn"),
       voiceMenu: document.getElementById("voice-menu"),
       voiceFishSection: document.getElementById("voice-fish-section"),
