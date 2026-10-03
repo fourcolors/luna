@@ -25,6 +25,7 @@
 import {
   Cause,
   Context,
+  Deferred,
   Effect,
   Exit,
   Option,
@@ -602,6 +603,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         readonly userMessageId: string
         readonly userText: string
       }>()
+      const pendingTurnsLock = yield* Semaphore.make(1)
       const assistantText = yield* Ref.make("")
       // Account-rotation support (ordinary path only - the recall path's
       // per-turn `Stream.make(turn.payload)` prompt is already replayable
@@ -993,25 +995,129 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         // finite query per turn instead. Each query resumes the same clean
         // transcript and supplies only that turn's memory as system-prompt
         // configuration, so prior context is replaced rather than retained.
+        //
+        // Mid-turn sends (queue + steering): the per-turn prompt stream does
+        // NOT close after its own payload. While the turn is unresolved it
+        // keeps pulling `inbox`, so a message the user sends before the
+        // response lands is written into the SAME live query — the CLI folds
+        // it into the running turn between tool rounds, or runs it as a
+        // queued turn inside this query (Claude Code queue/steer semantics;
+        // the ordinary path already gets this for free from its long-lived
+        // prompt stream). `turnSettled` fires on a `result` that reports no
+        // queued backlog (`queued_turn_count` > 0 means the CLI already
+        // committed to another queued turn inside this query — keep feeding
+        // it), which closes the stream so the query can exit and the NEXT
+        // inbox item runs as its own turn with fresh recall. A send that
+        // loses the take-vs-settle race is forwarded into a closing query —
+        // it stays persisted and user-accepted, so worst case it reads as a
+        // message that landed just after the turn ended.
         yield* Stream.fromQueue(inbox).pipe(
           Stream.runForEach((turn) =>
             Effect.scoped(
-              adapter
-                .query({
-                  ...queryBase,
-                  prompt: Stream.make(turn.payload),
-                  sessionOptions: withTurnMemoryContext(
-                    sessionOptions,
-                    turn.memoryContext,
+              Effect.gen(function* () {
+                const turnSettled = yield* Deferred.make<void>()
+                // userMessageIds of every send THIS query consumed — its
+                // own turn plus each steered forward. inbox items and
+                // pendingTurns seeds are offered in lockstep pairs in
+                // send(), so any seeds still queued for these ids after the
+                // query ends are folded leftovers to drain (below).
+                const consumedIds = new Set<string>([turn.userMessageId])
+                const replies = yield* adapter
+                  .query({
+                    ...queryBase,
+                    prompt: Stream.concat(
+                      Stream.make(turn.payload),
+                      // Steering input: race every inbox take against the
+                      // turn settling. A take that wins is ALWAYS forwarded
+                      // (the item left `inbox` — never drop it); a settle
+                      // that wins first ends the stream so the next send
+                      // gets its own turn + fresh recall.
+                      Stream.fromEffectRepeat(
+                        Effect.gen(function* () {
+                          if (yield* Deferred.isDone(turnSettled)) {
+                            return yield* Cause.done()
+                          }
+                          const next = yield* Effect.race(
+                            Queue.take(inbox).pipe(
+                              Effect.tap((item) =>
+                                Effect.sync(() => {
+                                  consumedIds.add(item.userMessageId)
+                                }),
+                              ),
+                              Effect.map((item) =>
+                                Option.some(item.payload),
+                              ),
+                            ),
+                            Deferred.await(turnSettled).pipe(
+                              Effect.map(() => Option.none()),
+                            ),
+                          )
+                          return Option.isNone(next)
+                            ? yield* Cause.done()
+                            : next.value
+                        }),
+                      ),
+                    ),
+                    sessionOptions: withTurnMemoryContext(
+                      sessionOptions,
+                      turn.memoryContext,
+                    ),
+                    ...(activeSdkSessionId !== null
+                      ? { resumeFromSessionId: activeSdkSessionId }
+                      : {}),
+                  })
+                const repliesTracked = replies.pipe(
+                  Stream.tap((msg) =>
+                    Effect.gen(function* () {
+                      if ((msg as { type?: string }).type !== "result") return
+                      // The SDK reports queued sends still pending as
+                      // `queued_turn_count`; absent on CLIs/surfaces with no
+                      // command queue, where a forwarded message can't be
+                      // parked either — settle on 0/absent only.
+                      const queued =
+                        (msg as { queued_turn_count?: number })
+                          .queued_turn_count ?? 0
+                      if (queued <= 0) {
+                        yield* Deferred.succeed(turnSettled, undefined)
+                      }
+                    }),
                   ),
-                  ...(activeSdkSessionId !== null
-                    ? { resumeFromSessionId: activeSdkSessionId }
-                    : {}),
-                })
-                .pipe(
-                  Effect.flatMap(consumeReplies),
-                  Effect.catchCause(handleAdapterFailure),
-                ),
+                )
+                const exit = yield* runReplies(repliesTracked)
+                if (Exit.isFailure(exit)) {
+                  yield* handleAdapterFailure(exit.cause)
+                }
+                // Steered sends this query consumed but never resolved — a
+                // folded message produces no `result` of its own, so its
+                // pendingTurns seed is still queued. Seeds/inbox items are
+                // lockstep FIFO, so those leftovers sit contiguously at the
+                // head ahead of any later send's seed; the lock keeps the
+                // peek→poll atomic against interrupt()'s concurrent poll
+                // (the only consumer off this fiber).
+                const drained = yield* pendingTurnsLock.withPermits(1)(
+                  Effect.gen(function* () {
+                    let n = 0
+                    while (true) {
+                      const head = yield* Effect.option(
+                        Queue.peek(pendingTurns),
+                      )
+                      if (
+                        Option.isNone(head) ||
+                        !consumedIds.has(head.value.userMessageId)
+                      ) {
+                        return n
+                      }
+                      yield* Queue.poll(pendingTurns)
+                      n += 1
+                    }
+                  }),
+                )
+                if (drained > 0) {
+                  yield* inc("luna.chat.steered_turns.folded", {
+                    n: String(drained),
+                  })
+                }
+              }),
             ),
           ),
           Effect.forkIn(threadScope),
@@ -1029,6 +1135,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         inFlightText,
         lastActivity,
         pendingTurns,
+        pendingTurnsLock,
         assistantText,
         ...(Option.getOrUndefined(binding)?.recallMemory !== undefined
           ? {
