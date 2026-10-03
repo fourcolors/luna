@@ -1,0 +1,166 @@
+/*
+ * VncPanel.css - Screen Share surface. Astryx is skinned by
+ * ../../styles/astryx-moon-bridge.css; these rules own the screen canvas,
+ * the connect form, and the quiet footer. Tokens only — same convention as
+ * NowPanel.css.
+ *
+ * The remote framebuffer is the primary surface. The form and disconnect
+ * control sit on top of it, never beside a second chrome column.
+ */
+
+.vnc-panel {
+  /* Eat panel.html's 14px content-area padding so the screen fills the card. */
+  margin: -14px;
+  width: calc(100% + 28px);
+  height: calc(100% + 28px);
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.vnc-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/* noVNC appends a 100%×100% flex box; scaleViewport fits the remote into it. */
+.vnc-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #15171c;
+}
+html[data-theme="light"] .vnc-viewport {
+  background: #1c1f26;
+}
+
+.vnc-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 16px;
+  background: color-mix(in oklab, var(--paper) 22%, transparent);
+  z-index: 2;
+}
+
+.vnc-overlay-status {
+  background: color-mix(in oklab, #15171c 18%, transparent);
+}
+
+.vnc-connecting {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+}
+
+.vnc-connect-card {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--paper-2, var(--paper));
+  border: 1px solid var(--ink-faint);
+  border-radius: var(--radius, 12px);
+  padding: 14px 14px 12px;
+}
+
+.vnc-connect-title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.vnc-connect-hint {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+
+.vnc-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vnc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vnc-field > span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
+.vnc-field > span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
+.vnc-field-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.vnc-field-row > .vnc-field:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.vnc-field-port {
+  width: 72px;
+  flex: 0 0 72px;
+}
+
+.vnc-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.vnc-status {
+  font-size: 0.74rem;
+  color: var(--ink-soft);
+  line-height: 1.35;
+}
+.vnc-status.error {
+  color: #b0432f;
+}
+html[data-theme="dark"] .vnc-status.error {
+  color: #f0a08f;
+}
+
+/* Quiet strip under the live screen — name left, disconnect right. */
+.vnc-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid var(--ink-faint);
+  background: var(--paper);
+}
+
+.vnc-footer-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vnc-footer > *:last-child {
+  flex: none;
+}
