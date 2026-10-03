@@ -100,7 +100,10 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
 
   // Unmount (window closed / panel remounted): the ws close also ends the
   // bridge, but ask Rust to abort it anyway so nothing lingers.
-  useEffect(() => teardown, [teardown])
+  // Cleanup-only: `useEffect(teardown)` would *run* teardown on mount
+  // (harmless) and register no unmount cleanup (the return is undefined),
+  // leaking the bridge until the 30s accept timeout or the remote close.
+  useEffect(() => () => { teardown() }, [teardown])
 
   const connect = useCallback(
     async (hostStr: string, portStr: string, passwordStr: string) => {
