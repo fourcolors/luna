@@ -16,10 +16,14 @@ describe("BUILTIN_SKILLS", () => {
     }
   })
 
-  it("ships screenshot-intake, which persists images out of the temp folder", () => {
+  it("ships screenshot-intake, which persists images into workspace notes", () => {
     const skill = BUILTIN_SKILLS.find((s) => s.id === "screenshot-intake")
     expect(skill).toBeDefined()
-    expect(skill?.body).toContain(".workspace/attachments/")
-    expect(skill?.body).toContain("CREATE TABLE IF NOT EXISTS attachments")
+    expect(skill?.body).toContain(".workspace/notes/")
+    expect(skill?.body).toContain('createHash("sha256")')
+    expect(skill?.body).toContain("messages.content_json")
+    expect(skill?.body).not.toContain(".workspace/attachments/")
+    expect(skill?.body).not.toContain("CREATE TABLE IF NOT EXISTS attachments")
+    expect(skill?.body).not.toContain("sha256sum")
   })
 })
