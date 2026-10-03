@@ -765,7 +765,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (vm) {
         const live = this.mode === 'auto' && !this.micPaused;
         vm.classList.toggle('active', live);
-        vm.title = live ? 'End voice conversation' : 'Voice conversation';
+        vm.title = live ? 'End voice' : 'Voice';
       }
     },
 
@@ -782,8 +782,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (DOM.voiceFishClear) DOM.voiceFishClear.hidden = !this.fishKeyConfigured;
       if (DOM.voiceFishStatus) {
         DOM.voiceFishStatus.textContent = this.fishKeyConfigured
-          ? 'Key saved — stored at ~/.luna/fish-api-key'
-          : 'No key saved — free tier at fish.audio → API Keys';
+          ? 'Key saved'
+          : 'No key saved';
         DOM.voiceFishStatus.classList.toggle('ok', this.fishKeyConfigured);
       }
       const needModel = !this.modelPresent;
@@ -792,13 +792,13 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         if (this._modelDownloading && this.modelProgress && this.modelProgress.totalBytes > 0) {
           const pct = Math.max(0, Math.min(100,
             Math.round((this.modelProgress.downloadedBytes / this.modelProgress.totalBytes) * 100)));
-          DOM.voiceModelText.textContent = 'Downloading speech model… ' + pct + '%';
+          DOM.voiceModelText.textContent = 'Downloading ' + pct + '%';
         } else if (this._modelDownloading) {
-          DOM.voiceModelText.textContent = 'Downloading speech model…';
+          DOM.voiceModelText.textContent = 'Downloading';
         } else if (this._modelError) {
-          DOM.voiceModelText.textContent = 'Download failed — try again';
+          DOM.voiceModelText.textContent = 'Download failed';
         } else {
-          DOM.voiceModelText.textContent = 'Speech model needed to hear you';
+          DOM.voiceModelText.textContent = 'Speech model required';
         }
       }
       if (DOM.voiceModelDownload) DOM.voiceModelDownload.disabled = !!this._modelDownloading;
@@ -868,7 +868,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         this.paintVoiceMenu();
       }).catch(() => {
         this._modelDownloading = false;
-        this._modelError = this._modelError || 'Download failed — try again';
+        this._modelError = this._modelError || 'Download failed';
         this.paintVoiceMenu();
       });
     },

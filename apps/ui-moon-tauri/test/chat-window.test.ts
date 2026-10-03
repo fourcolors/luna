@@ -3843,12 +3843,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       V.openVoiceMenu()
       const btn = document.getElementById('voice-model-download') as HTMLButtonElement
       const text = document.getElementById('voice-model-text') as HTMLElement
-      expect(text.textContent).toBe('Speech model needed to hear you')
+      expect(text.textContent).toBe('Speech model required')
       btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(called(invoke, 'voice_ensure_model')).toBe(true)
       // Progress stream drives the percent label.
       V.onModelProgress({ downloadedBytes: 256, totalBytes: 1024 })
-      expect(text.textContent).toBe('Downloading speech model… 25%')
+      expect(text.textContent).toBe('Downloading 25%')
       V.onModelProgress({ done: true })
       expect(V.modelPresent).toBe(true)
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(true)
@@ -3871,7 +3871,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       await vi.waitFor(() => expect(btn.disabled).toBe(false))
       expect(V.modelPresent).toBe(false)
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(false)
-      expect(text.textContent).toBe('Download failed — try again')
+      expect(text.textContent).toBe('Download failed')
     })
 
     it('Scenario: Esc closes an open voice menu; a second Esc still reaches stopSpeaking', () => {
@@ -3919,7 +3919,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
     })
 
-    it('Scenario: "All voice settings…" opens the settings.voice widget and closes the menu', () => {
+    it('Scenario: "Voice settings" opens the settings.voice widget and closes the menu', () => {
       const { invoke, V } = voiceReady()
       V.openVoiceMenu()
       document.getElementById('voice-settings-link')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
