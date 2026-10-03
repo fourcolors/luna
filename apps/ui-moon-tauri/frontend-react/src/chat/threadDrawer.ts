@@ -1100,7 +1100,15 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       if (!setActiveThread(id, 'row-click')) return;
       ThreadCreateState.moveToBackground();       // a late create ack must not steal selection
       State.activeTurnId = null;
-      State.pendingUserMessage = null;
+      // NOTE: do NOT clear State.pendingUserMessage here. A first message
+      // stashed for a mint still in flight (chatEngine.ts) is bound to the
+      // minted thread when thread-created lands (frames.ts background
+      // branch), so a later intentional open of that thread can flush it.
+      // Nulling the stash on row-click silently drops the user's message:
+      // the bind becomes a no-op and nothing ever sends it. Misdelivery is
+      // impossible — flushPendingUserMessage only sends when the bound
+      // target matches the viewed thread and the socket is live. Explicit
+      // abandonment (new conversation, profile switch) still clears it.
       try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
       // Instant paint from per-thread cache when available (ChatGPT-style).
       // Server re-snapshot is still sent below — it is the authoritative
