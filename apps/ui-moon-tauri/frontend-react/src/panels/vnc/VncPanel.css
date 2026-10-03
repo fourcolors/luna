@@ -100,6 +100,13 @@ html[data-theme="light"] .vnc-viewport {
   color: var(--ink-soft);
 }
 
+.vnc-field > span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+}
+
 .vnc-field-row {
   display: flex;
   gap: 8px;

@@ -248,7 +248,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
               <div className="vnc-connect-title">Connect</div>
               <div className="vnc-fields">
                 <div className="vnc-field-row">
-                  <label className="vnc-field">
+                  <div className="vnc-field">
                     <span>Host</span>
                     <TextInput
                       label="Host"
@@ -258,8 +258,8 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
                       onChange={setHost}
                       data-testid="vnc-host-input"
                     />
-                  </label>
-                  <label className="vnc-field vnc-field-port">
+                  </div>
+                  <div className="vnc-field vnc-field-port">
                     <span>Port</span>
                     <TextInput
                       label="Port"
@@ -270,9 +270,9 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
                       width={72}
                       data-testid="vnc-port-input"
                     />
-                  </label>
+                  </div>
                 </div>
-                <label className="vnc-field">
+                <div className="vnc-field">
                   <span>Password</span>
                   <TextInput
                     label="Password"
@@ -283,7 +283,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
                     onChange={setPassword}
                     data-testid="vnc-password-input"
                   />
-                </label>
+                </div>
                 <div className="vnc-actions">
                   <Button
                     label={connState === "error" ? "Try again" : "Connect"}
@@ -310,7 +310,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
               <div className="vnc-connect-title">Password required</div>
               <div className="vnc-fields">
                 {needUser && (
-                  <label className="vnc-field">
+                  <div className="vnc-field">
                     <span>Username</span>
                     <TextInput
                       label="Username"
@@ -320,9 +320,9 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
                       onChange={setCredUser}
                       data-testid="vnc-cred-user"
                     />
-                  </label>
+                  </div>
                 )}
-                <label className="vnc-field">
+                <div className="vnc-field">
                   <span>Password</span>
                   <TextInput
                     label="Password"
@@ -333,7 +333,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
                     onChange={setPassword}
                     data-testid="vnc-cred-password"
                   />
-                </label>
+                </div>
                 <div className="vnc-actions">
                   <Button
                     label="Continue"
