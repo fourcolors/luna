@@ -455,6 +455,226 @@ describe("ChatService (Tier-2 sim)", () => {
     ])
   })
 
+  it("steers a send that lands mid-turn into the same recall query", async () => {
+    const sdkUserTexts: string[] = []
+    const systemPrompts: string[] = []
+    const observed: Array<{
+      userText: string
+      assistantText: string
+      isError: boolean
+    }> = []
+    // Hold turn 1's `result` until the second send has already reached the
+    // thread: without a gate the fake resolves each prompt item instantly,
+    // so the second send would always arrive after the turn settled and
+    // correctly start its own query — never exercising the steering path.
+    let releaseResult: () => void = () => {}
+    const resultGate = new Promise<void>((resolve) => {
+      releaseResult = resolve
+    })
+    const fakeLayer = SDKClient.fake((p) => {
+      systemPrompts.push(String(p.options?.systemPrompt ?? ""))
+      let turnIdx = 0
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+          turnIdx += 1
+          const userText =
+            typeof u.message.content === "string"
+              ? u.message.content
+              : "(structured)"
+          sdkUserTexts.push(userText)
+          yield makeAssistantMessage(
+            "thr-steer",
+            `reply:${userText}`,
+            `assistant-${turnIdx}`,
+          )
+          if (turnIdx === 1) await resultGate
+          yield makeResultMessage("thr-steer", `result-${turnIdx}`)
+        }
+      }
+      const it = gen()
+      return Object.assign(it, {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+        applyFlagSettings: async () => {},
+        setMaxThinkingTokens: async () => {},
+        supplyToolPermissionResponse: async () => {},
+        mcpServerStatus: async () => ({}),
+      } as Partial<Query>) as Query
+    })
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        systemPrompt: "base identity",
+        onBound: () => {},
+        recallMemory: ({ userText }) =>
+          Effect.succeed(
+            `<memory_context>${userText} memory</memory_context>`,
+          ),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    const layer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          fakeLayer,
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.send(thread.id, "first user text")
+          // Turn 1 is parked on the gated result, so this send lands while
+          // the query's prompt stream is still open — it is forwarded into
+          // the SAME query rather than waiting for a new one.
+          yield* Effect.sleep("100 millis")
+          yield* chat.send(thread.id, "second user text")
+          yield* Effect.sleep("100 millis")
+          releaseResult()
+          yield* Effect.sleep("150 millis")
+        }),
+      ).pipe(Effect.provide(layer)),
+    )
+
+    // Both messages were delivered through ONE adapter.query call — the
+    // second was steered into the in-flight turn instead of opening a new
+    // query with its own recall context.
+    expect(sdkUserTexts).toEqual(["first user text", "second user text"])
+    expect(systemPrompts).toHaveLength(1)
+    expect(systemPrompts[0]).toContain("first user text memory")
+    expect(observed).toEqual([
+      {
+        userText: "first user text",
+        assistantText: "reply:first user text",
+        isError: false,
+      },
+      {
+        userText: "second user text",
+        assistantText: "reply:second user text",
+        isError: false,
+      },
+    ])
+  })
+
+  it(
+    "drains the observation seed of a steered send folded into the running " +
+      "turn, so the next turn's observeTurn stays paired",
+    async () => {
+      const observed: Array<{
+        userText: string
+        assistantText: string
+        isError: boolean
+      }> = []
+      let releaseResult: () => void = () => {}
+      const resultGate = new Promise<void>((resolve) => {
+        releaseResult = resolve
+      })
+      let queries = 0
+      const fakeLayer = SDKClient.fake((p) => {
+        queries += 1
+        const foldSecond = queries === 1
+        let turnIdx = 0
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            turnIdx += 1
+            const userText =
+              typeof u.message.content === "string"
+                ? u.message.content
+                : "(structured)"
+            // Query 1 folds its second prompt item into turn 1 (no output of
+            // its own) — Claude Code semantics for a steered message that
+            // lands before the tool round closes.
+            if (foldSecond && turnIdx === 2) continue
+            yield makeAssistantMessage(
+              "thr-fold",
+              `reply:${userText}`,
+              `assistant-${turnIdx}`,
+            )
+            if (foldSecond && turnIdx === 1) await resultGate
+            yield makeResultMessage("thr-fold", `result-${turnIdx}`)
+          }
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          applyFlagSettings: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      })
+      const provider: ThreadToolsProvider = {
+        decorate: () => ({
+          mcpServers: {},
+          systemPrompt: "base identity",
+          onBound: () => {},
+          recallMemory: () => Effect.succeed(null),
+          observeTurn: ({ userText, assistantText, isError }) =>
+            Effect.sync(() =>
+              observed.push({ userText, assistantText, isError }),
+            ),
+        }),
+      }
+      const layer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(
+            fakeLayer,
+            baseLayer,
+            Layer.succeed(ThreadToolsProviderTag, provider),
+          ),
+        ),
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.send(thread.id, "first user text")
+            yield* Effect.sleep("100 millis")
+            // Steered into query 1, then folded — it leaves a pendingTurns
+            // seed with no `result` to consume it.
+            yield* chat.send(thread.id, "second user text")
+            yield* Effect.sleep("100 millis")
+            releaseResult()
+            yield* Effect.sleep("150 millis")
+            // Query 2: if the folded send's seed were still queued, this
+            // turn's result would pair with "second user text" instead.
+            yield* chat.send(thread.id, "third user text")
+            yield* Effect.sleep("150 millis")
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(queries).toBe(2)
+      expect(observed).toEqual([
+        {
+          userText: "first user text",
+          assistantText: "reply:first user text",
+          isError: false,
+        },
+        {
+          userText: "third user text",
+          assistantText: "reply:third user text",
+          isError: false,
+        },
+      ])
+    },
+  )
+
   it(
     "an adapter stream failure AFTER a stream_event delta resets inFlightTurnId " +
       "so the next turn's deltas get their own turnId and no leaked dead text",
