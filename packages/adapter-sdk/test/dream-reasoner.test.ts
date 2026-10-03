@@ -33,6 +33,7 @@ import {
   buildDreamPrompt,
   DreamReasonerDefault,
   resolveBeliefCandidateAfter,
+  DREAM_STRUCTURED_MAX_TURNS,
 } from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
 import type { DreamInputs, DistilledSession } from "@luna/core"
@@ -258,6 +259,20 @@ describe("DreamReasonerDefault", () => {
       runReason(EMPTY_INPUTS, fakeClientWithResult(JSON.stringify([raw])), FakeMemory()),
     )
     expect(exit._tag).toBe("Failure")
+  })
+
+  it("structured prompt asks for the StructuredOutput tool call, not JSON written as text", () => {
+    // Regression (2026-09-19..10-02): the structured prompt said "Output ONLY a
+    // JSON object ... no code fences", so the model answered in a text reply.
+    // The SDK then needed an enforcement turn to get the tool call, and the
+    // run died on the turn cap. The prompt must point at the tool.
+    const structured = buildDreamPrompt(EMPTY_INPUTS, true)
+    expect(structured).toContain("StructuredOutput tool")
+    expect(structured).not.toContain("Output ONLY a JSON object")
+    // The prose (non-structured) path still asks for a bare JSON array.
+    const prose = buildDreamPrompt(EMPTY_INPUTS, false)
+    expect(prose).toContain("Output ONLY a JSON array")
+    expect(prose).not.toContain("StructuredOutput tool")
   })
 
   it("buildDreamPrompt includes skill catalog and skill_improvement rules", () => {
@@ -509,7 +524,7 @@ describe("DreamReasonerDefault", () => {
         readonly maxTurns?: number
         readonly pathToClaudeCodeExecutable?: string
       }
-      expect(opts.maxTurns).toBe(1)
+      expect(opts.maxTurns).toBe(DREAM_STRUCTURED_MAX_TURNS)
       expect(opts.pathToClaudeCodeExecutable).toBe("/usr/local/bin/claude-test")
     })
 
@@ -575,7 +590,7 @@ describe("DreamReasonerDefault", () => {
         return makeFakeQuery({ messages: [r] }).query
       })
 
-    it("disables all built-in tools so maxTurns:1 cannot be spent on a tool_use", async () => {
+    it("disables all built-in tools so the turn budget cannot be spent on a tool_use", async () => {
       const sink: { last: { options: Record<string, unknown> } | null } = {
         last: null,
       }
@@ -583,7 +598,7 @@ describe("DreamReasonerDefault", () => {
         runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
       )
       const opts = sink.last!.options
-      expect(opts["maxTurns"]).toBe(1)
+      expect(opts["maxTurns"]).toBe(DREAM_STRUCTURED_MAX_TURNS)
       // Must be an empty array — not absent, and not `allowedTools`.
       expect(opts["tools"]).toEqual([])
     })
@@ -651,7 +666,7 @@ describe("DreamReasonerDefault", () => {
       const opts = sink.last!.options
       expect("model" in opts).toBe(false)
       expect("env" in opts).toBe(false)
-      expect(opts["maxTurns"]).toBe(1)
+      expect(opts["maxTurns"]).toBe(DREAM_STRUCTURED_MAX_TURNS)
     })
 
     it("(c) EXHAUSTION: broker with no matching account → reason() returns a DreamError (Left), does NOT throw", async () => {
@@ -789,7 +804,7 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
     expect(outputFormat).toBeDefined()
     expect(outputFormat!.type).toBe("json_schema")
     expect(outputFormat!.schema?.type).toBe("object")
-    expect(opts["maxTurns"]).toBe(1)
+    expect(opts["maxTurns"]).toBe(DREAM_STRUCTURED_MAX_TURNS)
   })
 
   it("explicit override OFF rolls back structured output even on a capable (anthropic) lane", async () => {
