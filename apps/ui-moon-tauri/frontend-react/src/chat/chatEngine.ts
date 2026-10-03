@@ -419,12 +419,21 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     fishVoiceId: '',      // persisted luna_voice_fish_id (per-engine pick)
     silenceHangMs: 600,
     modelPresent: false,
-    micPaused: false,      // auto mode: mic click parks the pipeline without
-                           // rewriting the persisted preference
+    fishKeyConfigured: false, // voice_tts_info — key presence, never the key
+    micPaused: false,      // auto mode: set when Rust refused an arm (e.g.
+                           // model missing) — the waveform shows inactive
+                           // and its click retries the arm
+    menuOpen: false,       // #voice-menu quick-setup popover
+    modelProgress: null,   // {downloadedBytes,totalBytes} during ensure_model
+    _modelDownloading: false,
+    _modelError: '',
     rustMode: 'off',       // EFFECTIVE mode (Rust can refuse, e.g. model
                            // missing); fed by voice-state events + the
                            // VoiceStatus returned from voice_set_mode
     _ptt: false,
+    _holdTimer: null,          // delayed pointerdown → hold-to-talk
+    _holdStarted: false,       // capture was started by a hold, not a tap
+    _ignoreNextMicClick: false, // swallow the click that follows a hold
     _uiBound: false,
     _subscribed: false,
     // Spoken-reply pipeline: per-message cumulative wire text (the server
@@ -474,8 +483,10 @@ export function createChatEngine(ctx: ChatEngineCtx) {
 
     setAvailable(av) {
       this.available = !!av;
-      // Composer mic removed — availability is for spoken-reply / transcript
-      // paths only. Settings → Voice owns the hands-free UI.
+      // The mic cluster is the only voice control in this window — the
+      // probe hides it entirely on voice-less builds.
+      if (DOM.voiceCluster) DOM.voiceCluster.hidden = !this.available;
+      if (!this.available) this.closeVoiceMenu();
     },
 
     applyStatus(s) {
@@ -486,6 +497,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (s && typeof s.state === 'string') {
         this.onStateEvent({ state: s.state, mode: s.mode });
       }
+      this.paintVoiceMenu();
     },
 
     subscribeEvents() {
@@ -504,7 +516,9 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       W.listen('voice-state', ({ payload }) => this.onStateEvent(payload || {})).catch(() => {});
       W.listen('voice-transcript', ({ payload }) => this.handleTranscript(payload && payload.text)).catch(() => {});
       W.listen('voice-error', ({ payload }) => this.onVoiceError(payload || {})).catch(() => {});
-      // (voice-model-progress is the settings.voice panel's concern.)
+      // The menu's inline Download row needs the same progress stream the
+      // settings.voice panel listens to (app-wide emit, window-targeted listen).
+      W.listen('voice-model-progress', ({ payload }) => this.onModelProgress(payload || {})).catch(() => {});
     },
 
     // ── Settings (persisted; VOICE.md keys) ─────────────────────────────
@@ -546,6 +560,9 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       const vid = this.ttsEngine === 'fish' ? this.fishVoiceId : this.voiceId;
       if (vid) await this.invoke('voice_set_voice', { id: vid });
       await this.invoke('voice_set_config', { silenceHangMs: this.silenceHangMs });
+      // Key presence for the fish-key nudge (voice_tts_info reports only
+      // fishKeyConfigured — the key itself never crosses IPC).
+      await this._refreshTtsInfo();
     },
 
     setMode(mode) {
@@ -558,12 +575,341 @@ export function createChatEngine(ctx: ChatEngineCtx) {
           .then((st) => this._applyModeResult(m, st));
       }
       if (m === 'off') this.stopSpeaking();
+      this.paintMic();
+      this.paintVoiceMenu();
     },
 
-    // Composer mic is gone — no UI bind. Settings → Voice owns mode toggles.
+    // ── UI wiring (mic cluster + the voice quick-setup menu) ────────────────
     bindUI() {
       if (this._uiBound) return;
       this._uiBound = true;
+      const mic = DOM.voiceMicBtn;
+      if (mic) {
+        mic.addEventListener('click', () => this.onMicClick());
+        // Hold-to-talk (armed ptt only) is delayed so a tap's pointerdown
+        // does not start a capture that the same gesture's pointerup/click
+        // would immediately kill or miss-disarm. 180ms is under a hold and
+        // over a click.
+        mic.addEventListener('pointerdown', () => {
+          if (!this.available || this.mode !== 'ptt' || this._ptt || this._holdTimer) return;
+          this._holdTimer = setTimeout(() => {
+            this._holdTimer = null;
+            this._holdStarted = true;
+            this.pttDown();
+          }, 180);
+        });
+        const endHold = () => {
+          if (this._holdTimer) {
+            clearTimeout(this._holdTimer);
+            this._holdTimer = null;
+            return;
+          }
+          if (!this._holdStarted) return;
+          this._holdStarted = false;
+          this._ignoreNextMicClick = true;
+          this.pttUp();
+        };
+        window.addEventListener('pointerup', endHold);
+        mic.addEventListener('pointercancel', endHold);
+      }
+      if (DOM.voiceModeBtn) {
+        DOM.voiceModeBtn.addEventListener('click', () => this.onVoiceModeClick());
+      }
+      const menuBtn = DOM.voiceMenuBtn;
+      if (menuBtn) {
+        // stopPropagation: the document outside-click closer must not treat
+        // the caret itself as "outside" (same guard attach-plus uses).
+        menuBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.toggleVoiceMenu();
+        });
+      }
+      const menu = DOM.voiceMenu;
+      if (menu) {
+        menu.querySelectorAll<HTMLElement>('[data-voice-mode]').forEach((b) => {
+          b.addEventListener('click', () => this.setMode(b.dataset.voiceMode));
+        });
+        menu.querySelectorAll<HTMLElement>('[data-voice-engine]').forEach((b) => {
+          b.addEventListener('click', () => this.setTtsEngine(b.dataset.voiceEngine));
+        });
+      }
+      if (DOM.voiceFishSave) DOM.voiceFishSave.addEventListener('click', () => this.saveFishKey());
+      if (DOM.voiceFishClear) DOM.voiceFishClear.addEventListener('click', () => this.clearFishKey());
+      if (DOM.voiceFishKey) {
+        DOM.voiceFishKey.addEventListener('keydown', (e) => {
+          // Enter saves (and must NOT bubble to a form submit); Esc closes.
+          // stopPropagation on every key so the composer/slash handlers never
+          // see a typed secret; Esc must close HERE because that same stop
+          // would otherwise hide the document-level menu closer.
+          if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); this.saveFishKey(); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.closeVoiceMenu(); }
+          else e.stopPropagation();
+        });
+      }
+      if (DOM.voiceFishLink) {
+        DOM.voiceFishLink.addEventListener('click', () => {
+          this.invoke('open_external_url', { url: 'https://fish.audio/app/api-keys/' });
+        });
+      }
+      if (DOM.voiceModelDownload) {
+        DOM.voiceModelDownload.addEventListener('click', () => this.ensureModel());
+      }
+      if (DOM.voiceSettingsLink) {
+        DOM.voiceSettingsLink.addEventListener('click', () => {
+          this.closeVoiceMenu();
+          this.invoke('open_widget', { kind: 'settings.voice' });
+        });
+      }
+      this.paintMic();
+      this.paintVoiceMenu();
+    },
+
+    // Dictate (ChatGPT's mic): tap starts a dictation capture (ptt mode +
+    // ptt_down), tap again stops it, a third tap disarms — hold-to-talk still
+    // works while armed. Dictation only needs the speech model; the fish key
+    // (a TTS concern) must not detour it into setup.
+    onMicClick() {
+      if (!this.available) return;
+      // Trailing click of a completed hold — capture already ended.
+      if (this._ignoreNextMicClick) { this._ignoreNextMicClick = false; return; }
+      if (this._ptt) { this.pttUp(); return; }
+      if (this.mode === 'ptt') { this.setMode('off'); return; }
+      if (this._blockedReason(false)) {
+        this.openVoiceMenu();
+        return;
+      }
+      this.setMode('ptt');
+      this.pttDown();
+    },
+
+    // Voice (ChatGPT's waveform): one click starts/stops the hands-free
+    // conversation (auto mode). A blocked start — speech model missing, or
+    // the fish engine picked without a key — opens the quick-setup menu
+    // instead of a silently-refused set_mode.
+    onVoiceModeClick() {
+      if (!this.available) return;
+      if (this.mode === 'auto' && !this.micPaused) { this.setMode('off'); return; }
+      if (this._blockedReason(true)) {
+        this.openVoiceMenu();
+        return;
+      }
+      this.setMode('auto');
+    },
+
+    // Why a talk-path click detours into setup instead of starting: the
+    // states that make a start do nothing (or fail on every reply).
+    // includeTts=false for dictate — the key only gates spoken replies.
+    _blockedReason(includeTts) {
+      if (!this.modelPresent) return 'model';
+      if (includeTts && this.ttsEngine === 'fish' && !this.fishKeyConfigured) return 'fish-key';
+      return null;
+    },
+
+    pttDown() {
+      if (!this.available || this.mode !== 'ptt' || this._ptt) return;
+      this._ptt = true;
+      this.invoke('voice_ptt_down');
+    },
+
+    pttUp() {
+      if (!this._ptt) return;
+      this._ptt = false;
+      this.invoke('voice_ptt_up');
+    },
+
+    // ── Voice quick-setup menu (#voice-menu) ──────────────────────────────
+    toggleVoiceMenu() {
+      if (this.menuOpen) this.closeVoiceMenu();
+      else this.openVoiceMenu();
+    },
+
+    openVoiceMenu() {
+      if (!this.available || !DOM.voiceMenu) return;
+      this.menuOpen = true;
+      DOM.voiceMenu.classList.add('open');
+      DOM.voiceMenu.setAttribute('aria-hidden', 'false');
+      if (DOM.voiceMenuBtn) DOM.voiceMenuBtn.setAttribute('aria-expanded', 'true');
+      this.paintVoiceMenu();
+      // The settings.voice panel (another window) may have saved/cleared the
+      // key since boot — re-probe rather than trusting the boot snapshot.
+      this._refreshTtsInfo();
+      // Land the operator in the field they most likely came for.
+      if (this.ttsEngine === 'fish' && !this.fishKeyConfigured && DOM.voiceFishKey) {
+        try { DOM.voiceFishKey.focus(); } catch (_) { /* jsdom */ }
+      }
+    },
+
+    closeVoiceMenu() {
+      if (!this.menuOpen) return;
+      this.menuOpen = false;
+      if (DOM.voiceMenu) {
+        DOM.voiceMenu.classList.remove('open');
+        DOM.voiceMenu.setAttribute('aria-hidden', 'true');
+      }
+      if (DOM.voiceMenuBtn) DOM.voiceMenuBtn.setAttribute('aria-expanded', 'false');
+      // One-shot secret field: never leave a typed key sitting in the DOM.
+      if (DOM.voiceFishKey) DOM.voiceFishKey.value = '';
+    },
+
+    // Paints BOTH composer buttons: the mic reads dictate-armed (ptt) and
+    // the waveform reads conversation-live (auto, not paused).
+    paintMic() {
+      const mic = DOM.voiceMicBtn;
+      if (mic) {
+        const armed = this.mode === 'ptt' || this._ptt;
+        mic.classList.toggle('armed', armed);
+        mic.classList.toggle('voice-mode-off', !armed);
+        mic.title = this._ptt ? 'Stop dictating' : (armed ? 'Stop dictation' : 'Dictate');
+      }
+      const vm = DOM.voiceModeBtn;
+      if (vm) {
+        const live = this.mode === 'auto' && !this.micPaused;
+        vm.classList.toggle('active', live);
+        vm.title = live ? 'End voice' : 'Voice';
+      }
+    },
+
+    paintVoiceMenu() {
+      const menu = DOM.voiceMenu;
+      if (!menu) return;
+      menu.querySelectorAll<HTMLElement>('[data-voice-mode]').forEach((b) => {
+        b.classList.toggle('active', b.dataset.voiceMode === this.mode);
+      });
+      menu.querySelectorAll<HTMLElement>('[data-voice-engine]').forEach((b) => {
+        b.classList.toggle('active', b.dataset.voiceEngine === this.ttsEngine);
+      });
+      if (DOM.voiceFishSection) DOM.voiceFishSection.hidden = this.ttsEngine !== 'fish';
+      if (DOM.voiceFishClear) DOM.voiceFishClear.hidden = !this.fishKeyConfigured;
+      if (DOM.voiceFishStatus) {
+        DOM.voiceFishStatus.textContent = this.fishKeyConfigured
+          ? 'Key saved'
+          : 'No key saved';
+        DOM.voiceFishStatus.classList.toggle('ok', this.fishKeyConfigured);
+      }
+      const needModel = !this.modelPresent;
+      if (DOM.voiceModelRow) DOM.voiceModelRow.hidden = !needModel;
+      if (needModel && DOM.voiceModelText) {
+        if (this._modelDownloading && this.modelProgress && this.modelProgress.totalBytes > 0) {
+          const pct = Math.max(0, Math.min(100,
+            Math.round((this.modelProgress.downloadedBytes / this.modelProgress.totalBytes) * 100)));
+          DOM.voiceModelText.textContent = 'Downloading ' + pct + '%';
+        } else if (this._modelDownloading) {
+          DOM.voiceModelText.textContent = 'Downloading';
+        } else if (this._modelError) {
+          DOM.voiceModelText.textContent = 'Download failed';
+        } else {
+          DOM.voiceModelText.textContent = 'Speech model required';
+        }
+      }
+      if (DOM.voiceModelDownload) DOM.voiceModelDownload.disabled = !!this._modelDownloading;
+    },
+
+    _refreshTtsInfo() {
+      return this.invoke('voice_tts_info')
+        .then((info) => {
+          if (!info || typeof info !== 'object') return;
+          this.fishKeyConfigured = info.fishKeyConfigured === true;
+          this.paintVoiceMenu();
+        });
+    },
+
+    setTtsEngine(engine) {
+      const e = engine === 'fish' ? 'fish' : 'system';
+      this.ttsEngine = e;
+      localStorage.setItem('luna_voice_tts_engine', e);
+      this.paintVoiceMenu();
+      if (!this.available) return;
+      // Switch, then re-apply the per-engine saved voice pick (the Rust
+      // catalog serves the ACTIVE engine — same ordering rule as boot).
+      this.invoke('voice_set_tts_engine', { engine: e })
+        .then(() => {
+          const vid = e === 'fish' ? this.fishVoiceId : this.voiceId;
+          if (vid) return this.invoke('voice_set_voice', { id: vid });
+          return null;
+        })
+        .then(() => this._refreshTtsInfo());
+    },
+
+    // Fish key save/clear — same contract as the settings.voice panel: the
+    // value lives only in the input until voice_fish_set_key writes
+    // ~/.luna/fish-api-key (0600); the field is wiped immediately after.
+    saveFishKey() {
+      const input = DOM.voiceFishKey;
+      const key = ((input && input.value) || '').trim();
+      if (!key) return;
+      this.invoke('voice_fish_set_key', { key })
+        .then(() => {
+          if (input) input.value = '';
+          return this._refreshTtsInfo();
+        });
+    },
+
+    clearFishKey() {
+      this.invoke('voice_fish_set_key', { key: '' })
+        .then(() => this._refreshTtsInfo());
+    },
+
+    ensureModel() {
+      if (this._modelDownloading) return;
+      this._modelDownloading = true;
+      this._modelError = '';
+      this.paintVoiceMenu();
+      // Use core.invoke directly — this.invoke() swallows rejections as
+      // null, which would mark the model present after a failed download
+      // (same contract as settings.voice's handleDownload).
+      const core = window.__TAURI__ && window.__TAURI__.core;
+      const p = core
+        ? core.invoke('voice_ensure_model')
+        : Promise.reject(new Error('unavailable'));
+      p.then(() => {
+        this._modelDownloading = false;
+        this.modelPresent = true;
+        this.modelProgress = null;
+        this.paintVoiceMenu();
+      }).catch(() => {
+        this._modelDownloading = false;
+        this._modelError = this._modelError || 'Download failed';
+        this.paintVoiceMenu();
+      });
+    },
+
+    onModelProgress(p) {
+      if (p && p.error) {
+        this._modelDownloading = false;
+        this._modelError = String(p.error);
+        this.paintVoiceMenu();
+        return;
+      }
+      if (p && p.done) {
+        this._modelDownloading = false;
+        this.modelPresent = true;
+        this.modelProgress = null;
+        this.paintVoiceMenu();
+        return;
+      }
+      this.modelProgress = {
+        downloadedBytes: Number.isFinite(p.downloadedBytes) ? p.downloadedBytes : 0,
+        totalBytes: Number.isFinite(p.totalBytes) ? p.totalBytes : 0,
+      };
+      this.paintVoiceMenu();
+    },
+
+    // The settings.voice panel writes these keys from ANOTHER window; the
+    // storage event only reaches here. Mirror the new value into local state
+    // (the panel already invoked the matching Tauri command — the Rust
+    // controller is app-global, so re-invoking would double-switch).
+    applyExternalMode(m) {
+      if (m !== 'off' && m !== 'ptt' && m !== 'auto') return;
+      this.mode = m;
+      this.micPaused = false;
+      this.paintMic();
+      this.paintVoiceMenu();
+    },
+
+    syncExternalEngine(e) {
+      this.ttsEngine = e === 'fish' ? 'fish' : 'system';
+      this.paintVoiceMenu();
+      this._refreshTtsInfo();
     },
 
     // ── Transcript → the EXACT existing send path ───────────────────────
@@ -677,6 +1023,11 @@ export function createChatEngine(ctx: ChatEngineCtx) {
           w.style.removeProperty('--voice-level');
         }
       }
+      // The composer buttons mirror the moon's voice state (listening wash /
+      // transcribing breathe / speaking ripple) — the [data-voice-state] CSS
+      // on .mic-btn and .voice-mode-btn.
+      if (DOM.voiceMicBtn) DOM.voiceMicBtn.dataset.voiceState = visual;
+      if (DOM.voiceModeBtn) DOM.voiceModeBtn.dataset.voiceState = visual;
       MoonFace.setVoice(visual);   // wide eyes when listening, chatter when speaking
     },
 

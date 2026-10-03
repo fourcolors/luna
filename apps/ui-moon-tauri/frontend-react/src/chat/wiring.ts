@@ -559,6 +559,17 @@ function installWiringChromeAndWindow(ctx, engines) {
     Logger.error('attach-menu wiring failed (non-fatal; connect continues):', err);
   }
 
+  // Close the voice quick-setup menu on an outside click (the caret's own
+  // click already stopPropagations; clicks inside the popover are ignored).
+  // The whole cluster is "inside": a blocked mic click opens this menu and
+  // the same click must not re-close it as it bubbles to document.
+  document.addEventListener('click', (e) => {
+    if (!DOM.voiceMenu || !DOM.voiceMenu.classList.contains('open')) return;
+    if (DOM.voiceMenu.contains(e.target)) return;
+    if (DOM.voiceCluster && DOM.voiceCluster.contains(e.target)) return;
+    if (VoiceEngine) VoiceEngine.closeVoiceMenu();
+  });
+
   if (DOM.chatForm) DOM.chatForm.addEventListener('submit', (e) => ChatEngine.handleSubmit(e));
   /**
    * Slash-command menu (UI-owned client commands) - drives the /command
@@ -752,16 +763,28 @@ function installWiringChromeAndWindow(ctx, engines) {
       LocalShell.openMenu(false);
       return;
     }
+    if (DOM.voiceMenu && DOM.voiceMenu.classList.contains('open')) {
+      if (VoiceEngine) VoiceEngine.closeVoiceMenu();
+      return;
+    }
     if (VoiceEngine) VoiceEngine.handleEscape();
   });
 
   // Cross-window storage fan-out: the settings.voice panel persists the
   // speak-replies preference; flipping it off must silence an in-flight
-  // reply here (same hook the hub wires).
+  // reply here (same hook the hub wires). Mode / engine picks made in the
+  // settings window also repaint the composer's voice menu so the two
+  // surfaces never disagree.
   window.addEventListener('storage', (e) => {
     if (!e || !e.key) return;
     if (e.key === 'luna_voice_speak_replies' && e.newValue === '0') {
       if (VoiceEngine) VoiceEngine.stopSpeaking();
+    }
+    if (e.key === 'luna_voice_mode') {
+      if (VoiceEngine) VoiceEngine.applyExternalMode(e.newValue);
+    }
+    if (e.key === 'luna_voice_tts_engine') {
+      if (VoiceEngine) VoiceEngine.syncExternalEngine(e.newValue);
     }
   });
 
