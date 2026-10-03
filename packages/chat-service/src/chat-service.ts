@@ -149,6 +149,12 @@ const warnCause =
 export interface TurnPrompt {
   readonly payload: SDKUserMessage
   readonly memoryContext: string | null
+  /** The SessionStore id of the user message this prompt was offered for.
+   *  Locks it to the matching `pendingTurns` seed (offered in the same
+   *  send() step) so per-query consumers can tell which seeds belong to
+   *  the turns they actually ran — the folded-steering drain in
+   *  chat-service-thread-lifecycle.ts relies on this. */
+  readonly userMessageId: string
 }
 
 export interface ThreadEntry {
@@ -171,6 +177,12 @@ export interface ThreadEntry {
     readonly userMessageId: string
     readonly userText: string
   }>
+  /** Serializes pendingTurns polls that can race the recall path's
+   *  post-query folded-seed drain (interrupt() runs on the caller's
+   *  fiber, the drain on the query fiber). Result/failure handlers don't
+   *  take it — they run on the query fiber itself, sequential with the
+   *  drain. */
+  readonly pendingTurnsLock: Semaphore.Semaphore
   readonly assistantText: Ref.Ref<string>
   readonly recallMemory?: ThreadToolsBinding["recallMemory"]
   readonly observeTurn?: ThreadToolsBinding["observeTurn"]
@@ -618,6 +630,7 @@ const makeChatService = Effect.gen(function* () {
           const acceptedInbox = yield* Queue.offer(entry.inbox, {
             payload: userPayload,
             memoryContext: recalled,
+            userMessageId: messageId,
           })
           if (!acceptedPending || !acceptedInbox) {
             yield* Effect.logWarning(
@@ -805,7 +818,9 @@ const makeChatService = Effect.gen(function* () {
           // the matching observation seed here so the next successful result
           // cannot be paired with stale user text. Candidate capture remains
           // useful for an interrupted turn and stays off the interrupt path.
-          const pending = yield* Queue.poll(entry.pendingTurns)
+          const pending = yield* entry.pendingTurnsLock.withPermits(1)(
+            Queue.poll(entry.pendingTurns),
+          )
           const assistantText = yield* Ref.getAndSet(entry.assistantText, "")
           if (Option.isSome(pending) && entry.observeTurn !== undefined) {
             yield* entry
