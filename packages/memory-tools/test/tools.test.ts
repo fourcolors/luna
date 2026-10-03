@@ -342,6 +342,44 @@ describe("memory tools search mode", () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]!.topK).toBe(20)
   })
+
+  it("returns a belief hit's statement as its text (beliefs have no content.text)", async () => {
+    // Regression: the DTO read only `content.text`, so every belief came back
+    // with text "" and was useless to the caller even when search found it.
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(null),
+      query: () => Stream.empty,
+      delete: () => Effect.succeed(false),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: () =>
+        Stream.succeed({
+          record: makeRecord({
+            id: "belief-user-1",
+            namespace: "operator",
+            kind: "belief",
+            content: {
+              statement: "The operator prefers plain-language status reports.",
+              status: "active",
+              confidence: 0.9,
+            },
+          }),
+          score: 1,
+        }),
+    } satisfies MemoryRouter
+    const [, searchTool] = makeMemoryTools(router)
+
+    const hits = parseTextResult<ReadonlyArray<{ id: string; text: string; kind: string }>>(
+      await searchTool.handler(searchArgs({ query: "status reports", limit: 3 }), undefined),
+    )
+
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.kind).toBe("belief")
+    expect(hits[0]!.text).toBe("The operator prefers plain-language status reports.")
+  })
 })
 
 describe("memory tools scope isolation", () => {

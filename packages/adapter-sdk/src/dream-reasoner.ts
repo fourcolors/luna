@@ -182,6 +182,14 @@ const DREAM_OP_ITEM_SCHEMA: Record<string, unknown> = {
 // WAKE_DIGEST_SCHEMA. A probe that re-declares its own copy of this object
 // proves only that the copy is well-formed — the drift it would miss is
 // exactly the drift that caused the outage.
+
+/**
+ * Turn budget for the structured-output dream turn: the answer turn plus one
+ * "[structured-output-enforce]" retry turn the SDK appends when the model
+ * replies in text instead of calling the StructuredOutput tool.
+ */
+export const DREAM_STRUCTURED_MAX_TURNS = 2
+
 export const DREAM_OPS_SCHEMA: Record<string, unknown> = {
   type: "object",
   required: ["ops"],
@@ -326,7 +334,7 @@ export function buildDreamPrompt(
     ? 'memory/beliefs/skills below and propose state changes as a STRICT JSON object: {"ops": [ ... ]}.'
     : "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops."
   const envelopeRule = structuredOutputEnabled
-    ? '1. Output ONLY a JSON object of the form {"ops": [ ... ]}. No markdown, no prose, no code fences.'
+    ? '1. Return your answer by calling the StructuredOutput tool with ONE object of the form {"ops": [ ... ]}. Do NOT write the JSON as a text reply or in a code fence: only the tool call is read.'
     : "1. Output ONLY a JSON array. No markdown, no prose, no code fences."
 
   const opShapeRule = structuredOutputEnabled
@@ -804,7 +812,16 @@ export const DreamReasonerDefault: Layer.Layer<
             model: dreamModel,
             prompt,
             baseOptions: {
-              maxTurns: 1,
+              // Structured output is delivered by a synthetic StructuredOutput
+              // tool. When the model answers in text instead of calling it,
+              // the SDK appends a "[structured-output-enforce] You MUST call
+              // the StructuredOutput tool" turn. With maxTurns: 1 that second
+              // turn hit "Reached maximum number of turns (1)" and the run
+              // failed on most nights (2026-09-19..10-02, session log
+              // 4b0ee791 shows max_turns_reached turnCount 2). One extra turn
+              // lets the enforcement nudge land; built-in tools stay disabled
+              // so it cannot be spent on anything else.
+              maxTurns: structuredOutputEnabled ? DREAM_STRUCTURED_MAX_TURNS : 1,
               // The dream reasoner is a single-shot JSON producer: it reads the
               // prompt and returns ops. It never needs a tool. Leaving the
               // default built-in toolset in context made `maxTurns: 1` unsafe —
