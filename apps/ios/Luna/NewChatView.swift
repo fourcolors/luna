@@ -21,29 +21,30 @@ struct NewChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
-            VStack(spacing: 16) {
-                Image(systemName: "moon.stars.fill")
-                    .font(.system(size: 42))
-                    .foregroundStyle(Color.accentColor)
-                Text("How can Luna help?")
-                    .font(.title2.weight(.semibold))
-                VStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Suggestions")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 4)
+                VStack(spacing: 2) {
                     ForEach(suggestions, id: \.self) { s in
                         Button { draft = s } label: {
                             Text(s)
-                                .font(.callout)
+                                .font(.body)
                                 .foregroundStyle(.primary)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 9)
-                                .background(
-                                    Color(.secondarySystemBackground), in: Capsule())
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
                         }
                         .buttonStyle(.plain)
                     }
                 }
+                .background(
+                    Color(.secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                )
             }
-            .padding(.horizontal, 24)
-            Spacer()
+            .padding(.horizontal, 16)
             Spacer()
             ComposerView(
                 draft: $draft,

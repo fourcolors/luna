@@ -11,7 +11,7 @@ enum ConnectionState: Equatable {
         case .disconnected: return "Offline"
         case .connecting: return "Connecting…"
         case .connected: return "Connected"
-        case .failed(let m): return "Failed: \(m)"
+        case .failed(let m): return m.isEmpty ? "Failed" : m
         }
     }
 }

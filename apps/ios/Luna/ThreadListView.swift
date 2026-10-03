@@ -8,9 +8,9 @@ struct ThreadListView: View {
         Group {
             if store.connection == .connected && store.threads.isEmpty {
                 ContentUnavailableView {
-                    Label("No chats yet", systemImage: "bubble.left.and.bubble.right")
+                    Label("No chats", systemImage: "bubble.left.and.bubble.right")
                 } description: {
-                    Text("Tap the pencil to start a new chat.")
+                    Text("Start a new chat from the compose button.")
                 }
             } else {
                 threadList
@@ -124,7 +124,7 @@ private struct ThreadRow: View {
                         .frame(width: 6, height: 6)
                 }
                 Text(thread.title ?? "Untitled")
-                    .font(.headline)
+                    .font(.body)
                     .lineLimit(1)
                 Spacer()
                 if let ts = thread.lastMessageAt ?? Optional(thread.createdAt) {

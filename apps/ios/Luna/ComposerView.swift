@@ -8,7 +8,7 @@ struct ComposerView: View {
     var isRunning = false
     var isSending = false
     var autofocus = false
-    var placeholder = "Message Luna…"
+    var placeholder = "Message"
     var onSend: ([WireAttachment]) -> Void
     var onInterrupt: () -> Void = {}
 
@@ -93,8 +93,8 @@ struct ComposerView: View {
             .padding(.vertical, 4)
             .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 6)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         .onAppear { if autofocus { inputFocused = true } }
     }
 

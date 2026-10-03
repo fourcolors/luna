@@ -20,13 +20,13 @@ struct SettingsView: View {
                     if QRScannerView.isAvailable {
                         showScanner = true
                     } else {
-                        pairError = "Camera scanning isn't available on this device — use Paste Link instead."
+                        pairError = "Camera unavailable. Paste the link instead."
                     }
                 } label: {
-                    Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                    Label("Scan code", systemImage: "qrcode.viewfinder")
                 }
                 Button { pasteLink() } label: {
-                    Label("Paste Link", systemImage: "doc.on.clipboard")
+                    Label("Paste link", systemImage: "doc.on.clipboard")
                 }
                 if let pairError {
                     Text(pairError)
@@ -34,26 +34,26 @@ struct SettingsView: View {
                         .foregroundStyle(.red)
                 }
             } header: {
-                Text("Pair this device")
+                Text("Pair")
             } footer: {
-                Text("On your server run `bun run apps/server/scripts/pair-qr.ts` — scan or paste the luna://connect link it prints.")
+                Text("Scan or paste the luna://connect link from your server.")
             }
 
             Section {
-                TextField("Host (e.g. 192.168.1.10)", text: $host)
+                TextField("Host", text: $host)
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 TextField("Port", value: $port, format: .number.grouping(.never))
                     .keyboardType(.numberPad)
-                SecureField("Access token (≥16 chars)", text: $token)
+                SecureField("Access token", text: $token)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Toggle("TLS (wss://)", isOn: $useTLS)
+                Toggle("Use TLS", isOn: $useTLS)
             } header: {
-                Text("Chat server")
+                Text("Server")
             } footer: {
-                Text("Same server your Luna desktop talks to — ws://host:4753/ui with the UI_WS_TOKEN bearer token. The server must be reachable from this phone (LAN IP or tunnel).")
+                Text("The chat server your desktop uses. It must be reachable from this phone.")
             }
 
             Section {
@@ -79,7 +79,7 @@ struct SettingsView: View {
                 .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty || token.count < 16)
             }
         }
-        .navigationTitle("Settings")
+        .navigationTitle(store.isConfigured ? "Settings" : "Connect")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { save(); dismiss() }
@@ -111,7 +111,7 @@ struct SettingsView: View {
 
     private func pasteLink() {
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            pairError = "Clipboard is empty."
+            pairError = "Clipboard is empty"
             return
         }
         applyPairing(text)
@@ -119,7 +119,7 @@ struct SettingsView: View {
 
     private func applyPairing(_ payload: String) {
         guard let info = PairingInfo(urlString: payload) else {
-            pairError = "Not a Luna pairing link — expected luna://connect?…"
+            pairError = "Not a Luna pairing link"
             return
         }
         host = info.host

@@ -24,7 +24,15 @@ struct ChatView: View {
             // are bounded (the server snapshot is capped), so one full layout
             // pass is cheap and correct.
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if entries.isEmpty && !isRunning {
+                        Text("No messages")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 48)
+                            .rotationEffect(.radians(.pi))
+                    }
                     ForEach(entries.reversed()) { entry in
                         Group {
                             switch entry {
@@ -36,8 +44,8 @@ struct ChatView: View {
                         .rotationEffect(.radians(.pi))
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
             }
             .rotationEffect(.radians(.pi))
 
@@ -83,17 +91,25 @@ private struct MessageBubble: View {
         if isEmpty {
             EmptyView()
         } else if message.isUser {
-            HStack {
-                Spacer(minLength: 48)
+            HStack(alignment: .top, spacing: 0) {
+                Spacer(minLength: 56)
                 content
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(
+                        Color.accentColor.opacity(0.16),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
             }
         } else {
             content
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    Color(.secondarySystemBackground),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
         }
     }
 
@@ -150,7 +166,13 @@ private struct StreamingBubble: View {
                 Text(text)
             }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(.secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
     }
 }
 
@@ -164,39 +186,42 @@ private struct ToolActivityRow: View {
                 Image(systemName: icon)
                     .foregroundStyle(color)
                     .font(.caption)
+                    .frame(width: 14)
                 Text(activity.name)
-                    .font(.caption.weight(.medium))
-                Spacer()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
                 Image(systemName: expanded ? "chevron.up" : "chevron.down")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color.secondary.opacity(0.08))
-            .clipShape(Capsule())
-            .contentShape(Capsule())
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
             .onTapGesture { expanded.toggle() }
 
             if expanded {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     if !activity.input.isEmpty {
                         Text(activity.input)
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }
                     if let output = activity.output {
-                        Divider()
+                        if !activity.input.isEmpty { Divider() }
                         Text(output)
                             .font(.caption.monospaced())
                     }
                 }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.06))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(.tertiarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
     }
 
     private var icon: String {
