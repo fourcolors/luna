@@ -98,7 +98,12 @@ pid_is_sidecar() {
 drop_stale_pidfile() {
   local pid="$1" current
   current="$(cat "$PIDFILE" 2>/dev/null || true)"
-  [ "$current" = "$pid" ] && rm -f "$PIDFILE"
+  # Must not fail closed: this script is `set -e`, and callers invoke us from
+  # a then-branch (not an `if` test). A mismatched/missing pidfile is the
+  # concurrent-start case we are supposed to leave alone, not an error.
+  if [ "$current" = "$pid" ]; then
+    rm -f "$PIDFILE"
+  fi
 }
 
 running_pid() {
