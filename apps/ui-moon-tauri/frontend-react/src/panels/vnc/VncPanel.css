@@ -1,89 +1,130 @@
 /*
- * VncPanel.css - Screen Share panel surface. Astryx components are skinned
- * globally by ../../styles/astryx-moon-bridge.css; these rules own the two
- * layouts noVNC needs (the connect form and the live screen viewport) plus
- * the password prompt overlay - all theme tokens, mirroring NowPanel.css's
- * light/dark convention.
+ * VncPanel.css - Screen Share surface. Astryx is skinned by
+ * ../../styles/astryx-moon-bridge.css; these rules own the screen canvas,
+ * the connect form, and the quiet footer. Tokens only — same convention as
+ * NowPanel.css.
+ *
+ * The remote framebuffer is the primary surface. The form and disconnect
+ * control sit on top of it, never beside a second chrome column.
  */
 
 .vnc-panel {
+  /* Eat panel.html's 14px content-area padding so the screen fills the card. */
+  margin: -14px;
+  width: calc(100% + 28px);
+  height: calc(100% + 28px);
+  min-height: 0;
   position: relative;
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  gap: 8px;
 }
 
-/* The noVNC screen element noVNC appends into this box is 100%x100% flex
- * with a centered canvas; scaleViewport scales the remote to fit it. */
-.vnc-viewport {
+.vnc-stage {
+  position: relative;
   flex: 1;
   min-height: 0;
-  border-radius: 8px;
+}
+
+/* noVNC appends a 100%×100% flex box; scaleViewport fits the remote into it. */
+.vnc-viewport {
+  position: absolute;
+  inset: 0;
   overflow: hidden;
   background: #15171c;
-  border: 1px solid color-mix(in oklab, var(--text) 14%, transparent);
 }
 html[data-theme="light"] .vnc-viewport {
   background: #1c1f26;
 }
 
-.vnc-viewport:empty {
-  border-color: transparent;
-  background: transparent;
-}
-
-/* connect form overlays the (empty) viewport so the RFB target element can
- * stay mounted across idle->connecting->connected transitions without the
- * mount-order dance. */
 .vnc-overlay {
   position: absolute;
   inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
+  padding: 20px 16px;
+  background: color-mix(in oklab, var(--paper) 22%, transparent);
   z-index: 2;
+}
+
+.vnc-overlay-status {
+  background: color-mix(in oklab, #15171c 18%, transparent);
+}
+
+.vnc-connecting {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
 }
 
 .vnc-connect-card {
   width: 100%;
-  max-width: 340px;
+  max-width: 320px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  background: color-mix(in oklab, var(--accent) 6%, var(--paper-2));
-  border: 1px solid color-mix(in oklab, var(--accent) 26%, transparent);
-  border-radius: 12px;
-  padding: 16px;
+  gap: 12px;
+  background: var(--paper-2, var(--paper));
+  border: 1px solid var(--ink-faint);
+  border-radius: var(--radius, 12px);
+  padding: 14px 14px 12px;
 }
 
 .vnc-connect-title {
-  font-size: 0.95rem;
-  font-weight: 700;
-  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .vnc-connect-hint {
   font-size: 0.72rem;
   line-height: 1.4;
-  color: var(--muted);
+  color: var(--ink-soft);
+}
+
+.vnc-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vnc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vnc-field > span {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
 }
 
 .vnc-field-row {
   display: flex;
   gap: 8px;
+  align-items: flex-end;
 }
 
-.vnc-field-row > *:first-child {
+.vnc-field-row > .vnc-field:first-child {
   flex: 1;
   min-width: 0;
 }
 
+.vnc-field-port {
+  width: 72px;
+  flex: 0 0 72px;
+}
+
+.vnc-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .vnc-status {
   font-size: 0.74rem;
-  color: var(--muted);
-  min-height: 1em;
+  color: var(--ink-soft);
+  line-height: 1.35;
 }
 .vnc-status.error {
   color: #b0432f;
@@ -92,26 +133,27 @@ html[data-theme="dark"] .vnc-status.error {
   color: #f0a08f;
 }
 
-.vnc-creds-title {
-  font-size: 0.85rem;
-  font-weight: 700;
-  color: var(--text);
-}
-
-/* footer strip under the live screen */
+/* Quiet strip under the live screen — name left, disconnect right. */
 .vnc-footer {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex: none;
+  padding: 6px 12px;
+  border-top: 1px solid var(--ink-faint);
+  background: var(--paper);
 }
 
 .vnc-footer-name {
   flex: 1;
   min-width: 0;
-  font-size: 0.74rem;
-  color: var(--muted);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.vnc-footer > *:last-child {
+  flex: none;
 }

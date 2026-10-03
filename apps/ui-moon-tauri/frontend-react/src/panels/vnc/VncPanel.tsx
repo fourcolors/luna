@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type RFB from "@novnc/novnc"
-import { Button, TextInput, VStack } from "../../astryx-kit"
+import { Button, TextInput } from "../../astryx-kit"
 import type { PanelCtx } from "../panel-ctx"
 import "./VncPanel.css"
 
@@ -187,7 +187,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
         })
         rfb.addEventListener("securityfailure", (e) => {
           const reason = (e as CustomEvent<{ reason?: string }>).detail?.reason
-          setStatus(reason ? `Security failure: ${reason}` : "Security failure")
+          setStatus(reason ? `Authentication failed: ${reason}` : "Authentication failed")
         })
         rfb.addEventListener("desktopname", (e) => {
           setDesktopName((e as CustomEvent<{ name: string }>).detail?.name ?? "")
@@ -233,114 +233,138 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
 
   return (
     <div className="vnc-panel">
-      <div className="vnc-viewport" ref={viewportRef} data-testid="vnc-viewport" />
+      <div className="vnc-stage">
+        <div className="vnc-viewport" ref={viewportRef} data-testid="vnc-viewport" />
+
+        {connState === "connecting" && !needCreds && (
+          <div className="vnc-overlay vnc-overlay-status">
+            <div className="vnc-connecting">Connecting</div>
+          </div>
+        )}
+
+        {!live && (
+          <div className="vnc-overlay">
+            <div className="vnc-connect-card">
+              <div className="vnc-connect-title">Connect</div>
+              <div className="vnc-fields">
+                <div className="vnc-field-row">
+                  <label className="vnc-field">
+                    <span>Host</span>
+                    <TextInput
+                      label="Host"
+                      isLabelHidden
+                      placeholder="host or ws://"
+                      value={host}
+                      onChange={setHost}
+                      data-testid="vnc-host-input"
+                    />
+                  </label>
+                  <label className="vnc-field vnc-field-port">
+                    <span>Port</span>
+                    <TextInput
+                      label="Port"
+                      isLabelHidden
+                      placeholder="5900"
+                      value={port}
+                      onChange={setPort}
+                      width={72}
+                      data-testid="vnc-port-input"
+                    />
+                  </label>
+                </div>
+                <label className="vnc-field">
+                  <span>Password</span>
+                  <TextInput
+                    label="Password"
+                    isLabelHidden
+                    type="password"
+                    placeholder="optional"
+                    value={password}
+                    onChange={setPassword}
+                    data-testid="vnc-password-input"
+                  />
+                </label>
+                <div className="vnc-actions">
+                  <Button
+                    label={connState === "error" ? "Try again" : "Connect"}
+                    variant="primary"
+                    size="sm"
+                    onClick={() => void connect(host, port, password)}
+                    data-testid="vnc-connect-btn"
+                  />
+                </div>
+              </div>
+              {status && (
+                <div className={"vnc-status" + (connState === "error" ? " error" : "")} data-testid="vnc-status">
+                  {status}
+                </div>
+              )}
+              <div className="vnc-connect-hint">Password stays on this device.</div>
+            </div>
+          </div>
+        )}
+
+        {live && needCreds && (
+          <div className="vnc-overlay">
+            <div className="vnc-connect-card">
+              <div className="vnc-connect-title">Password required</div>
+              <div className="vnc-fields">
+                {needUser && (
+                  <label className="vnc-field">
+                    <span>Username</span>
+                    <TextInput
+                      label="Username"
+                      isLabelHidden
+                      placeholder="Username"
+                      value={credUser}
+                      onChange={setCredUser}
+                      data-testid="vnc-cred-user"
+                    />
+                  </label>
+                )}
+                <label className="vnc-field">
+                  <span>Password</span>
+                  <TextInput
+                    label="Password"
+                    isLabelHidden
+                    type="password"
+                    placeholder="Password"
+                    value={password}
+                    onChange={setPassword}
+                    data-testid="vnc-cred-password"
+                  />
+                </label>
+                <div className="vnc-actions">
+                  <Button
+                    label="Continue"
+                    variant="primary"
+                    size="sm"
+                    onClick={handleSubmitCreds}
+                    data-testid="vnc-cred-submit"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
 
       {live && (
         <div className="vnc-footer">
           <span className="vnc-footer-name" data-testid="vnc-status-line">
             {connState === "connecting"
-              ? `Connecting to ${host}…`
+              ? host || "Connecting"
               : needCreds
-                ? "Sign in required"
+                ? "Password required"
                 : desktopName || host}
           </span>
           <Button
             label="Disconnect"
-            variant="secondary"
+            variant="ghost"
             size="sm"
             onClick={handleDisconnect}
             data-testid="vnc-disconnect-btn"
           />
-        </div>
-      )}
-
-      {!live && (
-        <div className="vnc-overlay">
-          <div className="vnc-connect-card">
-            <div className="vnc-connect-title">Share a remote screen</div>
-            <VStack gap={2}>
-              <div className="vnc-field-row">
-                <TextInput
-                  label="Host"
-                  isLabelHidden
-                  placeholder="host or ws:// address"
-                  value={host}
-                  onChange={setHost}
-                  data-testid="vnc-host-input"
-                />
-                <TextInput
-                  label="Port"
-                  isLabelHidden
-                  placeholder="5900"
-                  value={port}
-                  onChange={setPort}
-                  width={72}
-                  data-testid="vnc-port-input"
-                />
-              </div>
-              <TextInput
-                label="Password"
-                isLabelHidden
-                type="password"
-                placeholder="Password (if required)"
-                value={password}
-                onChange={setPassword}
-                data-testid="vnc-password-input"
-              />
-              <Button
-                label={connState === "error" ? "Try again" : "Connect"}
-                variant="primary"
-                size="sm"
-                onClick={() => void connect(host, port, password)}
-                data-testid="vnc-connect-btn"
-              />
-            </VStack>
-            {status && (
-              <div className={"vnc-status" + (connState === "error" ? " error" : "")} data-testid="vnc-status">
-                {status}
-              </div>
-            )}
-            <div className="vnc-connect-hint">
-              Any VNC server works — e.g. a Mac with Screen Sharing on, or a
-              websockify ws:// address. Passwords are never saved.
-            </div>
-          </div>
-        </div>
-      )}
-
-      {live && needCreds && (
-        <div className="vnc-overlay">
-          <div className="vnc-connect-card">
-            <div className="vnc-creds-title">{host} asks for a password</div>
-            <VStack gap={2}>
-              {needUser && (
-                <TextInput
-                  label="Username"
-                  isLabelHidden
-                  placeholder="Username"
-                  value={credUser}
-                  onChange={setCredUser}
-                  data-testid="vnc-cred-user"
-                />
-              )}
-              <TextInput
-                label="Password"
-                isLabelHidden
-                type="password"
-                placeholder="Password"
-                value={password}
-                onChange={setPassword}
-                data-testid="vnc-cred-password"
-              />
-              <Button
-                label="Sign in"
-                variant="primary"
-                size="sm"
-                onClick={handleSubmitCreds}
-                data-testid="vnc-cred-submit"
-              />
-            </VStack>
-          </div>
         </div>
       )}
     </div>
