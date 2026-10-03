@@ -183,24 +183,65 @@ For testing the composer mic cluster / voice quick-setup menu / Fish key
   even when hardware paths fail (VMs typically have no audio input →
   `voice-error "no input config"` and `voice-state: error`; the error wash
   on the mic still verifies the event→`data-voice-state` mirror).
-- **The open menu covers its own trigger.** `.voice-menu` (bottom:58, width
-  240) overlaps the mic cluster and lower composer — a click at the mic's
-  coordinates while the menu is open hits menu elements (e.g. the footer
-  "All voice settings…", which then looks like a dead mic click: menu closes,
-  settings window refocuses). Compute hit targets via
-  `document.elementFromPoint` and/or close the menu before mic-click tests;
-  arm a one-shot capture-phase `document` click logger to see where real
-  pointer events actually land.
+- **The open menu covers its own trigger — and ALL composer controls.**
+  `.voice-menu` (bottom:58, width 240) overlaps the mic cluster and lower
+  composer: `document.elementFromPoint` at mic/waveform/caret centers
+  returns `voice-settings-link` while the menu is open — a "button click"
+  silently hits the menu footer (closes the menu, opens settings.voice —
+  looks like a dead button). Always verify `VoiceEngine.menuOpen===false`
+  before physical button clicks; `elementFromPoint` + a capture-phase
+  `document` click logger prove the real hit target.
 - **Fish key round-trip is disk-verifiable:** `voice_fish_set_key` →
   `~/.luna/fish-api-key` atomic 0600 (`stat -f %Lp`), blank deletes.
 - **Whisper model:** `voice_ensure_model` downloads ~148MB
   `~/.luna/models/ggml-base.en.bin` from huggingface; `model_present` needs
   ≥10MB, so a partial/HTML file still counts as missing.
+  **Force a failure without touching the network:** `chmod 555
+  ~/.luna/models` → `curl -o <pid>.part` exits 56 →
+  `voice-model-progress{error}` → menu shows "Download failed — try
+  again" (must NOT fake `modelPresent`). Restore `chmod 755` after.
+- **Tap-vs-hold on the dictate mic:** hold-to-talk is delayed 180ms, so a
+  real tap (down+up+click) drives click semantics. Observable JS fields on
+  `window.VoiceEngine`: `_holdTimer` (pending), `_holdStarted`
+  (hold-fired), `_ignoreNextMicClick` (trailing-click swallow). Verify a
+  >180ms hold by asserting `mode` stays `'ptt'` after release rather than
+  checking for events.
+- **`_ptt` clears on `voice-error`:** after a failed capture `_ptt` is
+  false while `mode` stays `'ptt'` (armed, not capturing — mic shows
+  `.armed`). A tap in that state disarms via `setMode('off')`, not `pttUp`.
+- **Dead pipeline is silent:** after the first capture error (VMs have no
+  audio input device), the whisper pipeline thread exits — subsequent
+  `voice_ptt_down` hits a dead channel ("harmless no-op") and emits NO
+  `voice-state` events. A missing second `starting` is not a bug; check
+  `_holdStarted`/`_ignoreNextMicClick` instead.
+- **Boot-forces-off check:** seed `localStorage.luna_voice_mode='auto'`
+  then relaunch — boot must normalize `VoiceEngine.mode` AND rewrite the
+  persisted key to `'off'`. Model presence is a boot-time probe too:
+  move `~/.luna/models/ggml-base.en.bin` in/out of place and RELAUNCH —
+  no live re-probe exists.
+- **Unrelated windows steal focus** (iPhone Simulator, stray browsers): a
+  click can raise them over the Luna panel. Recover with
+  `osascript -e 'tell application "System Events" to set frontmost of
+  (first process whose name contains "luna") to true'`.
 - **`[hidden]` vs `display` trap is recurring:** any JS-hidden element whose
   CSS sets `display` needs a `[hidden]{display:none!important}` guard —
   audit with `getComputedStyle(el).display` while `el.hidden===true` (found
   live on `.voice-model-row`, which kept showing a stale "Downloading…"
   row after the model download finished).
+
+Oracle — one-shot engine state (execute/sync in the chat window):
+
+```js
+return { mode: VoiceEngine.mode, rustMode: VoiceEngine.rustMode,
+         ptt: VoiceEngine._ptt, hold: VoiceEngine._holdStarted,
+         menuOpen: VoiceEngine.menuOpen,
+         model: VoiceEngine.modelPresent, fish: VoiceEngine.fishKeyConfigured,
+         engine: VoiceEngine.ttsEngine,
+         micCls: document.getElementById('voice-mic-btn').className,
+         waveCls: document.getElementById('voice-mode-btn').className,
+         lsMode: localStorage.getItem('luna_voice_mode') };
+// __VE[] (if instrumented above) carries the full event truth.
+```
 
 ## Devin Secrets Needed
 
