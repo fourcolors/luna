@@ -282,6 +282,32 @@ describe('ThreadDrawerEngine.onRowClick — single-writer integration (chat.html
     // reset must have fired to clear stale content
     expect(resetCalled).toBe(true)
   })
+
+  it('Scenario: row click during a mint-in-flight keeps the stashed first message (no silent drop)', () => {
+    // Regression guard: a first message stashed for a thread that does not
+    // exist yet (chatEngine.ts mint path) must survive a row click that
+    // happens before thread-created arrives. onRowClick used to null
+    // State.pendingUserMessage, which made the thread-created background
+    // branch's bindPendingUserMessage a no-op — the message was never sent,
+    // even though the user bubble was already painted as sent.
+    connectFakeWs([])
+    const S = State()
+    // Fresh surface: no active thread, message stashed, mint in flight.
+    S.activeThreadId = null
+    S.pendingUserMessage = { text: 'hello?', attachments: undefined }
+    M().ThreadCreateState.begin()
+
+    eng().onRowClick('th-b')
+
+    // The stash must survive: the minted thread's thread-created frame
+    // still binds it (background branch) so a later intentional open of
+    // that thread can flush it. Misdelivery is impossible — flush only
+    // sends when the bound target matches the viewed thread.
+    expect(S.activeThreadId).toBe('th-b')
+    expect(S.pendingUserMessage).not.toBeNull()
+    expect(S.pendingUserMessage.text).toBe('hello?')
+    expect(S.pendingUserMessage.threadId).toBeUndefined()
+  })
 })
 
 // ── 3. Allowlist fence ────────────────────────────────────────────────────────
