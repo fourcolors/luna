@@ -3659,6 +3659,9 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       V.fishKeyConfigured = opts.fishKey === true
       V.mode = 'off'
       V._ptt = false
+      V._holdTimer = null
+      V._holdStarted = false
+      V._ignoreNextMicClick = false
       V.micPaused = false
       V.paintMic()
       V.paintVoiceMenu()
@@ -3736,10 +3739,33 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke.mock.calls.filter((c: any[]) => c[0] === 'voice_set_mode' && c[1]?.mode === 'auto').length).toBeGreaterThan(0)
     })
 
-    it('Scenario: ptt mode — press-and-hold drives voice_ptt_down/up', () => {
+    it('Scenario: a real tap (pointerdown/up + click) starts dictate and does not immediately stop', () => {
+      const { invoke, V } = voiceReady()
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      window.dispatchEvent(new MouseEvent('pointerup'))
+      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      expect(called(invoke, 'voice_ptt_up')).toBe(false)
+      expect(V._ptt).toBe(true)
+      expect(V.mode).toBe('ptt')
+    })
+
+    it('Scenario: a real tap while armed (not capturing) disarms without a capture flicker', () => {
       const { invoke, V } = voiceReady()
       V.mode = 'ptt'
       mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      window.dispatchEvent(new MouseEvent('pointerup'))
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_down')).toBe(false)
+      expect(V.mode).toBe('off')
+    })
+
+    it('Scenario: ptt mode — press-and-hold drives voice_ptt_down/up', async () => {
+      const { invoke, V } = voiceReady()
+      V.mode = 'ptt'
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_down')).toBe(false)
+      await vi.advanceTimersByTimeAsync(180)
       expect(called(invoke, 'voice_ptt_down')).toBe(true)
       window.dispatchEvent(new MouseEvent('pointerup'))
       expect(called(invoke, 'voice_ptt_up')).toBe(true)
@@ -3828,12 +3854,42 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(true)
     })
 
+    it('Scenario: voice_ensure_model rejection re-enables Download (no stuck spinner)', async () => {
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'voice_ensure_model') throw new Error('disk full')
+        return null
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.setAvailable(true)
+      V.modelPresent = false
+      V.paintVoiceMenu()
+      V.openVoiceMenu()
+      const btn = document.getElementById('voice-model-download') as HTMLButtonElement
+      const text = document.getElementById('voice-model-text') as HTMLElement
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(btn.disabled).toBe(false))
+      expect(V.modelPresent).toBe(false)
+      expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(false)
+      expect(text.textContent).toBe('Download failed — try again')
+    })
+
     it('Scenario: Esc closes an open voice menu; a second Esc still reaches stopSpeaking', () => {
       const { V } = voiceReady()
       V.openVoiceMenu()
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       expect(menu().classList.contains('open')).toBe(false)
       expect(caret().getAttribute('aria-expanded')).toBe('false')
+    })
+
+    it('Scenario: Esc in the Fish key field closes the menu and wipes the typed key', () => {
+      const { V } = voiceReady({ engine: 'fish' })
+      V.openVoiceMenu()
+      const input = document.getElementById('voice-fish-key') as HTMLInputElement
+      input.value = 'typed-secret-must-not-linger'
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(false)
+      expect(input.value).toBe('')
     })
 
     it('Scenario: an outside click closes the menu; clicks inside stay open', () => {

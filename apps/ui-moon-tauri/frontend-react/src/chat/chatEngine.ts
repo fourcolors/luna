@@ -431,6 +431,9 @@ export function createChatEngine(ctx: ChatEngineCtx) {
                            // missing); fed by voice-state events + the
                            // VoiceStatus returned from voice_set_mode
     _ptt: false,
+    _holdTimer: null,          // delayed pointerdown → hold-to-talk
+    _holdStarted: false,       // capture was started by a hold, not a tap
+    _ignoreNextMicClick: false, // swallow the click that follows a hold
     _uiBound: false,
     _subscribed: false,
     // Spoken-reply pipeline: per-message cumulative wire text (the server
@@ -583,16 +586,31 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       const mic = DOM.voiceMicBtn;
       if (mic) {
         mic.addEventListener('click', () => this.onMicClick());
-        // Press-and-hold = PTT (ptt mode only). pointerup is window-level
-        // so releasing outside the button still ends the capture window.
-        mic.addEventListener('pointerdown', (e) => {
-          if (this.available && this.mode === 'ptt' && !this._ptt) {
-            e.preventDefault();
+        // Hold-to-talk (armed ptt only) is delayed so a tap's pointerdown
+        // does not start a capture that the same gesture's pointerup/click
+        // would immediately kill or miss-disarm. 180ms is under a hold and
+        // over a click.
+        mic.addEventListener('pointerdown', () => {
+          if (!this.available || this.mode !== 'ptt' || this._ptt || this._holdTimer) return;
+          this._holdTimer = setTimeout(() => {
+            this._holdTimer = null;
+            this._holdStarted = true;
             this.pttDown();
-          }
+          }, 180);
         });
-        window.addEventListener('pointerup', () => this.pttUp());
-        mic.addEventListener('pointercancel', () => this.pttUp());
+        const endHold = () => {
+          if (this._holdTimer) {
+            clearTimeout(this._holdTimer);
+            this._holdTimer = null;
+            return;
+          }
+          if (!this._holdStarted) return;
+          this._holdStarted = false;
+          this._ignoreNextMicClick = true;
+          this.pttUp();
+        };
+        window.addEventListener('pointerup', endHold);
+        mic.addEventListener('pointercancel', endHold);
       }
       if (DOM.voiceModeBtn) {
         DOM.voiceModeBtn.addEventListener('click', () => this.onVoiceModeClick());
@@ -620,7 +638,11 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (DOM.voiceFishKey) {
         DOM.voiceFishKey.addEventListener('keydown', (e) => {
           // Enter saves (and must NOT bubble to a form submit); Esc closes.
+          // stopPropagation on every key so the composer/slash handlers never
+          // see a typed secret; Esc must close HERE because that same stop
+          // would otherwise hide the document-level menu closer.
           if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); this.saveFishKey(); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); this.closeVoiceMenu(); }
           else e.stopPropagation();
         });
       }
@@ -648,6 +670,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     // (a TTS concern) must not detour it into setup.
     onMicClick() {
       if (!this.available) return;
+      // Trailing click of a completed hold — capture already ended.
+      if (this._ignoreNextMicClick) { this._ignoreNextMicClick = false; return; }
       if (this._ptt) { this.pttUp(); return; }
       if (this.mode === 'ptt') { this.setMode('off'); return; }
       if (this._blockedReason(false)) {
@@ -830,15 +854,23 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       this._modelDownloading = true;
       this._modelError = '';
       this.paintVoiceMenu();
-      this.invoke('voice_ensure_model')
-        .then(() => {
-          // Resolves when the model is present (idempotent); a rejection is
-          // also reported via voice-model-progress{error} → onModelProgress.
-          this._modelDownloading = false;
-          this.modelPresent = true;
-          this.modelProgress = null;
-          this.paintVoiceMenu();
-        });
+      // Use core.invoke directly — this.invoke() swallows rejections as
+      // null, which would mark the model present after a failed download
+      // (same contract as settings.voice's handleDownload).
+      const core = window.__TAURI__ && window.__TAURI__.core;
+      const p = core
+        ? core.invoke('voice_ensure_model')
+        : Promise.reject(new Error('unavailable'));
+      p.then(() => {
+        this._modelDownloading = false;
+        this.modelPresent = true;
+        this.modelProgress = null;
+        this.paintVoiceMenu();
+      }).catch(() => {
+        this._modelDownloading = false;
+        this._modelError = this._modelError || 'Download failed — try again';
+        this.paintVoiceMenu();
+      });
     },
 
     onModelProgress(p) {
