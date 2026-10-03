@@ -1213,6 +1213,130 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
+  it("Scenario 7n: stale sidecar snapshot is discarded and rebuilt from memory_vectors", async () => {
+    // Stale-snapshot guarantee. A second connection (e.g. `luna memory
+    // status`) populates its own in-memory graph from a T1 snapshot, and
+    // vectorlite rewrites the sidecar from whichever connection closes
+    // last. If the second connection closes after the server, its stale
+    // snapshot wins; the server's AFTER INSERT triggers only fire for new
+    // writes, so under the old k=1 "non-empty" open probe the missing rows
+    // were never re-added — silent and permanent index loss. The backend
+    // must completeness-probe the persisted graph on open and rebuild when
+    // it recalls fewer rows than memory_vectors holds.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-stale] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-stale-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    const sidecar = `${dbPath}.hnsw.bin`
+
+    const bunSqlite = (await import("bun:sqlite" as string)) as {
+      Database: new (p: string) => {
+        run: (sql: string) => void
+        query: (sql: string) => { get: (...p: unknown[]) => unknown }
+        loadExtension: (p: string) => void
+        close: () => void
+      }
+    }
+    // Plant a stale sidecar: a graph holding only the first 3 of the 5
+    // source rows, as if a second connection had closed last with its T1
+    // snapshot. (Planted manually — the close-time flush is best-effort
+    // and may not have materialised a file.)
+    const plantStaleSidecar = () => {
+      try {
+        fs.rmSync(sidecar, { force: true })
+      } catch {
+        /* ignore */
+      }
+      const plant = new bunSqlite.Database(dbPath)
+      plant.loadExtension(probe.path)
+      plant.run("DROP TABLE IF EXISTS memory_vectors_hnsw")
+      plant.run(
+        `CREATE VIRTUAL TABLE memory_vectors_hnsw
+           USING vectorlite(embedding float32[64], hnsw(max_elements=100000), '${sidecar.replace(/'/g, "''")}')`,
+      )
+      plant.run(
+        `INSERT INTO memory_vectors_hnsw(rowid, embedding)
+           SELECT rowid, embedding FROM memory_vectors LIMIT 3`,
+      )
+      plant.close()
+    }
+
+    try {
+      // Phase 1: populate 5 rows via the backend.
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 5; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `stale-${i}`,
+                  namespace: "st",
+                  kind: "note",
+                  content: { text: `staleness ${i} marker` },
+                }),
+              )
+            }
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+
+      // Phase 2: plant the stale 3-row snapshot.
+      plantStaleSidecar()
+      expect(fs.existsSync(sidecar)).toBe(true)
+
+      // Phase 3: reopen via the backend. The completeness probe must
+      // detect the shortfall (3 < 5), discard the stale sidecar, and
+      // rebuild from memory_vectors — vec search must recall all five.
+      const layer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "staleness 0 marker",
+                namespace: "st",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id).sort()
+          }),
+        ).pipe(Effect.provide(layer2)),
+      )
+      expect(ids).toEqual([
+        "stale-0",
+        "stale-1",
+        "stale-2",
+        "stale-3",
+        "stale-4",
+      ])
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
   // ───────────────────────── Enrichment (Experiment A) ─────────────────
   // SIRA-style corpus enrichment: LLM-generated alias phrases carried at
   // content.enrichmentPhrases are joined into memory_vectors.enrichment and

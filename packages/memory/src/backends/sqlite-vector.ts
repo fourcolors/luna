@@ -77,7 +77,7 @@ import {
   formatMemoryRecordEmbeddingInput,
   hashEmbeddingInput,
 } from "./sqlite-vector-maintenance.js"
-import { backfillHnswIfEmpty } from "./hnsw-backfill.js"
+import { backfillHnswIfEmpty, probeHnswPopulation } from "./hnsw-backfill.js"
 import type { MemorySearchArgs } from "../backend.js"
 import {
   HYBRID_WEIGHTED_DEFAULTS,
@@ -385,33 +385,70 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                                   })`
             db.run(createSql)
 
-            // Sidecar corruption probe: only meaningful when we have a
+            // Sidecar completeness probe: only meaningful when we have a
             // sidecar AND at least one source row exists (otherwise
             // there's nothing to test the v-table with). With either
             // condition false, the unconditional backfill below covers
             // the legitimate empty case.
             //
+            // The persisted graph may be a STALE snapshot, not just empty
+            // or corrupt: a second connection (e.g. `luna memory status`)
+            // populates its own in-memory graph from a T1 snapshot, and
+            // vectorlite rewrites the sidecar from whichever connection
+            // closes last. If the second connection closes after the
+            // server, its stale snapshot wins — and a k=1 "non-empty"
+            // probe would trust it, so the rows the server added after T1
+            // would never be re-added (AFTER INSERT triggers fire only
+            // for new writes): silent and permanent index loss.
+            //
+            // So this is a completeness check, not an emptiness check: the
+            // graph must recall every active-dimension source row. A
+            // corrupt sidecar throws in the probe (the deferred
+            // deserialization error fires on first knn_search) and takes
+            // the corruption-recovery path; a non-throwing partial graph
+            // is a stale snapshot and takes the same drop/discard/recreate
+            // sequence, with the backfill below rebuilding from
+            // memory_vectors (the canonical source of truth). An empty
+            // graph with source rows present is the legitimate first-boot
+            // case — leave `knownPopulated` false and let the backfill
+            // below handle it without drop/discard churn.
+            //
             // The probe doubles as the emptiness check the backfill below
-            // would otherwise re-run: when it recalls ≥1 row the persisted
-            // graph is healthy AND populated, so `backfillHnswIfEmpty` would
-            // no-op — we set `knownPopulated` and skip its redundant probe.
+            // would otherwise re-run: when it recalls every row the
+            // persisted graph is healthy AND fully populated, so
+            // `backfillHnswIfEmpty` would no-op — we set `knownPopulated`
+            // and skip its redundant probe.
             let knownPopulated = false
             if (sidecarPath !== null) {
-              const probeRow = db
-                .query(
-                  `SELECT embedding FROM memory_vectors
-                    WHERE dimension = ${embedder.dimension} LIMIT 1`,
-                )
-                .get() as { embedding: Uint8Array } | null | undefined
-              if (probeRow?.embedding != null) {
+              const expected = (
+                db
+                  .query(
+                    `SELECT count(*) AS c FROM memory_vectors
+                      WHERE dimension = ${embedder.dimension}`,
+                  )
+                  .get() as { c: number }
+              ).c
+              if (expected > 0) {
                 try {
-                  const hits = db
-                    .query(
-                      `SELECT rowid FROM memory_vectors_hnsw
-                        WHERE knn_search(embedding, knn_param(?, 1))`,
+                  const population = probeHnswPopulation(
+                    db,
+                    embedder.dimension,
+                    expected,
+                  )
+                  if (population >= expected) {
+                    knownPopulated = true
+                  } else if (population > 0) {
+                    warnFallbackOnce(
+                      `HNSW sidecar is stale (graph recalls ${population}/${expected} rows); discarding and rebuilding from memory_vectors`,
                     )
-                    .all(probeRow.embedding) as Array<unknown>
-                  knownPopulated = hits.length > 0
+                    try {
+                      dropHnswObjects()
+                    } catch {
+                      /* best-effort */
+                    }
+                    discardSidecar(sidecarPath)
+                    db.run(createSql)
+                  }
                 } catch (probeCause) {
                   warnFallbackOnce(
                     `HNSW sidecar appears corrupt; discarding and rebuilding from memory_vectors: ${String(probeCause)}`,
@@ -448,13 +485,14 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                 END;
             `)
             // Backfill is now (a) the one-time first-boot population
-            // and (b) the corruption-recovery rebuild — both no-ops on
-            // a healthy persisted index. We skip it only when the probe
-            // above already proved the graph populated; every other path
-            // (sidecar=null, healthy-but-empty, post-recovery) still runs
-            // it, so the legacy memory-only and new persistent paths share
-            // the same correctness guarantee. `backfillHnswIfEmpty` also
-            // self-probes, so the skip is an optimization, not a contract.
+            // and (b) the corruption/stale-snapshot recovery rebuild —
+            // both no-ops on a healthy persisted index. We skip it only
+            // when the probe above already proved the graph fully
+            // populated; every other path (sidecar=null, healthy-but-empty,
+            // post-recovery) still runs it, so the legacy memory-only and
+            // new persistent paths share the same correctness guarantee.
+            // `backfillHnswIfEmpty` also self-probes, so the skip is an
+            // optimization, not a contract.
             if (!knownPopulated) backfillHnswIfEmpty(db, embedder.dimension)
 
             // Tighten sidecar permissions to 0o600 so the persisted
