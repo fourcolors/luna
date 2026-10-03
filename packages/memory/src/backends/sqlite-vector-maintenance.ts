@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { existsSync } from "node:fs"
 import { Effect } from "effect"
 import { MemoryBackendError, type EmbedderApi } from "@luna/core"
 import {
@@ -441,7 +442,11 @@ function parseHnswDimension(sql: string | null | undefined): number | null {
   return match ? Number.parseInt(match[1]!, 10) : null
 }
 
-function getHnswStatus(db: BunDatabase, embedder: EmbedderApi): MemoryVectorHnswStatus {
+function getHnswStatus(
+  db: BunDatabase,
+  dbPath: string,
+  embedder: EmbedderApi,
+): MemoryVectorHnswStatus {
   const row = db
     .query(
       `SELECT sql FROM sqlite_master
@@ -458,15 +463,37 @@ function getHnswStatus(db: BunDatabase, embedder: EmbedderApi): MemoryVectorHnsw
   }
   const dimension = parseHnswDimension(row.sql)
   const compatible = dimension === embedder.dimension
+  // The v-table references a sidecar file when its CREATE text carries the
+  // vectorlite `index_file_path` string argument — the memory-only CREATE
+  // has no quoted string literals at all.
+  const vtableUsesSidecar =
+    row.sql != null && /vectorlite\([\s\S]*'/.test(row.sql)
+  // A persisted graph is actually loaded only when the sidecar file exists
+  // at open. When it is missing (the close-time flush is best-effort), the
+  // graph starts empty and the legacy backfill-to-count path below still
+  // applies.
+  const sidecarPath = deriveHnswSidecarPath(dbPath)
+  const sidecarLoaded =
+    vtableUsesSidecar && sidecarPath !== null && existsSync(sidecarPath)
   // Report how many active-dimension rows the HNSW graph holds. The v-table
   // is float32[dim] and can only contain rows at the embedder's dimension, so
   // the denominator a caller compares against is the active-dimension count —
   // never totalVectors (which spans other, un-indexable dimensions).
   //
-  // This maintenance connection is separate from the long-lived backend, so
-  // its in-memory graph starts empty. Populate it from the source rows (the
-  // same recovery the backend runs on open), then report the population. A
-  // probe/backfill failure (extension not loaded, capacity exceeded, or a busy
+  // A memory-only v-table's in-memory graph starts empty on every new
+  // connection (this maintenance connection is separate from the long-lived
+  // backend), so populate it from the source rows (the same recovery the
+  // backend runs on open), then report the population.
+  //
+  // When a persisted graph was loaded from the sidecar, report THAT
+  // population and do NOT backfill: writing this connection's T1 snapshot
+  // into the graph would make the close-time sidecar rewrite persist a
+  // stale snapshot, clobbering rows the server inserted meanwhile
+  // (last-writer-wins; the server's AFTER INSERT triggers only fire for
+  // new writes, so the clobbered rows would never come back under the
+  // backend's old k=1 open probe).
+  //
+  // A probe/backfill failure (extension not loaded, capacity exceeded, or a busy
   // DB after the busy_timeout) is reported as null = "unknown" rather than
   // crashing diagnostics.
   let indexedCount: number | null = null
@@ -481,6 +508,8 @@ function getHnswStatus(db: BunDatabase, embedder: EmbedderApi): MemoryVectorHnsw
       ).c
       if (expected === 0) {
         indexedCount = 0
+      } else if (sidecarLoaded) {
+        indexedCount = probeHnswPopulation(db, embedder.dimension, expected)
       } else {
         let population = probeHnswPopulation(db, embedder.dimension, expected)
         if (population === 0) {
@@ -563,10 +592,11 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
   }
   const db = new bunSqlite.Database(dbPath)
   db.run("PRAGMA foreign_keys = ON")
-  // The status path writes (getHnswStatus backfills the HNSW graph in order to
-  // count it) and may run while the long-lived backend holds a write lock on
-  // the same file. Wait for the lock instead of failing fast with SQLITE_BUSY
-  // and misreporting a populated index as empty.
+  // The status path can write (getHnswStatus backfills the HNSW graph in
+  // order to count it when no persisted sidecar was loaded) and may run
+  // while the long-lived backend holds a write lock on the same file.
+  // Wait for the lock instead of failing fast with SQLITE_BUSY and
+  // misreporting a populated index as empty.
   db.run("PRAGMA busy_timeout = 5000")
   if (vlInit.ok) {
     db.loadExtension?.(vlInit.path)
@@ -637,7 +667,7 @@ export function getMemoryVectorStatus(args: {
             },
             totalVectors: rows.length,
             staleVectors: rows.filter((row) => row.stale).length,
-            hnsw: getHnswStatus(db, args.embedder),
+            hnsw: getHnswStatus(db, args.dbPath, args.embedder),
             groups: Array.from(groupsByKey.values()).sort(
               (a, b) =>
                 a.dimension - b.dimension ||
