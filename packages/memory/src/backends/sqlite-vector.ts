@@ -322,6 +322,10 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           // Only vouch for a file this close actually wrote. If the flush
           // was skipped (see the NOTE above) the file is an older graph, and
           // pairing it with today's rows would bless a stale snapshot.
+          // Known narrow race: stat cannot tell our flush from a foreign
+          // connection that rewrote the sidecar between the before-stat and
+          // here without committing to the DB (data_version stays clean),
+          // so we would vouch for its file; no ordering of these stats closes it.
           const rewritten = after !== (before?.stat ?? null)
           if (rewritten && after !== null && before !== null && before.clean) {
             writeHnswMeta(sidecarPath, {

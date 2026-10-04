@@ -1590,11 +1590,21 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
         )
       const all = ["vouch-0", "vouch-1", "vouch-2", "vouch-3"]
 
-      // Vouched: the file survives an open + search untouched.
+      // Vouched: the sidecar is trusted, not discarded. Do not assert the
+      // file signature is unchanged: whether close rewrites the sidecar
+      // depends on vectorlite (see the NOTE at the finalizer). What matters
+      // is that after close the recorded signature matches the file on disk
+      // and the source fingerprint still describes the rows behind it.
       plantFlushedSidecar()
-      const signature = sidecarMod.statHnswSidecar(sidecar)
+      const plantedMeta = sidecarMod.readHnswMeta(sidecar)
+      expect(plantedMeta).not.toBeNull()
       expect(await searchIds()).toEqual(all)
-      expect(sidecarMod.statHnswSidecar(sidecar)).toBe(signature)
+      const signature = sidecarMod.statHnswSidecar(sidecar)
+      expect(signature).not.toBeNull()
+      const keptMeta = sidecarMod.readHnswMeta(sidecar)
+      expect(keptMeta).not.toBeNull()
+      expect(keptMeta!.sidecar).toBe(signature)
+      expect(keptMeta!.source).toBe(plantedMeta!.source)
 
       // Rewritten by "someone else" (signature changed): discarded.
       const later = new Date(Date.now() + 5_000)
