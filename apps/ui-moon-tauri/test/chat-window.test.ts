@@ -4037,12 +4037,30 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'ptt' })
     })
 
-    it('Scenario: a voice error or an errored/off pipeline state clears the dictate capture flag', async () => {
+    // Regression: voice-error also carries faults that do not end a capture
+    // (Fish TTS worker failure, unavailable saved voice, global PTT shortcut
+    // registration). Dropping _ptt there left Rust held=true, so the next tap
+    // went to setMode(off) and lost the utterance.
+    it('Scenario: a TTS voice-error during ptt capture leaves the capture flag alone', async () => {
+      const { invoke, V } = voiceReady()
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(V._ptt).toBe(true))
+      V.onVoiceError({ message: 'fish TTS request failed: 500' })
+      expect(V._ptt).toBe(true)
+      expect(mic().title).toBe('Stop dictating')
+      // The next tap still ends the capture with ptt_up, not setMode(off).
+      invoke.mockClear()
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_up')).toBe(true)
+      expect(invoke).not.toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
+    })
+
+    it('Scenario: an errored/off pipeline state clears the dictate capture flag', async () => {
       const { V } = voiceReady()
       mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await vi.waitFor(() => expect(V._ptt).toBe(true))
       expect(mic().title).toBe('Stop dictating')
-      V.onVoiceError({ message: 'no input device' })
+      V.onStateEvent({ state: 'error', mode: 'ptt' })
       expect(V._ptt).toBe(false)
       expect(mic().title).not.toBe('Stop dictating')
 

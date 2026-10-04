@@ -602,7 +602,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     },
 
     // Drop every dictate-capture flag. Called whenever the pipeline leaves
-    // ptt (mode change, voice error, Rust off/error state) so the mic chip
+    // ptt (mode change, Rust off/error state) so the mic chip
     // never claims a capture the pipeline no longer has.
     _clearCapture() {
       this._ptt = false;
@@ -1098,8 +1098,10 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     onVoiceError(p) {
       const msg = (p && typeof p.message === 'string' && p.message) ? p.message : 'Unknown voice error';
       Logger.warn('Voice error:', msg);
-      this._clearCapture();
-      this.paintMic();
+      // Deliberately NO capture reset here: voice-error also reports faults
+      // that do not end a capture (Fish TTS failure, unavailable saved voice,
+      // global PTT shortcut registration). Every path that really ends the
+      // pipeline also emits voice-state error/off, which onStateEvent handles.
       // Non-blocking transcript banner (the chat keeps working).
       try {
         ChatState.appendBanner(`⚠️ Voice: ${msg}`);
