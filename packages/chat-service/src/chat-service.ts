@@ -286,7 +286,9 @@ export const deriveTitleFromMessage = (text: string): string | null => {
   const firstLine = text.split("\n")[0] ?? ""
   const trimmed = firstLine.trim()
   if (trimmed.length === 0) return null
-  return trimmed.length <= 60 ? trimmed : trimmed.slice(0, 60)
+  // Cut on code points so an astral char (emoji) is never split into a lone surrogate.
+  const codePoints = [...trimmed]
+  return codePoints.length <= 60 ? trimmed : codePoints.slice(0, 60).join("")
 }
 
 /** Synthesize an SDKUserMessage envelope from text + optional file attachments.
