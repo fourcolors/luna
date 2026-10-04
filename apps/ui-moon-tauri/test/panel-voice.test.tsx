@@ -587,6 +587,80 @@ describe("settings.voice panel", () => {
     // the stale fish catalog must not displace the system one
     expect(optionValues()).toContain("Samantha")
     expect(optionValues()).not.toContain("fish-ref-1")
+
+    // dropping the catalog must not drop the key result: fish-key-resolved
+    // still marks the key configured. The fish key row is only rendered on
+    // the fish engine, so flip back to read its status.
+    act(() => {
+      findButtonByText(container, "Fish").click()
+    })
+    await vi.waitFor(() =>
+      expect(document.getElementById("voice-fish-key-status")?.textContent).toContain("Key saved"),
+    )
+  })
+
+  // ── 19. Stale catalog race: two quick engine toggles ──
+
+  it("drops the first toggle's catalog when it resolves after a second toggle", async () => {
+    const deferred = () => {
+      let resolve!: (v: unknown) => void
+      const promise = new Promise<unknown>((res) => {
+        resolve = res
+      })
+      return { promise, resolve }
+    }
+
+    const fishCatalog = [{ id: "fish-ref-1", name: "Fish Ref" }]
+    const systemCatalog = [{ id: "Samantha", name: "Samantha" }]
+
+    let voiceListCalls = 0
+    const fishFetch = deferred() // populateVoices("fish") from the first toggle
+    const systemFetch = deferred() // populateVoices("system") from the second toggle
+    const { ctx } = makeCtx({
+      invoke: (cmd) => {
+        switch (cmd) {
+          case "voice_status":
+            return { modelPresent: true }
+          case "voice_tts_info":
+            return { engine: "system", fishKeyConfigured: false }
+          case "voice_list_voices":
+            voiceListCalls += 1
+            if (voiceListCalls === 1) return systemCatalog // boot populate
+            if (voiceListCalls === 2) return fishFetch.promise
+            return systemFetch.promise
+          default:
+            return null
+        }
+      },
+    })
+    const container = mount(ctx)
+    await vi.waitFor(() => expect(modeStatus()).toContain("ready"))
+    const optionValues = () =>
+      Array.from(document.querySelectorAll("#voice-voice-select option")).map(
+        (o) => (o as HTMLOptionElement).value,
+      )
+    await vi.waitFor(() => expect(optionValues()).toContain("Samantha"))
+
+    // system -> fish -> system, both refetches hanging in flight
+    act(() => {
+      findButtonByText(container, "Fish").click()
+    })
+    await vi.waitFor(() => expect(voiceListCalls).toBe(2))
+    act(() => {
+      findButtonByText(container, "System").click()
+    })
+    await vi.waitFor(() => expect(voiceListCalls).toBe(3))
+
+    // the second toggle's fetch lands first, then the stale fish one lands last
+    await act(async () => {
+      systemFetch.resolve(systemCatalog)
+    })
+    await act(async () => {
+      fishFetch.resolve(fishCatalog)
+    })
+
+    expect(optionValues()).toContain("Samantha")
+    expect(optionValues()).not.toContain("fish-ref-1")
   })
 })
 
@@ -690,5 +764,4 @@ describe("voiceReduce", () => {
     expect(keyed.fishKeyConfigured).toBe(true)
     expect(keyed.ttsEngine).toBe("fish")
   })
-
 })
