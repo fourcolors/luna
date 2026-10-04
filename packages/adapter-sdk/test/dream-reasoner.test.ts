@@ -269,6 +269,9 @@ describe("DreamReasonerDefault", () => {
     const structured = buildDreamPrompt(EMPTY_INPUTS, true)
     expect(structured).toContain("StructuredOutput tool")
     expect(structured).not.toContain("Output ONLY a JSON object")
+    // A lane that ignores outputFormat has no StructuredOutput tool; the broker
+    // then parses turn.text, so the prompt must keep a JSON-only fallback.
+    expect(structured).toContain("If no StructuredOutput tool is available, reply with only that JSON object")
     // The prose (non-structured) path still asks for a bare JSON array.
     const prose = buildDreamPrompt(EMPTY_INPUTS, false)
     expect(prose).toContain("Output ONLY a JSON array")

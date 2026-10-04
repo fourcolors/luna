@@ -372,13 +372,57 @@ describe("memory tools search mode", () => {
     } satisfies MemoryRouter
     const [, searchTool] = makeMemoryTools(router)
 
-    const hits = parseTextResult<ReadonlyArray<{ id: string; text: string; kind: string }>>(
+    const hits = parseTextResult<ReadonlyArray<{ id: string; text: string; kind: string; beliefStatus?: string }>>(
       await searchTool.handler(searchArgs({ query: "status reports", limit: 3 }), undefined),
     )
 
     expect(hits).toHaveLength(1)
     expect(hits[0]!.kind).toBe("belief")
     expect(hits[0]!.text).toBe("The operator prefers plain-language status reports.")
+    expect(hits[0]!.beliefStatus).toBe("active")
+  })
+
+  it("marks a retired belief hit with beliefStatus and leaves non-beliefs unmarked", async () => {
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(null),
+      query: () => Stream.empty,
+      delete: () => Effect.succeed(false),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: () =>
+        Stream.fromIterable([
+          {
+            record: makeRecord({
+              id: "belief-old",
+              namespace: "operator",
+              kind: "belief",
+              content: { statement: "The operator prefers terse reports.", status: "retired" },
+            }),
+            score: 1,
+          },
+          {
+            record: makeRecord({
+              id: "note-1",
+              namespace: "operator",
+              kind: "note",
+              content: { text: "plain note" },
+            }),
+            score: 0.5,
+          },
+        ]),
+    } satisfies MemoryRouter
+    const [, searchTool] = makeMemoryTools(router)
+
+    const hits = parseTextResult<ReadonlyArray<{ id: string; beliefStatus?: string }>>(
+      await searchTool.handler(searchArgs({ query: "reports", limit: 5 }), undefined),
+    )
+
+    expect(hits.find((h) => h.id === "belief-old")!.beliefStatus).toBe("retired")
+    expect(hits.find((h) => h.id === "note-1")).toBeDefined()
+    expect("beliefStatus" in hits.find((h) => h.id === "note-1")!).toBe(false)
   })
 })
 

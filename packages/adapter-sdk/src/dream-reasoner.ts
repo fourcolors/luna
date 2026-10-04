@@ -334,7 +334,7 @@ export function buildDreamPrompt(
     ? 'memory/beliefs/skills below and propose state changes as a STRICT JSON object: {"ops": [ ... ]}.'
     : "memory/beliefs/skills below and propose state changes as a STRICT JSON array of ops."
   const envelopeRule = structuredOutputEnabled
-    ? '1. Return your answer by calling the StructuredOutput tool with ONE object of the form {"ops": [ ... ]}. Do NOT write the JSON as a text reply or in a code fence: only the tool call is read.'
+    ? '1. Return your answer by calling the StructuredOutput tool with ONE object of the form {"ops": [ ... ]}. If no StructuredOutput tool is available, reply with only that JSON object: no markdown, no prose, no code fences.'
     : "1. Output ONLY a JSON array. No markdown, no prose, no code fences."
 
   const opShapeRule = structuredOutputEnabled

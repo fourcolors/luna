@@ -186,6 +186,14 @@ function toSearchHitDTO(
   hit: { readonly record: MemoryRecord; readonly score: number },
   llmScore?: number,
 ) {
+  // A belief's lifecycle status ('proposed' | 'active' | 'retired') lives in
+  // its content. Surface it so the agent can tell a retired belief from a
+  // current one now that belief hits carry their statement as text.
+  const status =
+    hit.record.kind === "belief"
+      ? (hit.record.content as { status?: unknown } | null | undefined)?.status
+      : undefined
+  const beliefStatus = typeof status === "string" ? status : undefined
   return {
     id: hit.record.id,
     text: extractText(hit.record),
@@ -196,6 +204,7 @@ function toSearchHitDTO(
     createdAt: hit.record.createdAt,
     updatedAt: hit.record.updatedAt,
     ...(llmScore !== undefined ? { llmScore } : {}),
+    ...(beliefStatus !== undefined ? { beliefStatus } : {}),
     ...(hit.record.scope !== undefined
       ? {
           scope: {
