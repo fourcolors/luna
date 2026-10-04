@@ -9,7 +9,9 @@ struct ComposerView: View {
     var isSending = false
     var autofocus = false
     var placeholder = "Message"
-    var onSend: ([WireAttachment]) -> Void
+    /// Returns true when the message was actually sent; the draft and image are
+    /// only cleared then, so a send while offline loses nothing.
+    var onSend: ([WireAttachment]) -> Bool
     var onInterrupt: () -> Void = {}
 
     @State private var pickedItem: PhotosPickerItem?
@@ -106,7 +108,7 @@ struct ComposerView: View {
             attachments.append(
                 WireAttachment(mediaType: "image/jpeg", data: jpeg.base64EncodedString()))
         }
-        onSend(attachments)
+        guard onSend(attachments) else { return }
         draft = ""
         pendingImage = nil
         pickedItem = nil

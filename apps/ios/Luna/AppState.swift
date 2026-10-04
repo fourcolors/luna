@@ -114,15 +114,30 @@ final class AppState {
         connection = state
         switch state {
         case .connected:
+            retryTask?.cancel()
+            retryTask = nil
             banner = nil
             refreshThreads()
             for threadId in subscribed { client.send(SubscribeFrameOut(threadId: threadId)) }
         case .failed(let message):
             banner = message
+            abandonPendingCreate()
             scheduleRetry()
-        case .connecting, .disconnected:
+        case .disconnected:
+            abandonPendingCreate()
+        case .connecting:
             break
         }
+    }
+
+    /// A new-chat request whose socket dropped before `thread-created` will
+    /// never get an answer; clear it so the draft view stops spinning and
+    /// later new chats are not rejected by the `isCreatingThread` guard.
+    private func abandonPendingCreate() {
+        guard isCreatingThread || pendingSend != nil else { return }
+        isCreatingThread = false
+        pendingSend = nil
+        banner = "Connection lost - message not sent"
     }
 
     private func scheduleRetry() {
@@ -144,12 +159,25 @@ final class AppState {
     /// ChatGPT-style new chat: the first message creates the thread — the
     /// draft view sends this, then threadCreated swaps the draft route for
     /// the real thread id and flushes the queued message.
-    func createThreadAndSend(text: String, attachments: [WireAttachment], modelID: String?, effort: String?) {
+    /// Returns false when nothing was sent (not connected, empty, or a create
+    /// is already in flight) so the composer keeps the user's draft.
+    @discardableResult
+    func createThreadAndSend(text: String, attachments: [WireAttachment], modelID: String?, effort: String?) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty, !isCreatingThread else { return }
+        guard !trimmed.isEmpty || !attachments.isEmpty, !isCreatingThread else { return false }
+        guard connection == .connected else {
+            banner = "Not connected - message not sent"
+            return false
+        }
         isCreatingThread = true
         pendingSend = (trimmed, attachments.isEmpty ? nil : attachments)
-        client.send(NewThreadFrameOut(model: modelID, effort: effort, title: nil))
+        guard client.send(NewThreadFrameOut(model: modelID, effort: effort, title: nil)) else {
+            isCreatingThread = false
+            pendingSend = nil
+            banner = "Not connected - message not sent"
+            return false
+        }
+        return true
     }
 
     func openThread(_ threadId: String) {
@@ -168,16 +196,29 @@ final class AppState {
         subscribed.remove(threadId)
     }
 
-    func send(threadId: String, text: String, attachments: [WireAttachment]) {
+    /// Returns false when the message was not sent (not connected or empty),
+    /// so the composer keeps the draft and the Stop button never appears for
+    /// a turn that never started.
+    @discardableResult
+    func send(threadId: String, text: String, attachments: [WireAttachment]) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
-        runningThreads.insert(threadId)
-        client.send(UserMessageFrameOut(
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return false }
+        guard connection == .connected else {
+            banner = "Not connected - message not sent"
+            return false
+        }
+        let sent = client.send(UserMessageFrameOut(
             threadId: threadId,
             text: trimmed,
             attachments: attachments.isEmpty ? nil : attachments,
             client: ClientInfo(name: "luna-ios", version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String, platform: "ios")
         ))
+        if sent {
+            runningThreads.insert(threadId)
+        } else {
+            banner = "Not connected - message not sent"
+        }
+        return sent
     }
 
     func interrupt(threadId: String) {

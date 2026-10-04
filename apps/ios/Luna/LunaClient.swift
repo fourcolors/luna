@@ -51,9 +51,14 @@ final class LunaClient {
         receiveLoop()
     }
 
-    func send<E: Encodable>(_ frame: E) {
-        guard let text = FrameCodec.encode(frame) else { return }
-        task?.send(.string(text)) { _ in }
+    /// Queues a frame on the live socket. Returns false when there is no
+    /// socket or the frame cannot be encoded, so callers can avoid pretending
+    /// a message left the device.
+    @discardableResult
+    func send<E: Encodable>(_ frame: E) -> Bool {
+        guard let task, let text = FrameCodec.encode(frame) else { return false }
+        task.send(.string(text)) { _ in }
+        return true
     }
 
     func disconnect(notify: Bool = true) {
@@ -65,8 +70,13 @@ final class LunaClient {
     }
 
     private func receiveLoop() {
-        task?.receive { [weak self] result in
-            guard let self else { return }
+        guard let task else { return }
+        task.receive { [weak self] result in
+            // Bind the callback to the task that issued it. A cancelled task's
+            // pending receive still completes with .failure; without this
+            // check that stale failure is reported as a live disconnect and
+            // (via AppState's retry) tears down the healthy replacement socket.
+            guard let self, task === self.task else { return }
             switch result {
             case .success(let message):
                 if !self.sawFirstFrame {
