@@ -357,3 +357,8 @@ jobs:
       - name: Test - Moon Rust binary (HARD GATE)
         working-directory: apps/ui-moon-tauri/src-tauri
         run: cargo test --bin luna-moon-ui
+
+      # The voice tests live in the lib target, which `--bin` never builds.
+      - name: Test - Moon Rust lib (voice)
+        working-directory: apps/ui-moon-tauri/src-tauri
+        run: cargo test --lib
