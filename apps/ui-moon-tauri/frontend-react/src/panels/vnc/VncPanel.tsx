@@ -49,8 +49,13 @@ interface VncBridgeInfo {
 const WS_URL_RE = /^wss?:\/\//i
 
 function defaultPort(portStr: string): number | null {
-  const p = Number.parseInt(portStr, 10)
-  return Number.isInteger(p) && p > 0 && p <= 65535 ? p : null
+  // Strict digits-only: parseInt would silently accept '5900abc' (5900),
+  // '5900.5' (5900), and '1e3' (1) - a mistyped port must error, not connect
+  // somewhere unintended.
+  const s = portStr.trim()
+  if (!/^\d+$/.test(s)) return null
+  const p = Number(s)
+  return p > 0 && p <= 65535 ? p : null
 }
 
 export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
@@ -196,12 +201,15 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
           rfbRef.current = null
           closeBridge()
           setNeedCreds(false)
+          // Functional updates preserve an auth-failure status set by
+          // 'securityfailure' - it lands in the same tick and would otherwise
+          // be overwritten by the generic drop message.
           if (clean) {
             setConnState("idle")
-            setStatus(null)
+            setStatus((prev) => prev ?? "Remote host ended the session.")
           } else {
             setConnState("error")
-            setStatus("Connection lost.")
+            setStatus((prev) => prev ?? "Connection lost.")
           }
         })
         rfb.addEventListener("credentialsrequired", (e) => {

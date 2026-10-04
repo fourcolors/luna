@@ -192,3 +192,45 @@ describe("VncPanel connect races", () => {
     expect(q("vnc-connect-btn")).toBeNull()
   })
 })
+
+describe("VncPanel status handling", () => {
+  async function connectLive(url = "ws://127.0.0.1:1/vnc-x") {
+    const dial = deferred<unknown>()
+    const { ctx, calls } = makeCtx([dial])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    await connectTo("10.0.0.9")
+    dial.resolve({ id: 1, url })
+    await flush()
+    const rfb = FakeRfb.instances[0]
+    act(() => rfb.fire("connect"))
+    return { rfb, calls }
+  }
+
+  it("an auth-failure reason survives the unclean disconnect that follows", async () => {
+    const { rfb } = await connectLive()
+    // A wrong password: noVNC fires securityfailure then disconnects unclean
+    // in the same tick. The generic drop message must not clobber the reason.
+    act(() => rfb.fire("securityfailure", { reason: "Invalid password" }))
+    act(() => rfb.fire("disconnect", { clean: false }))
+    expect(q("vnc-status")?.textContent).toBe("Authentication failed: Invalid password")
+    expect(q("vnc-connect-btn")).not.toBeNull() // back on the card, in error state
+  })
+
+  it("a remote clean close reports the host ended the session", async () => {
+    const { rfb } = await connectLive()
+    act(() => rfb.fire("disconnect", { clean: true }))
+    expect(q("vnc-connect-btn")).not.toBeNull() // idle card
+    expect(q("vnc-status")?.textContent).toBe("Remote host ended the session.")
+  })
+
+  it("rejects a non-numeric port before ever invoking vnc_connect", async () => {
+    const { ctx, calls } = makeCtx([])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    setInput("vnc-host-input", "10.0.0.9")
+    setInput("vnc-port-input", "5900abc")
+    click("vnc-connect-btn")
+    await flush()
+    expect(calls.filter((c) => c.cmd === "vnc_connect")).toHaveLength(0)
+    expect(q("vnc-status")?.textContent).toBe("Port must be 1-65535.")
+  })
+})

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -35,39 +35,62 @@ const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// TCP read chunk → one WS binary frame.
 const PIPE_BUF: usize = 64 * 1024;
+/// After the one WS client connects over TCP it has this long to complete
+/// the WebSocket handshake — a socket that never speaks HTTP can't hold the
+/// bridge (and its VNC connection) open forever.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// A slot reserved by an in-flight `vnc_connect` is dropped if the command
+/// future is cancelled before it can spawn the task (IPC abort).
+const RESERVATION_TTL: Duration = Duration::from_secs(60);
+
+/// One map entry per bridge. `Reserved` holds a slot for the whole
+/// `vnc_connect` call so the MAX_BRIDGES cap can't be raced by two
+/// concurrent connects both passing the check before either spawns.
+enum BridgeSlot {
+    Reserved(Instant),
+    Live(tauri::async_runtime::JoinHandle<()>),
+}
 
 /// Live bridge tasks keyed by the id handed back to the frontend. Managed via
 /// `.manage()` in main.rs.
 #[derive(Default)]
 pub(crate) struct VncBridges {
-    inner: Mutex<HashMap<u64, tauri::async_runtime::JoinHandle<()>>>,
+    inner: Mutex<HashMap<u64, BridgeSlot>>,
     next_id: std::sync::atomic::AtomicU64,
 }
 
 impl VncBridges {
-    /// Reserve an id BEFORE spawning so the task can carry it for
-    /// self-cleanup; insert() then records id→task in one step.
-    fn alloc_id(&self) -> u64 {
-        self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+    /// Hold a bridge slot BEFORE dialing. The reservation counts against
+    /// MAX_BRIDGES until `finish` (spawned task takes it) or `remove`
+    /// (dial/bind failed); a reservation abandoned by a cancelled command
+    /// future is pruned after RESERVATION_TTL.
+    fn try_reserve(&self) -> Result<u64, String> {
+        let mut m = self.inner.lock().map_err(|_| "bridge state poisoned")?;
+        m.retain(|_, s| match s {
+            BridgeSlot::Live(h) => !h.inner().is_finished(),
+            BridgeSlot::Reserved(at) => at.elapsed() < RESERVATION_TTL,
+        });
+        if m.len() >= MAX_BRIDGES {
+            return Err("too many open screen shares".to_string());
+        }
+        let id = self.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        m.insert(id, BridgeSlot::Reserved(Instant::now()));
+        Ok(id)
     }
 
-    fn insert(&self, id: u64, task: tauri::async_runtime::JoinHandle<()>) {
+    /// Swap a reservation for its spawned task (id came from try_reserve).
+    fn finish(&self, id: u64, task: tauri::async_runtime::JoinHandle<()>) {
         if let Ok(mut m) = self.inner.lock() {
-            // Prune finished tasks so the bound reflects live bridges only.
-            m.retain(|_, h| !h.inner().is_finished());
-            m.insert(id, task);
+            m.insert(id, BridgeSlot::Live(task));
         }
     }
 
+    /// Drop the slot and return the task to abort, if one was spawned.
     fn remove(&self, id: u64) -> Option<tauri::async_runtime::JoinHandle<()>> {
-        self.inner.lock().ok()?.remove(&id)
-    }
-
-    fn live_count(&self) -> usize {
-        self.inner
-            .lock()
-            .map(|m| m.values().filter(|h| !h.inner().is_finished()).count())
-            .unwrap_or(0)
+        match self.inner.lock().ok()?.remove(&id) {
+            Some(BridgeSlot::Live(h)) => Some(h),
+            _ => None,
+        }
     }
 }
 
@@ -81,14 +104,12 @@ pub(crate) struct VncBridgeInfo {
 
 /// Path token checked during the WS handshake so a same-host process can't
 /// steal a freshly-opened bridge by racing the panel's own dial to an
-/// ephemeral port it would have to guess anyway.
-fn bridge_token() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let seed = nanos ^ ((std::process::id() as u128) << 64);
-    format!("{seed:032x}")
+/// ephemeral port it would have to guess anyway. Cryptographically random:
+/// pid+time is guessable by another local process.
+fn bridge_token() -> Result<String, String> {
+    let mut buf = [0u8; 16];
+    getrandom::fill(&mut buf).map_err(|e| format!("bridge token failed: {e}"))?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// Reject anything that can't be a plain host (no whitespace/control chars,
@@ -142,27 +163,38 @@ pub(crate) async fn vnc_connect(
         return Err("port must be 1-65535".to_string());
     }
     let bridges = app.state::<VncBridges>();
-    if bridges.live_count() >= MAX_BRIDGES {
-        return Err("too many open screen shares".to_string());
-    }
+    // Reserve the slot BEFORE dialing: the cap is held under the same lock
+    // that counts live bridges, so concurrent connects can't both slip under
+    // it. Every fallible step below returns the slot on its way out.
+    let id = bridges.try_reserve()?;
     // Dial the VNC server first: a refused/unreachable target surfaces the
     // real error right here instead of handing back a ws URL that only
     // fails inside noVNC's own handshake.
     // Bounded: the OS default connect timeout is ~75s on macOS, long enough
     // for a panel to sit on "Connecting" far past the point a user gives up.
-    let vnc = dial(&host, port).await?;
-    let _ = vnc.set_nodelay(true);
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .map_err(|e| format!("bridge listen failed: {e}"))?;
-    let ws_port = listener
-        .local_addr()
-        .map_err(|e| e.to_string())?
-        .port();
-    let token = bridge_token();
-    let id = bridges.alloc_id();
+    let setup = async {
+        let vnc = dial(&host, port).await?;
+        let _ = vnc.set_nodelay(true);
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|e| format!("bridge listen failed: {e}"))?;
+        let ws_port = listener
+            .local_addr()
+            .map_err(|e| e.to_string())?
+            .port();
+        let token = bridge_token()?;
+        Ok::<_, String>((vnc, listener, ws_port, token))
+    };
+    // Any setup failure returns the reserved slot with the error.
+    let (vnc, listener, ws_port, token) = match setup.await {
+        Ok(t) => t,
+        Err(e) => {
+            bridges.remove(id);
+            return Err(e);
+        }
+    };
     let task = tauri::async_runtime::spawn(bridge_task(app.clone(), listener, vnc, token.clone(), id));
-    bridges.insert(id, task);
+    bridges.finish(id, task);
     Ok(VncBridgeInfo {
         id,
         url: format!("ws://127.0.0.1:{ws_port}/vnc-{token}"),
@@ -187,14 +219,25 @@ async fn bridge_task(
     token: String,
     id: u64,
 ) {
-    let run = async {
-        let accepted = tokio::time::timeout(ACCEPT_TIMEOUT, listener.accept()).await;
-        let ws_stream = match accepted {
-            Ok(Ok((stream, _))) => stream,
-            _ => return,
-        };
-        let expected_path = format!("/vnc-{token}");
-        let ws = tokio_tungstenite::accept_hdr_async(
+    accept_and_pipe_within(listener, vnc, token, ACCEPT_TIMEOUT, HANDSHAKE_TIMEOUT).await;
+    let _ = app.state::<VncBridges>().remove(id);
+}
+
+/// The bridge lifecycle with the registry coupling removed so tests can run
+/// the real accept → token-check → pipe path without an AppHandle.
+async fn accept_and_pipe_within(
+    listener: TcpListener,
+    vnc: TcpStream,
+    token: String,
+    accept_timeout: Duration,
+    handshake_timeout: Duration,
+) {
+    let accepted = tokio::time::timeout(accept_timeout, listener.accept()).await;
+    let Ok(Ok((ws_stream, _))) = accepted else { return };
+    let expected_path = format!("/vnc-{token}");
+    let ws = tokio::time::timeout(
+        handshake_timeout,
+        tokio_tungstenite::accept_hdr_async(
             ws_stream,
             move |req: &Request, res: Response| {
                 if req.uri().path() == expected_path {
@@ -205,13 +248,11 @@ async fn bridge_task(
                     Err(err)
                 }
             },
-        )
-        .await;
-        let Ok(ws) = ws else { return };
-        pipe(vnc, ws).await;
-    };
-    run.await;
-    let _ = app.state::<VncBridges>().remove(id);
+        ),
+    )
+    .await;
+    let Ok(Ok(ws)) = ws else { return };
+    pipe(vnc, ws).await;
 }
 
 /// Copy bytes both ways; when either direction ends, dropping the futures
@@ -362,5 +403,126 @@ mod tests {
             .expect("echo timed out")
             .expect("server task dropped");
         assert_eq!(&echoed, b"hello");
+    }
+
+    /// A fake VNC server: sends the RFB greeting on connect, then holds the
+    /// socket open. Returns the ws listener + vnc stream already wired to it.
+    async fn fake_vnc_and_ws_listener() -> (TcpListener, TcpStream) {
+        let server = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let server_port = server.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut s, _) = server.accept().await.unwrap();
+            s.write_all(b"RFB 003.008\n").await.unwrap();
+            // Hold the connection so the bridge stays up for the client.
+            let mut buf = [0u8; 64];
+            while s.read(&mut buf).await.unwrap_or(0) > 0 {}
+        });
+        let vnc = TcpStream::connect((Ipv4Addr::LOCALHOST, server_port))
+            .await
+            .unwrap();
+        let ws_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        (ws_listener, vnc)
+    }
+
+    /// The bridge is one-shot and token-gated: a client that guesses the
+    /// ephemeral port but not the path token gets a 404, and the bridge ends.
+    #[tokio::test]
+    async fn bridge_rejects_a_wrong_path_then_ends() {
+        let (ws_listener, vnc) = fake_vnc_and_ws_listener().await;
+        let ws_port = ws_listener.local_addr().unwrap().port();
+        let task = tokio::spawn(accept_and_pipe_within(
+            ws_listener,
+            vnc,
+            "right".to_string(),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        ));
+        let res = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{ws_port}/vnc-wrong"))
+            .await;
+        assert!(res.is_err(), "wrong path must fail the handshake");
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge should end after a rejected handshake")
+            .unwrap();
+    }
+
+    /// Same as pipe_moves_bytes_both_ways but through the full
+    /// accept → token check → handshake → pipe path the task itself runs.
+    #[tokio::test]
+    async fn bridge_accepts_the_token_path_and_pipes() {
+        let (ws_listener, vnc) = fake_vnc_and_ws_listener().await;
+        let ws_port = ws_listener.local_addr().unwrap().port();
+        tokio::spawn(accept_and_pipe_within(
+            ws_listener,
+            vnc,
+            "tok".to_string(),
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        ));
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{ws_port}/vnc-tok"))
+                .await
+                .expect("correct path should handshake");
+        let greeting = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("greeting timed out")
+            .expect("stream ended")
+            .expect("ws error");
+        assert_eq!(greeting.into_data().as_ref(), b"RFB 003.008\n");
+    }
+
+    /// A TCP client that connects but never completes the WS handshake must
+    /// not hold the bridge (and its VNC connection) open forever.
+    #[tokio::test]
+    async fn bridge_drops_a_socket_that_never_handshakes() {
+        let (ws_listener, vnc) = fake_vnc_and_ws_listener().await;
+        let ws_port = ws_listener.local_addr().unwrap().port();
+        let task = tokio::spawn(accept_and_pipe_within(
+            ws_listener,
+            vnc,
+            "tok".to_string(),
+            Duration::from_secs(5),
+            Duration::from_millis(100),
+        ));
+        let _client = TcpStream::connect((Ipv4Addr::LOCALHOST, ws_port))
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("bridge should exit on the handshake deadline")
+            .unwrap();
+    }
+
+    /// Slots are held for the whole vnc_connect call: reserved entries count
+    /// against MAX_BRIDGES exactly like live ones, release on remove, and a
+    /// reservation abandoned past RESERVATION_TTL is pruned.
+    #[test]
+    fn reservations_hold_the_cap_until_finished_or_expired() {
+        let b = VncBridges::default();
+        let mut ids = Vec::new();
+        for _ in 0..MAX_BRIDGES {
+            ids.push(b.try_reserve().expect("under cap"));
+        }
+        assert!(b.try_reserve().is_err(), "cap must count reservations");
+        b.remove(ids.pop().unwrap());
+        assert!(b.try_reserve().is_ok(), "a freed slot is reusable");
+        // An abandoned reservation expires instead of leaking the slot:
+        // age out one held id so pruning drops the map back under the cap.
+        let stale_id = ids.pop().unwrap();
+        b.inner
+            .lock()
+            .unwrap()
+            .insert(stale_id, BridgeSlot::Reserved(Instant::now() - RESERVATION_TTL));
+        assert!(b.try_reserve().is_ok(), "stale reservations are pruned");
+    }
+
+    /// The anti-hijack token is 128 bits of OS entropy, not pid+time.
+    #[test]
+    fn bridge_token_is_random_128bit_hex() {
+        let a = bridge_token().unwrap();
+        let b = bridge_token().unwrap();
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 32);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

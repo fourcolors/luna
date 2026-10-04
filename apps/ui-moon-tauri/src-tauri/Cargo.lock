@@ -2414,6 +2414,7 @@ dependencies = [
  "block2",
  "cpal",
  "futures-util",
+ "getrandom 0.3.4",
  "hound",
  "libc",
  "objc2",
