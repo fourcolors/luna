@@ -1,7 +1,5 @@
 import { describe, expect, it } from "vitest"
 import { checkSync, extractVersion, replaceVersion, VERSION_FILES } from "../scripts/bump-moon.ts"
-import { readFileSync } from "node:fs"
-import { join } from "node:path"
 
 const PKG_JSON = `{\n  "name": "ui-moon-tauri",\n  "version": "0.0.12",\n  "private": true\n}\n`
 const TAURI_JSON = `{\n  "productName": "Luna Moon",\n  "version": "0.0.12",\n  "identifier": "ai.luna.moon"\n}\n`
@@ -15,6 +13,14 @@ const CARGO_LOCK =
   `[[package]]\nname = "luna-moon-ui"\nversion = "0.0.12"\ndependencies = [\n "tauri",\n]\n\n` +
   `[[package]]\nname = "tauri"\nversion = "2.0.0"\n`
 
+// bun.lock: the workspace entry carries the app version; a dependency listed right
+// after it (and a neighbouring workspace) carry decoy versions that must stay put.
+const BUN_LOCK =
+  `{\n  "lockfileVersion": 1,\n  "workspaces": {\n` +
+  `    "apps/other": {\n      "name": "@luna/other",\n      "version": "9.9.9",\n    },\n` +
+  `    "apps/ui-moon-tauri": {\n      "name": "@luna/ui-moon-tauri",\n      "version": "0.0.12",\n      "dependencies": {\n        "@fontsource/caveat": "5.3.0",\n      },\n    },\n` +
+  `  },\n}\n`
+
 describe("extractVersion", () => {
   it("reads the version from JSON", () => {
     expect(extractVersion(PKG_JSON, "json")).toBe("0.0.12")
@@ -27,6 +33,11 @@ describe("extractVersion", () => {
     expect(extractVersion(CARGO_LOCK, "lock", "luna-moon-ui")).toBe("0.0.12")
     // anchoring proof: ask for a crate pinned at a different version
     expect(extractVersion(CARGO_LOCK, "lock", "anyhow")).toBe("1.0.86")
+  })
+  it("reads the bun.lock workspace version, not a dependency's or another workspace's", () => {
+    expect(extractVersion(BUN_LOCK, "bunlock", "apps/ui-moon-tauri")).toBe("0.0.12")
+    expect(extractVersion(BUN_LOCK, "bunlock", "apps/other")).toBe("9.9.9")
+    expect(extractVersion(BUN_LOCK, "bunlock", "apps/missing")).toBeNull()
   })
   it("returns null when the named crate is absent from the lock", () => {
     expect(extractVersion(CARGO_LOCK, "lock", "does-not-exist")).toBeNull()
@@ -56,6 +67,16 @@ describe("replaceVersion", () => {
     expect(extractVersion(out, "lock", "anyhow")).toBe("1.0.86") // decoy above untouched
     expect(extractVersion(out, "lock", "tauri")).toBe("2.0.0") // decoy below untouched
   })
+  it("bumps ONLY the ui-moon-tauri workspace line in bun.lock", () => {
+    const out = replaceVersion(BUN_LOCK, "bunlock", "0.1.0", "apps/ui-moon-tauri")
+    expect(extractVersion(out, "bunlock", "apps/ui-moon-tauri")).toBe("0.1.0")
+    expect(extractVersion(out, "bunlock", "apps/other")).toBe("9.9.9")
+    expect(out).toContain(`"@fontsource/caveat": "5.3.0"`)
+    expect(out.replace("0.1.0", "0.0.12")).toBe(BUN_LOCK) // exactly one line changed
+  })
+  it("throws when the bun.lock workspace is absent", () => {
+    expect(() => replaceVersion(BUN_LOCK, "bunlock", "0.1.0", "apps/missing")).toThrow()
+  })
   it("throws when the named crate is not in the lock", () => {
     expect(() => replaceVersion(CARGO_LOCK, "lock", "0.1.0", "nope")).toThrow()
   })
@@ -64,16 +85,24 @@ describe("replaceVersion", () => {
   })
 })
 
+describe("VERSION_FILES", () => {
+  it("lists all five lockstep files, bun.lock included", () => {
+    expect(VERSION_FILES).toHaveLength(5)
+    expect(VERSION_FILES.map((f) => f.path)).toContain("bun.lock")
+  })
+})
+
 describe("checkSync", () => {
-  const m = (a: string, b: string, c: string, d: string) =>
+  const m = (a: string, b: string, c: string, d: string, e: string = BUN_LOCK) =>
     new Map([
       [VERSION_FILES[0].path, a],
       [VERSION_FILES[1].path, b],
       [VERSION_FILES[2].path, c],
       [VERSION_FILES[3].path, d],
+      [VERSION_FILES[4].path, e],
     ])
 
-  it("ok when all four agree on a valid semver", () => {
+  it("ok when all five agree on a valid semver", () => {
     const res = checkSync(m(PKG_JSON, CARGO_TOML, TAURI_JSON, CARGO_LOCK))
     expect(res.ok).toBe(true)
     expect(res.distinct).toEqual(["0.0.12"])
@@ -87,32 +116,18 @@ describe("checkSync", () => {
   it("FAILS when the Cargo.lock entry drifts from the rest (the gap this closes)", () => {
     const staleLock = CARGO_LOCK // stays 0.0.12 while the rest move to 0.0.13
     const bump = (s: string) => s.replace("0.0.12", "0.0.13")
-    const res = checkSync(m(bump(PKG_JSON), bump(CARGO_TOML), bump(TAURI_JSON), staleLock))
+    const res = checkSync(m(bump(PKG_JSON), bump(CARGO_TOML), bump(TAURI_JSON), staleLock, bump(BUN_LOCK)))
+    expect(res.ok).toBe(false)
+    expect([...res.distinct].sort()).toEqual(["0.0.12", "0.0.13"])
+  })
+  it("FAILS when bun.lock drifts from the rest (#718)", () => {
+    const bump = (s: string) => s.replace("0.0.12", "0.0.13")
+    const res = checkSync(m(bump(PKG_JSON), bump(CARGO_TOML), bump(TAURI_JSON), bump(CARGO_LOCK), BUN_LOCK))
     expect(res.ok).toBe(false)
     expect([...res.distinct].sort()).toEqual(["0.0.12", "0.0.13"])
   })
   it("FAILS when a file is missing its version", () => {
     const res = checkSync(m(PKG_JSON, CARGO_TOML, `{"name":"x"}`, CARGO_LOCK))
     expect(res.ok).toBe(false)
-  })
-})
-
-// Test that bun.lock's workspace version matches package.json (#718).
-describe("bun.lock workspace version sync", () => {
-  it("bun.lock workspace version must match package.json", () => {
-    const pkgPath = join(process.cwd(), "apps/ui-moon-tauri/package.json")
-    const lockPath = join(process.cwd(), "bun.lock")
-    
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"))
-    const lock = readFileSync(lockPath, "utf8")
-    
-    // Extract workspace version from bun.lock
-    // Format: "apps/ui-moon-tauri": { "name": "...", "version": "x.y.z", ...
-    const match = lock.match(/"apps\/ui-moon-tauri":\s*{[^}]*"version":\s*"(\d+\.\d+\.\d+)"/)
-    
-    expect(match, "bun.lock must have apps/ui-moon-tauri workspace entry with version").not.toBeNull()
-    const lockVersion = match?.[1]
-    
-    expect(lockVersion).toBe(pkg.version)
   })
 })
