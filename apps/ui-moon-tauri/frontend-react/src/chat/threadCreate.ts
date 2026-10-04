@@ -33,6 +33,10 @@ export interface ThreadCreateStateSlice {
   threadListAutoSelectPending: boolean
   pendingFreshThread: boolean
   activeThreadId: string | null
+  /** A first message stashed for a mint (chatEngine.ts). Optional so callers
+   *  that only arbitrate intent need not carry it; `threadId` is stamped once
+   *  thread-created binds the stash to its mint. */
+  pendingUserMessage?: { threadId?: string } | null
 }
 
 /**
@@ -87,6 +91,17 @@ export function fail(state: ThreadCreateStateSlice): boolean {
 export function onDisconnect(state: ThreadCreateStateSlice): void {
   if (state.threadCreateIntent === "attach" && !state.activeThreadId) {
     state.pendingFreshThread = true
+  }
+  // A 'background' create's ack can no longer arrive, so nothing will ever
+  // bind its stash to a thread. Left alive, the next unrelated mint (agent '+',
+  // empty-list mint, reconnect mint) would bind and send it into the wrong
+  // thread. Drop the UNBOUND stash; a bound one already has its target.
+  if (
+    state.threadCreateIntent === "background" &&
+    state.pendingUserMessage &&
+    !state.pendingUserMessage.threadId
+  ) {
+    state.pendingUserMessage = null
   }
   state.threadCreateIntent = null
   state.threadListAutoSelectPending = false

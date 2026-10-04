@@ -283,30 +283,66 @@ describe('ThreadDrawerEngine.onRowClick — single-writer integration (chat.html
     expect(resetCalled).toBe(true)
   })
 
-  it('Scenario: row click during a mint-in-flight keeps the stashed first message (no silent drop)', () => {
-    // Regression guard: a first message stashed for a thread that does not
-    // exist yet (chatEngine.ts mint path) must survive a row click that
-    // happens before thread-created arrives. onRowClick used to null
-    // State.pendingUserMessage, which made the thread-created background
-    // branch's bindPendingUserMessage a no-op — the message was never sent,
-    // even though the user bubble was already painted as sent.
-    connectFakeWs([])
+  const userMessages = (sent: unknown[]) => sent.filter((f: any) => f.type === 'user-message') as any[]
+  const created = (id: string) => ({ type: 'thread-created', thread: { id, title: 'New', model: 'm', effort: 'low' } })
+
+  it('Scenario: row click during a mint-in-flight still DELIVERS the first message to the minted thread', () => {
+    // A first message stashed for a thread that does not exist yet must reach
+    // the wire even though the user clicked another row before thread-created.
+    // The minted thread is never made active and the server hides it from the
+    // drawer until it has a message, so nothing could ever "open" it later.
+    const sent: unknown[] = []
+    connectFakeWs(sent)
     const S = State()
-    // Fresh surface: no active thread, message stashed, mint in flight.
     S.activeThreadId = null
     S.pendingUserMessage = { text: 'hello?', attachments: undefined }
     M().ThreadCreateState.begin()
 
     eng().onRowClick('th-b')
+    expect(S.pendingUserMessage?.text).toBe('hello?') // mint in flight: survives the click
 
-    // The stash must survive: the minted thread's thread-created frame
-    // still binds it (background branch) so a later intentional open of
-    // that thread can flush it. Misdelivery is impossible — flush only
-    // sends when the bound target matches the viewed thread.
-    expect(S.activeThreadId).toBe('th-b')
-    expect(S.pendingUserMessage).not.toBeNull()
-    expect(S.pendingUserMessage.text).toBe('hello?')
-    expect(S.pendingUserMessage.threadId).toBeUndefined()
+    M().handleFrame(created('th-a'))
+
+    const msgs = userMessages(sent)
+    expect(msgs.length).toBe(1)
+    expect(msgs[0].threadId).toBe('th-a')
+    expect(msgs[0].text).toBe('hello?')
+    expect(S.pendingUserMessage).toBeNull()
+    expect(S.activeThreadId).toBe('th-b') // the late ack must not steal the selection
+  })
+
+  it('Scenario: an offline-queued stash does NOT survive a row click (no stale send into a later mint)', () => {
+    const sent: unknown[] = []
+    connectFakeWs(sent)
+    const S = State()
+    S.activeThreadId = null
+    S.pendingUserMessage = { text: 'old offline msg', attachments: undefined }
+    S.pendingFreshThread = true // queued offline: no create in flight
+
+    eng().onRowClick('th-b')
+    expect(S.pendingUserMessage).toBeNull()
+
+    // An unrelated mint (agent-section '+') must not carry the old text.
+    eng().newThreadForAgent('helper')
+    M().handleFrame(created('th-c'))
+    expect(userMessages(sent).filter((f) => f.text === 'old offline msg')).toEqual([])
+  })
+
+  it('Scenario: a lost ack (disconnect after the row click) does not leak the stash into a later mint', () => {
+    const sent: unknown[] = []
+    connectFakeWs(sent)
+    const S = State()
+    S.activeThreadId = null
+    S.pendingUserMessage = { text: 'first msg', attachments: undefined }
+    M().ThreadCreateState.begin()
+
+    eng().onRowClick('th-b')
+    M().ThreadCreateState.onDisconnect() // the ack for this mint can never arrive
+    expect(S.pendingUserMessage).toBeNull()
+
+    eng().newThreadForAgent('helper')
+    M().handleFrame(created('th-c'))
+    expect(userMessages(sent).filter((f) => f.text === 'first msg')).toEqual([])
   })
 })
 

@@ -154,6 +154,26 @@ describe("thread create intent", () => {
       expect(s.pendingFreshThread).toBe(false)
     })
 
+    it("drops an UNBOUND stash when a backgrounded create loses its ack", () => {
+      // No thread-created can ever bind it, so the next unrelated mint would
+      // otherwise bind and send it into a stranger thread.
+      const s = makeState({ threadCreateIntent: "background", pendingUserMessage: {} })
+      onDisconnect(s)
+      expect(s.pendingUserMessage).toBeNull()
+    })
+
+    it("keeps a stash already BOUND to its mint", () => {
+      const s = makeState({ threadCreateIntent: "background", pendingUserMessage: { threadId: "thr-9" } })
+      onDisconnect(s)
+      expect(s.pendingUserMessage).toEqual({ threadId: "thr-9" })
+    })
+
+    it("keeps the stash for an attached create (reconnect mint binds it)", () => {
+      const s = makeState({ threadCreateIntent: "attach", activeThreadId: null, pendingUserMessage: {} })
+      onDisconnect(s)
+      expect(s.pendingUserMessage).toEqual({})
+    })
+
     it("does nothing when no create was in flight", () => {
       const s = makeState({ activeThreadId: null })
       onDisconnect(s)
