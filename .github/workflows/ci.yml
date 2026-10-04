@@ -354,6 +354,6 @@ jobs:
         working-directory: apps/ui-moon-tauri
         run: bunx vite build
 
-      - name: Test - Moon Rust binary (HARD GATE)
+      - name: Test - Moon Rust lib + binary (HARD GATE)
         working-directory: apps/ui-moon-tauri/src-tauri
         run: cargo test --lib --bin luna-moon-ui
