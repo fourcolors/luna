@@ -107,13 +107,24 @@ fn validate_host(host: &str) -> Result<&str, String> {
     Ok(host)
 }
 
-/// Dial `host:port`, giving up after `limit` with a human-readable error.
-async fn dial_within(host: &str, port: u16, limit: Duration) -> Result<TcpStream, String> {
-    match tokio::time::timeout(limit, TcpStream::connect((host, port))).await {
+/// Run `connect`, giving up after `limit` with a human-readable error.
+/// The connector is a seam so the bound can be tested without a network.
+async fn dial_via<T>(
+    host: &str,
+    port: u16,
+    limit: Duration,
+    connect: impl std::future::Future<Output = std::io::Result<T>>,
+) -> Result<T, String> {
+    match tokio::time::timeout(limit, connect).await {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(e)) => Err(format!("can't reach {host}:{port} - {e}")),
         Err(_) => Err(format!("can't reach {host}:{port} - timed out")),
     }
+}
+
+/// Dial `host:port`, giving up after `limit` with a human-readable error.
+async fn dial_within(host: &str, port: u16, limit: Duration) -> Result<TcpStream, String> {
+    dial_via(host, port, limit, TcpStream::connect((host, port))).await
 }
 
 async fn dial(host: &str, port: u16) -> Result<TcpStream, String> {
@@ -266,17 +277,45 @@ mod tests {
         assert!(validate_host("a b").is_err());
     }
 
-    /// A black-holed target must fail within the bound, not the OS's ~75s.
-    /// 10.255.255.1 is unroutable on most networks; if the sandbox rejects it
-    /// instantly instead, the error is still "can't reach", so accept either.
+    /// A connect that never completes (a black-holed host) must fail within
+    /// the bound, not the OS's ~75s. The fake connector never resolves, so no
+    /// network is involved; the outer timeout turns a missing bound into a
+    /// test failure instead of a hang.
     #[tokio::test]
     async fn dial_gives_up_within_the_bound() {
+        let limit = Duration::from_millis(100);
         let started = std::time::Instant::now();
-        let err = dial_within("10.255.255.1", 5900, Duration::from_millis(300))
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            dial_via("black.hole", 5900, limit, std::future::pending::<std::io::Result<()>>()),
+        )
+        .await
+        .expect("dial_via did not honor its bound");
+        let err = outcome.expect_err("dial should not succeed");
+        assert_eq!(err, "can't reach black.hole:5900 - timed out");
+        assert!(started.elapsed() >= limit, "gave up before the bound");
+    }
+
+    /// A connect that fails fast reports the underlying error, not "timed out".
+    #[tokio::test]
+    async fn dial_reports_a_connect_error() {
+        let err = dial_via("h", 1, Duration::from_secs(5), async {
+            Err::<(), _>(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+        })
+        .await
+        .expect_err("dial should fail");
+        assert!(err.starts_with("can't reach h:1 - "), "{err}");
+        assert!(!err.contains("timed out"), "{err}");
+    }
+
+    /// The real connector path against a loopback listener succeeds.
+    #[tokio::test]
+    async fn dial_within_connects_to_a_local_listener() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        dial_within("127.0.0.1", port, Duration::from_secs(5))
             .await
-            .expect_err("dial should not succeed");
-        assert!(err.starts_with("can't reach 10.255.255.1:5900 - "), "{err}");
-        assert!(started.elapsed() < Duration::from_secs(5));
+            .expect("loopback dial should succeed");
     }
 
     /// The pipe is the whole reason the bridge exists: prove bytes flow
