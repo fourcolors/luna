@@ -427,6 +427,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     modelProgress: null,   // {downloadedBytes,totalBytes} during ensure_model
     _modelDownloading: false,
     _modelError: '',
+    _fishSaveError: '',    // voice_fish_set_key rejection, shown in the menu
     rustMode: 'off',       // EFFECTIVE mode (Rust can refuse, e.g. model
                            // missing); fed by voice-state events + the
                            // VoiceStatus returned from voice_set_mode
@@ -552,6 +553,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (!st || typeof st.mode !== 'string') return;
       this.rustMode = st.mode;
       if (requested !== 'off' && st.mode === 'off') this.micPaused = true;
+      // A refused arm must repaint — the waveform keeps .active until told.
+      this.paintMic();
     },
 
     // Re-apply to the Rust core each session — always off at boot.
@@ -625,7 +628,10 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         // does not start a capture that the same gesture's pointerup/click
         // would immediately kill or miss-disarm. 180ms is under a hold and
         // over a click.
-        mic.addEventListener('pointerdown', () => {
+        mic.addEventListener('pointerdown', (e) => {
+          // Left button only — a right/Ctrl+click (macOS secondary click)
+          // starts a capture it can never cleanly release.
+          if (e.button !== 0 || e.ctrlKey) return;
           // A mirrored window (it does not own the capture) must not start one.
           if (!this.available || !this._ownsVoice || this.mode !== 'ptt' || this._ptt || this._holdTimer) return;
           this._holdTimer = setTimeout(() => {
@@ -634,7 +640,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
             this.pttDown();
           }, 180);
         });
-        const endHold = () => {
+        const endHold = (e: PointerEvent) => {
           if (this._holdTimer) {
             clearTimeout(this._holdTimer);
             this._holdTimer = null;
@@ -642,7 +648,12 @@ export function createChatEngine(ctx: ChatEngineCtx) {
           }
           if (!this._holdStarted) return;
           this._holdStarted = false;
-          this._ignoreNextMicClick = true;
+          // Swallow only the click a release ON the mic actually produces —
+          // releasing anywhere else never fires one, and a flag left
+          // standing here silently eats the NEXT real tap. e.target can be
+          // `window` (not a Node) — check before contains().
+          this._ignoreNextMicClick =
+            e.type === 'pointerup' && e.target instanceof Node && mic.contains(e.target);
           this.pttUp();
         };
         window.addEventListener('pointerup', endHold);
@@ -663,7 +674,16 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       const menu = DOM.voiceMenu;
       if (menu) {
         menu.querySelectorAll<HTMLElement>('[data-voice-mode]').forEach((b) => {
-          b.addEventListener('click', () => this.setMode(b.dataset.voiceMode));
+          b.addEventListener('click', () => {
+            const want = b.dataset.voiceMode;
+            // Same guards as the composer chips — a blocked arm (no model,
+            // or fish without a key) must not "succeed" from in-menu.
+            if (want !== 'off' && this._blockedReason(want === 'auto')) {
+              this.paintVoiceMenu();
+              return;
+            }
+            this.setMode(want);
+          });
         });
         menu.querySelectorAll<HTMLElement>('[data-voice-engine]').forEach((b) => {
           b.addEventListener('click', () => this.setTtsEngine(b.dataset.voiceEngine));
@@ -824,10 +844,10 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (DOM.voiceFishSection) DOM.voiceFishSection.hidden = this.ttsEngine !== 'fish';
       if (DOM.voiceFishClear) DOM.voiceFishClear.hidden = !this.fishKeyConfigured;
       if (DOM.voiceFishStatus) {
-        DOM.voiceFishStatus.textContent = this.fishKeyConfigured
-          ? 'Key saved'
-          : 'No key saved';
-        DOM.voiceFishStatus.classList.toggle('ok', this.fishKeyConfigured);
+        DOM.voiceFishStatus.textContent = this._fishSaveError
+          || (this.fishKeyConfigured ? 'Key saved' : 'No key saved');
+        DOM.voiceFishStatus.classList.toggle('ok', this.fishKeyConfigured && !this._fishSaveError);
+        DOM.voiceFishStatus.classList.toggle('err', !!this._fishSaveError);
       }
       const needModel = !this.modelPresent;
       if (DOM.voiceModelRow) DOM.voiceModelRow.hidden = !needModel;
@@ -880,14 +900,24 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       const input = DOM.voiceFishKey;
       const key = ((input && input.value) || '').trim();
       if (!key) return;
-      this.invoke('voice_fish_set_key', { key })
-        .then(() => {
-          if (input) input.value = '';
-          return this._refreshTtsInfo();
-        });
+      // core.invoke directly — this.invoke() resolves null on failure,
+      // which would wipe the typed key and paint "No key saved" anyway.
+      const core = window.__TAURI__ && window.__TAURI__.core;
+      const p = core
+        ? core.invoke('voice_fish_set_key', { key })
+        : Promise.reject(new Error('unavailable'));
+      p.then(() => {
+        this._fishSaveError = '';
+        if (input) input.value = '';
+        return this._refreshTtsInfo();
+      }).catch(() => {
+        this._fishSaveError = 'Save failed — try again';
+        this.paintVoiceMenu();
+      });
     },
 
     clearFishKey() {
+      this._fishSaveError = '';
       this.invoke('voice_fish_set_key', { key: '' })
         .then(() => this._refreshTtsInfo());
     },
@@ -930,6 +960,10 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         this.paintVoiceMenu();
         return;
       }
+      // Progress events broadcast app-wide — a download started in another
+      // window (settings.voice) streams here too. Paint it as downloading
+      // either way so the menu can't offer a second download over the first.
+      this._modelDownloading = true;
       this.modelProgress = {
         downloadedBytes: Number.isFinite(p.downloadedBytes) ? p.downloadedBytes : 0,
         totalBytes: Number.isFinite(p.totalBytes) ? p.totalBytes : 0,

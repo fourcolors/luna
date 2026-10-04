@@ -2164,13 +2164,18 @@
       background: var(--paper);
       border: 1.4px solid var(--ink-faint);
       border-radius: 14px;
-      padding: 10px 120px 10px 42px;  /* left + / right voice cluster + send */
+      padding: 10px 44px 10px 42px;  /* left + / right send */
       font-family: var(--font-chat);
       font-size: calc(0.84rem * var(--font-scale));
       line-height: 1.4;
       color: var(--ink);
       outline: none;
       transition: border-color 0.2s, background 0.2s;
+    }
+    /* The voice cluster only exists once the probe lands — reserve its
+       width only then, or voice-less builds wrap text ~76px early. */
+    .composer-input-wrap:has(.voice-cluster:not([hidden])) .chat-input {
+      padding-right: 120px;
     }
 
     /* Grok-style + on the LEFT inside the input shell. type=button required
@@ -2289,7 +2294,9 @@
       display: flex;
       align-items: center;
       gap: 0;
-      z-index: 1;
+      /* Above .voice-menu (80): if the popover ever overlaps the cluster
+         the caret stays clickable — the menu must be toggle-able away. */
+      z-index: 81;
     }
     /* `hidden` loses to `display: flex` by cascade (the UA [hidden] rule is
        non-important) — without this the dead cluster renders in every
@@ -2365,7 +2372,11 @@
     .voice-menu {
       position: absolute;
       right: 12px;
-      bottom: 58px;
+      /* Anchored to the form's bottom padding edge: 104 sits the popover
+         just above the voice cluster row (≈66..102 from the form's bottom
+         edge) so an open menu never swallows its own trigger — the caret
+         click can close it and the buttons stay reachable. */
+      bottom: 104px;
       width: 220px;
       background: var(--paper);
       border: 1.3px solid var(--ink-faint);
@@ -2449,6 +2460,7 @@
       color: var(--ink-soft);
     }
     .voice-fish-status.ok { color: var(--ink); }
+    .voice-fish-status.err { color: #f87171; }
     .voice-link-btn {
       border: none;
       background: none;

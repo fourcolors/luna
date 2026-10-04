@@ -87,8 +87,17 @@ client-side from the existing `assistant-delta` stream.
   CSS drives: `listening` = soft watercolor pulse scaled by `level`,
   `transcribing` = brief inward shimmer, `speaking` = gentle outward ripple.
   Painterly, no gloss.
-- **Mic button**: in the chat header; click toggles listening in `auto`
-  mode, press-and-hold acts as PTT in `ptt` mode.
+- **Composer voice cluster**: dictate mic + voice waveform + setup caret
+  inside the chat composer (hidden until the voice probe lands). The mic
+  is Dictate: tap arms `ptt` and starts the capture once `voice_set_mode`
+  resolves, tap stops the capture, hold (≥180ms) is press-and-talk while
+  armed. The waveform is Voice: one click toggles `auto` hands-free.
+  A blocked start (missing speech model for either; fish engine without
+  a key for the conversation only) opens the caret's quick-setup menu —
+  talk mode, reply engine, inline Fish key entry, and model download —
+  instead of failing silently. Voice ownership is per-window: `setMode`
+  writes a unique `luna_voice_owner` claim so mirrored chat windows
+  don't all consume the same transcript.
 - **Global PTT shortcut**: registered Rust-side (tauri-plugin-global-shortcut
   supports Pressed/Released) only while mode = `ptt`. Default
   `Cmd+Shift+Space`.

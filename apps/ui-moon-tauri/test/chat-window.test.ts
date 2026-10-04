@@ -3746,13 +3746,44 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('Scenario: a real tap (pointerdown/up + click) starts dictate and does not immediately stop', async () => {
       const { invoke, V } = voiceReady()
+      // Real browser order: pointerdown, pointerup, click.
       mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      mic().dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
       mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      window.dispatchEvent(new MouseEvent('pointerup'))
       await vi.waitFor(() => expect(called(invoke, 'voice_ptt_down')).toBe(true))
       expect(called(invoke, 'voice_ptt_up')).toBe(false)
       expect(V._ptt).toBe(true)
       expect(V.mode).toBe('ptt')
+    })
+
+    it('Scenario: a hold released OFF the mic leaves no stale click-swallow — the next real tap still disarms', async () => {
+      const { invoke, V } = voiceReady()
+      V.mode = 'ptt'
+      V._ownsVoice = true
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await vi.advanceTimersByTimeAsync(200)
+      expect(V._holdStarted).toBe(true)
+      // Release lands outside the button — no trailing click exists, so
+      // the swallow flag must not stand.
+      document.body.dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_up')).toBe(true)
+      expect(V._ignoreNextMicClick).toBe(false)
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      mic().dispatchEvent(new MouseEvent('pointerup', { bubbles: true }))
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'off' })
+      expect(V.mode).toBe('off')
+    })
+
+    it('Scenario: a right/Ctrl+click in ptt mode never arms a hold capture', async () => {
+      const { invoke, V } = voiceReady()
+      V.mode = 'ptt'
+      V._ownsVoice = true
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 2 }))
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0, ctrlKey: true }))
+      await vi.advanceTimersByTimeAsync(250)
+      expect(called(invoke, 'voice_ptt_down')).toBe(false)
+      expect(V._holdStarted).toBeFalsy()
     })
 
     it('Scenario: a real tap while armed (not capturing) disarms without a capture flicker', () => {
@@ -3789,6 +3820,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(true)
     })
 
+    it('Scenario: a second caret click closes the menu (the popover never swallows its trigger)', () => {
+      const { V } = voiceReady()
+      caret().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(true)
+      caret().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(menu().classList.contains('open')).toBe(false)
+      expect(caret().getAttribute('aria-expanded')).toBe('false')
+    })
+
     it('Scenario: menu mode buttons drive setMode (same path as the mic)', () => {
       const { invoke, V } = voiceReady()
       V.openVoiceMenu()
@@ -3796,6 +3836,15 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(V.mode).toBe('ptt')
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'ptt' })
       expect(seg('ptt').classList.contains('active')).toBe(true)
+    })
+
+    it('Scenario: a blocked arm from the menu seg (fish, no key) does not arm', () => {
+      const { invoke, V } = voiceReady({ engine: 'fish', fishKey: false })
+      V.openVoiceMenu()
+      seg('auto').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(V.mode).toBe('off')
+      expect(invoke).not.toHaveBeenCalledWith('voice_set_mode', { mode: 'auto' })
+      expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
     })
 
     it('Scenario: picking Fish Audio switches engine, persists it, and reveals the key field', async () => {
@@ -3828,6 +3877,28 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(input.value).toBe('')            // the key never lingers in the DOM
       expect((document.getElementById('voice-fish-clear') as HTMLElement).hidden).toBe(false)
       expect(localStorage.getItem('luna_voice_fish_key')).toBeNull() // never persisted to webview storage
+    })
+
+    it('Scenario: a failed Fish key save keeps the typed key and paints the error', async () => {
+      const invoke = vi.fn(async (cmd: string) => {
+        if (cmd === 'voice_fish_set_key') throw new Error('write denied')
+        return { engine: 'fish', engines: ['system', 'fish'], fishKeyConfigured: false }
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      const V = M().VoiceEngine
+      V.setAvailable(true)
+      V.ttsEngine = 'fish'
+      V.fishKeyConfigured = false
+      V.openVoiceMenu()
+      const input = document.getElementById('voice-fish-key') as HTMLInputElement
+      input.value = 'fa-key-that-fails'
+      document.getElementById('voice-fish-save')!.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(V._fishSaveError).toBeTruthy())
+      const status = document.getElementById('voice-fish-status') as HTMLElement
+      expect(status.textContent).toBe('Save failed — try again')
+      expect(status.classList.contains('err')).toBe(true)
+      expect(input.value).toBe('fa-key-that-fails')  // the typed key is not lost
+      expect(V.fishKeyConfigured).toBe(false)
     })
 
     it('Scenario: Clear sends a blank key and re-probes', async () => {
@@ -3878,6 +3949,19 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(V.modelPresent).toBe(false)
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(false)
       expect(text.textContent).toBe('Download failed')
+    })
+
+    it('Scenario: model progress streamed from another window still disables Download', () => {
+      const { V } = voiceReady({ modelPresent: false })
+      V.openVoiceMenu()
+      const btn = document.getElementById('voice-model-download') as HTMLButtonElement
+      const text = document.getElementById('voice-model-text') as HTMLElement
+      // A download started in settings.voice broadcasts here — the button
+      // must not offer a second download over it.
+      V.onModelProgress({ downloadedBytes: 512, totalBytes: 1024 })
+      expect(V._modelDownloading).toBe(true)
+      expect(btn.disabled).toBe(true)
+      expect(text.textContent).toBe('Downloading 50%')
     })
 
     it('Scenario: Esc closes an open voice menu; a second Esc still reaches stopSpeaking', () => {
@@ -4019,6 +4103,16 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(V._ptt).toBe(false)
     })
 
+    it('Scenario: a refused Voice arm repaints the waveform inactive (no dead live chip)', async () => {
+      const { V } = voiceReady()
+      const invoke = vi.fn(async (cmd: string) => (cmd === 'voice_set_mode' ? { mode: 'off', state: 'off' } : null))
+      ;(window as any).__TAURI__.core = { invoke }
+      wave().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(V.micPaused).toBe(true))
+      expect(wave().classList.contains('active')).toBe(false)
+      expect(wave().title).toBe('Voice')
+    })
+
     // Regression (review F3): _ptt must not outlive the ptt pipeline.
     it('Scenario: switching to Voice (auto) mid-dictation clears the capture flag and the armed mic', async () => {
       const { invoke, V } = voiceReady()
@@ -4150,6 +4244,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
 
     it('menu model row: .voice-model-row[hidden] forces display:none over display:flex', () => {
       expect(htmlContent).toMatch(/\.voice-model-row\[hidden\]\s*\{\s*display:\s*none\s*!important/)
+    })
+
+    // The composer reserves the voice cluster's width ONLY once the probe
+    // lands — a fixed padding-right on .chat-input wraps text ~76px early
+    // in every voice-less build.
+    it('composer input: cluster width is reserved via :has(.voice-cluster:not([hidden]))', () => {
+      expect(htmlContent).toMatch(/\.composer-input-wrap:has\(\.voice-cluster:not\(\[hidden\]\)\)\s+\.chat-input\s*\{\s*padding-right:\s*120px/)
     })
   })
 
