@@ -610,6 +610,10 @@ export function createFrames(ctx: FramesCtx) {
         WebSocketEngine.clearTurnTimeout();
         State.activeTurnId = null;
         ChatState.appendDelivered(frame.message);
+        // Keep the active thread's cache converged too: a switch-away and
+        // back paints from this cache, and without the append it would show
+        // a stale, shorter transcript until the re-subscribe snapshot lands.
+        if (frame.threadId) ThreadCache.appendMessage(frame.threadId, frame.message);
         ChatLoop.flush();
         // A delivered background result IS a complete turn, so the face stops
         // here rather than waiting for a turn-complete that never comes.
@@ -648,6 +652,12 @@ export function createFrames(ctx: FramesCtx) {
       frame.message ? frame.message.text : null,
       frame.message ? frame.message.ts : undefined,
     );
+    // Same cache-convergence rule as the background branches above: the
+    // active thread's completed message enters the per-thread cache so an
+    // instant paint on switch-back is converged. No-op when there is no
+    // cached entry or no message; the re-subscribe snapshot's put()
+    // wholesale-replaces the entry, so there is no duplication risk.
+    if (frame.threadId && frame.message) ThreadCache.appendMessage(frame.threadId, frame.message);
     ChatLoop.flush();
     // Spoken replies: this message ended — flush its sentence
     // remainder (per message, so intermediate agentic steps speak too).
