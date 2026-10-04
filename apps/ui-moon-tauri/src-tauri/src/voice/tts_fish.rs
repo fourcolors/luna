@@ -522,6 +522,31 @@ fn stop_pump(pump: &mut Option<Pump>, sink: &mut Option<SharedSink>) {
     }
 }
 
+/// Test seam: remember the pid of the curl child spawned for each sentence,
+/// keyed by its text, so a test can assert on its own child instead of
+/// scanning every process (tests run in parallel inside one process).
+#[cfg(test)]
+mod test_spawned {
+    use std::sync::Mutex;
+
+    static PIDS: Mutex<Vec<(String, u32)>> = Mutex::new(Vec::new());
+
+    pub(super) fn record(text: &str, pid: u32) {
+        PIDS.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((text.to_string(), pid));
+    }
+
+    pub(super) fn pid_for(text: &str) -> Option<u32> {
+        PIDS.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .rev()
+            .find(|(t, _)| t == text)
+            .map(|(_, pid)| *pid)
+    }
+}
+
 /// Build the curl invocation + spawn it for one sentence.
 fn spawn_pump(
     config: &SharedFishConfig,
@@ -583,6 +608,9 @@ fn spawn_pump(
         .stderr
         .take()
         .ok_or_else(|| "curl stderr not piped".to_string())?;
+
+    #[cfg(test)]
+    test_spawned::record(&text, child.id());
 
     let child_slot: ChildSlot = Arc::new(Mutex::new(Some(child)));
     let (report_tx, report_rx) = mpsc::channel();
@@ -1156,7 +1184,9 @@ mod tests {
             Some(Arc::new(TestSink(es))),
             Box::new(|| Ok(Box::new(PanicSink))),
         );
-        tts.speak("this will panic the pump", false);
+        // Unique per test so the spawned-pid lookup can't match another test.
+        let text = "pump_panic_surfaces_voice_error: this will panic the pump";
+        tts.speak(text, false);
         let t0 = std::time::Instant::now();
         while t0.elapsed() < Duration::from_secs(10) {
             if events
@@ -1186,23 +1216,21 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!tts.is_speaking(), "engine must not stay speaking after a pump panic");
-        // No zombie curl child of this process (state Z) may remain.
+        // The curl child this pump spawned must be reaped (its pid gone from
+        // the process table, not lingering as a zombie). The worker reaps on
+        // the same loop pass that clears `speaking`, so no polling is needed.
+        // Asserting on that one pid keeps other tests' curl children out of it.
         #[cfg(unix)]
         {
-            let me = std::process::id().to_string();
-            let out = std::process::Command::new("ps")
-                .args(["-A", "-o", "pid=,ppid=,stat="])
-                .output()
-                .expect("ps");
-            let zombies: Vec<String> = String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|l| {
-                    let f: Vec<&str> = l.split_whitespace().collect();
-                    f.len() >= 3 && f[1] == me && f[2].starts_with('Z')
-                })
-                .map(|l| l.trim().to_string())
-                .collect();
-            assert!(zombies.is_empty(), "zombie children left: {zombies:?}");
+            let pid = test_spawned::pid_for(text).expect("pump spawned a curl child");
+            // kill(pid, 0) succeeds for a live process AND for an unreaped
+            // zombie; only ESRCH means the child was waited on.
+            let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            let errno = std::io::Error::last_os_error().raw_os_error();
+            assert!(
+                rc == -1 && errno == Some(libc::ESRCH),
+                "curl child {pid} was not reaped (kill rc={rc}, errno={errno:?})"
+            );
         }
         drop(tts);
         let _ = server.join();
