@@ -9,7 +9,11 @@ import {
 } from "../types.js"
 import { initVectorlite } from "./vectorlite-init.js"
 import { probeHnswPopulation, backfillHnswRows } from "./hnsw-backfill.js"
-import { deriveHnswSidecarPath, secureSidecar } from "./hnsw-sidecar.js"
+import {
+  deriveHnswSidecarPath,
+  removeHnswMeta,
+  secureSidecar,
+} from "./hnsw-sidecar.js"
 
 type BunStatement = {
   readonly get: (...p: unknown[]) => unknown
@@ -486,12 +490,18 @@ function getHnswStatus(
   // backend runs on open), then report the population.
   //
   // When a persisted graph was loaded from the sidecar, report THAT
-  // population and do NOT backfill: writing this connection's T1 snapshot
-  // into the graph would make the close-time sidecar rewrite persist a
-  // stale snapshot, clobbering rows the server inserted meanwhile
-  // (last-writer-wins; the server's AFTER INSERT triggers only fire for
-  // new writes, so the clobbered rows would never come back under the
-  // backend's old k=1 open probe).
+  // population ("what is on disk") instead of backfilling over it.
+  //
+  // NOTE this does NOT keep diagnostics from touching the sidecar:
+  // vectorlite rewrites it from this connection's in-memory graph when the
+  // connection closes, even if the connection only read, so a status run
+  // that closes after the server can still replace the server's newer graph
+  // with an older snapshot. That is safe only because the backend does not
+  // trust a sidecar blindly: on open it requires a provenance record (the
+  // file signature it flushed plus a fingerprint of memory_vectors), and
+  // `closeAndSecureSidecar` below invalidates that record whenever a
+  // maintenance connection closes. The backend's open-time check, not this
+  // read-only branch, is the actual safeguard against stale snapshots.
   //
   // A probe/backfill failure (extension not loaded, capacity exceeded, or a busy
   // DB after the busy_timeout) is reported as null = "unknown" rather than
@@ -596,7 +606,8 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
   // order to count it when no persisted sidecar was loaded) and may run
   // while the long-lived backend holds a write lock on the same file.
   // Wait for the lock instead of failing fast with SQLITE_BUSY and
-  // misreporting a populated index as empty.
+  // misreporting a populated index as empty. (Even a connection that only
+  // reads rewrites the sidecar on close; see getHnswStatus.)
   db.run("PRAGMA busy_timeout = 5000")
   if (vlInit.ok) {
     db.loadExtension?.(vlInit.path)
@@ -613,11 +624,19 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
  * REWRITE the sidecar on close — at the process umask (typically 0644), which
  * would silently undo the backend's owner-only posture. Re-chmod after close so
  * `luna memory status`/`reembed` can't loosen the persisted graph's perms.
+ *
+ * That rewrite also means the sidecar now holds THIS connection's graph, which
+ * may be older than the backend's (or, after reembed, differ from what the
+ * backend flushed). Drop the backend's provenance record so its next open
+ * rebuilds from memory_vectors instead of trusting this file.
  */
 function closeAndSecureSidecar(db: BunDatabase, dbPath: string): void {
   db.close()
   const sidecar = deriveHnswSidecarPath(dbPath)
-  if (sidecar !== null) secureSidecar(sidecar)
+  if (sidecar !== null) {
+    secureSidecar(sidecar)
+    removeHnswMeta(sidecar)
+  }
 }
 
 export function getMemoryVectorStatus(args: {

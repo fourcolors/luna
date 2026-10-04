@@ -77,7 +77,12 @@ import {
   formatMemoryRecordEmbeddingInput,
   hashEmbeddingInput,
 } from "./sqlite-vector-maintenance.js"
-import { backfillHnswIfEmpty, probeHnswPopulation } from "./hnsw-backfill.js"
+import {
+  backfillHnswIfEmpty,
+  fingerprintHnswSource,
+  probeHnswPopulation,
+  readDataVersion,
+} from "./hnsw-backfill.js"
 import type { MemorySearchArgs } from "../backend.js"
 import {
   HYBRID_WEIGHTED_DEFAULTS,
@@ -91,7 +96,11 @@ import {
 import {
   deriveHnswSidecarPath,
   discardSidecar,
+  isHnswSidecarTrusted,
+  removeHnswMeta,
   secureSidecar,
+  statHnswSidecar,
+  writeHnswMeta,
 } from "./hnsw-sidecar.js"
 
 export interface SqliteVectorBackendApi {
@@ -274,12 +283,57 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         // index on open when the sidecar is missing/empty. Tests 7k/7l/7m
         // assert the rebuild behavior, not the flush.
         const sidecarPath = deriveHnswSidecarPath(dbPath)
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            db.close()
-            if (sidecarPath !== null) secureSidecar(sidecarPath)
-          }),
-        )
+        // Set once HNSW + sidecar setup completed on open: the dimension the
+        // graph covers and PRAGMA data_version as read BEFORE the open-time
+        // validation. Null when there is no sidecar to vouch for.
+        let hnswProvenance: { dimension: number; dataVersion: number } | null =
+          null
+        // Close the connection (vectorlite flushes the sidecar here) and
+        // record which sidecar file we flushed, so the next open can tell it
+        // apart from one a second connection rewrote later. Idempotent: both
+        // the scope finalizer and `close()` route through here.
+        let closed = false
+        const closeAndRecordSidecar = (): void => {
+          if (closed) return
+          closed = true
+          let before: {
+            stat: string | null
+            source: string
+            clean: boolean
+          } | null = null
+          if (hnswProvenance !== null && sidecarPath !== null) {
+            try {
+              before = {
+                stat: statHnswSidecar(sidecarPath),
+                source: fingerprintHnswSource(db, hnswProvenance.dimension),
+                // False when another connection committed to the DB while we
+                // were open: our graph then misses (or holds stale) rows.
+                clean: readDataVersion(db) === hnswProvenance.dataVersion,
+              }
+            } catch {
+              before = null
+            }
+          }
+          db.close()
+          if (sidecarPath === null) return
+          secureSidecar(sidecarPath)
+          if (hnswProvenance === null) return
+          const after = statHnswSidecar(sidecarPath)
+          // Only vouch for a file this close actually wrote. If the flush
+          // was skipped (see the NOTE above) the file is an older graph, and
+          // pairing it with today's rows would bless a stale snapshot.
+          const rewritten = after !== (before?.stat ?? null)
+          if (rewritten && after !== null && before !== null && before.clean) {
+            writeHnswMeta(sidecarPath, {
+              dimension: hnswProvenance.dimension,
+              sidecar: after,
+              source: before.source,
+            })
+          } else if (rewritten || before === null || !before.clean) {
+            removeHnswMeta(sidecarPath)
+          }
+        }
+        yield* Effect.addFinalizer(() => Effect.sync(closeAndRecordSidecar))
 
         // Try to load the extension on this connection. Even if vlInit
         // succeeded earlier (process-wide setCustomSQLite), each Database
@@ -299,6 +353,10 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           try {
             ;(db as unknown as { loadExtension: (p: string) => void })
               .loadExtension(vlInit.path)
+            // Baseline for "did another connection commit while we were open"
+            // (checked at close, see closeAndRecordSidecar). Read before any
+            // open-time validation so a concurrent write cannot slip between.
+            const dataVersionAtOpen = readDataVersion(db)
             // Sidecar policy (Phase 27e — persistent HNSW):
             //
             // Vectorlite's third CREATE-time argument is the
@@ -385,41 +443,51 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                                   })`
             db.run(createSql)
 
-            // Sidecar completeness probe: only meaningful when we have a
-            // sidecar AND at least one source row exists (otherwise
-            // there's nothing to test the v-table with). With either
-            // condition false, the unconditional backfill below covers
-            // the legitimate empty case.
+            // Sidecar trust check. The persisted graph can be a STALE
+            // snapshot, not just empty or corrupt: vectorlite rewrites the
+            // sidecar from whichever connection closes last, and a second
+            // connection (e.g. `luna memory status`) holds its own in-memory
+            // graph from an earlier moment. If that connection closes after
+            // the server, its snapshot wins.
             //
-            // The persisted graph may be a STALE snapshot, not just empty
-            // or corrupt: a second connection (e.g. `luna memory status`)
-            // populates its own in-memory graph from a T1 snapshot, and
-            // vectorlite rewrites the sidecar from whichever connection
-            // closes last. If the second connection closes after the
-            // server, its stale snapshot wins — and a k=1 "non-empty"
-            // probe would trust it, so the rows the server added after T1
-            // would never be re-added (AFTER INSERT triggers fire only
-            // for new writes): silent and permanent index loss.
+            // No probe of the graph can detect that reliably. An edit is
+            // DELETE + INSERT, so the row count stays the same, and because
+            // memory_vectors has no AUTOINCREMENT the newest row's rowid is
+            // reused with a different embedding; a count (or a rowid-join)
+            // calls such a graph complete. So trust is decided by
+            // provenance instead: the backend records the signature of the
+            // sidecar file it flushed at close, plus a fingerprint of the
+            // memory_vectors rows behind that graph (see hnsw-sidecar.ts).
+            // A sidecar that exists but does not match both is rebuilt from
+            // memory_vectors, the canonical source of truth. This includes
+            // sidecars written before provenance existed and any sidecar a
+            // status/maintenance connection rewrote. The price is one
+            // rebuild on the first boot after such a rewrite, even when the
+            // graph content happens to be identical - correct and bounded,
+            // so do not "optimise" the check away.
             //
-            // So this is a completeness check, not an emptiness check: the
-            // graph must recall every active-dimension source row. A
-            // corrupt sidecar throws in the probe (the deferred
-            // deserialization error fires on first knn_search) and takes
-            // the corruption-recovery path; a non-throwing partial graph
-            // is a stale snapshot and takes the same drop/discard/recreate
-            // sequence, with the backfill below rebuilding from
-            // memory_vectors (the canonical source of truth). An empty
-            // graph with source rows present is the legitimate first-boot
-            // case — leave `knownPopulated` false and let the backfill
-            // below handle it without drop/discard churn.
+            // Only for a trusted sidecar do we run the cheap graph probe,
+            // which still catches a truncated or corrupt file. The probe
+            // doubles as the emptiness check the backfill below would
+            // otherwise re-run: when it recalls every row the graph is
+            // healthy AND populated, so `backfillHnswIfEmpty` would no-op -
+            // we set `knownPopulated` and skip its redundant probe.
             //
-            // The probe doubles as the emptiness check the backfill below
-            // would otherwise re-run: when it recalls every row the
-            // persisted graph is healthy AND fully populated, so
-            // `backfillHnswIfEmpty` would no-op — we set `knownPopulated`
-            // and skip its redundant probe.
+            // With no sidecar file (first boot, or sidecar=null) there is
+            // nothing to distrust; the unconditional backfill below covers
+            // the legitimate empty case without drop/discard churn.
             let knownPopulated = false
             if (sidecarPath !== null) {
+              const discardAndRecreate = (why: string): void => {
+                warnFallbackOnce(why)
+                try {
+                  dropHnswObjects()
+                } catch {
+                  /* best-effort */
+                }
+                discardSidecar(sidecarPath)
+                db.run(createSql)
+              }
               const expected = (
                 db
                   .query(
@@ -428,38 +496,40 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
                   )
                   .get() as { c: number }
               ).c
-              if (expected > 0) {
-                try {
-                  const population = probeHnswPopulation(
-                    db,
-                    embedder.dimension,
-                    expected,
+              if (statHnswSidecar(sidecarPath) !== null) {
+                // Existing sidecar: it must be provably ours and current
+                // before we let it stand (this also covers expected === 0,
+                // where a ghost graph would collide with future rowids).
+                const trusted = isHnswSidecarTrusted(
+                  sidecarPath,
+                  embedder.dimension,
+                  fingerprintHnswSource(db, embedder.dimension),
+                )
+                if (!trusted) {
+                  discardAndRecreate(
+                    "HNSW sidecar was not flushed by this backend or memory_vectors changed since; discarding and rebuilding from memory_vectors",
                   )
-                  if (population >= expected) {
-                    knownPopulated = true
-                  } else if (population > 0) {
-                    warnFallbackOnce(
-                      `HNSW sidecar is stale (graph recalls ${population}/${expected} rows); discarding and rebuilding from memory_vectors`,
-                    )
-                    try {
-                      dropHnswObjects()
-                    } catch {
-                      /* best-effort */
-                    }
-                    discardSidecar(sidecarPath)
-                    db.run(createSql)
-                  }
-                } catch (probeCause) {
-                  warnFallbackOnce(
-                    `HNSW sidecar appears corrupt; discarding and rebuilding from memory_vectors: ${String(probeCause)}`,
-                  )
+                } else if (expected > 0) {
                   try {
-                    dropHnswObjects()
-                  } catch {
-                    /* best-effort */
+                    const population = probeHnswPopulation(
+                      db,
+                      embedder.dimension,
+                      expected,
+                    )
+                    if (population >= expected) {
+                      knownPopulated = true
+                    } else if (population > 0) {
+                      discardAndRecreate(
+                        `HNSW sidecar is incomplete (graph recalls ${population}/${expected} rows); discarding and rebuilding from memory_vectors`,
+                      )
+                    }
+                  } catch (probeCause) {
+                    // Vectorlite defers sidecar deserialization, so a
+                    // corrupt file surfaces here on the first knn_search.
+                    discardAndRecreate(
+                      `HNSW sidecar appears corrupt; discarding and rebuilding from memory_vectors: ${String(probeCause)}`,
+                    )
                   }
-                  discardSidecar(sidecarPath)
-                  db.run(createSql)
                 }
               }
             }
@@ -503,6 +573,12 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
             // it hasn't happened), the helper silently no-ops. The
             // finalizer below also chmods on close.
             if (sidecarPath !== null) secureSidecar(sidecarPath)
+            if (sidecarPath !== null) {
+              hnswProvenance = {
+                dimension: embedder.dimension,
+                dataVersion: dataVersionAtOpen,
+              }
+            }
             hnswEnabled = true
           } catch (cause) {
             // The extension loaded but v-table setup or the backfill failed
@@ -1207,7 +1283,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           exportAll,
           importAll,
           search,
-          close: () => Effect.sync(() => db.close()),
+          close: () => Effect.sync(closeAndRecordSidecar),
         }
       }),
     )

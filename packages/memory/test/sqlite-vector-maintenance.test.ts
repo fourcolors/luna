@@ -21,6 +21,7 @@ import {
   getMemoryVectorStatus,
   reembedMemoryVectors,
 } from "../src/backends/sqlite-vector-maintenance.js"
+import { readHnswMeta, writeHnswMeta } from "../src/backends/hnsw-sidecar.js"
 import { makeRecord } from "../src/types.js"
 
 const hasBunSqlite = (() => {
@@ -252,6 +253,48 @@ d("sqlite-vector maintenance", () => {
       expect(status.totalVectors).toBe(3)
       expect(status.hnsw.present).toBe(true)
       expect(status.hnsw.indexedCount).toBe(3)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("status invalidates the backend's sidecar provenance record on close", async () => {
+    // A maintenance connection rewrites the sidecar from its own graph when it
+    // closes, so whatever the backend last vouched for no longer describes the
+    // file. The record must be dropped so the next backend open rebuilds.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-meta-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      // No hnswEnabled gate: the invalidation does not depend on whether
+      // vectorlite loaded in this process, only on the derived sidecar path.
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "meta-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "provenance record" },
+              }),
+            )
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+
+      const sidecar = `${dbPath}.hnsw.bin`
+      writeHnswMeta(sidecar, { dimension: 64, sidecar: "x", source: "y" })
+      expect(readHnswMeta(sidecar)).not.toBeNull()
+
+      await Effect.runPromise(
+        getMemoryVectorStatus({ dbPath, embedder: replacementStub }),
+      )
+      expect(readHnswMeta(sidecar)).toBeNull()
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
