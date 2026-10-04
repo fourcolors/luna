@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { BUILTIN_SKILLS } from "./builtin-skills.js"
 
@@ -45,5 +49,45 @@ describe("BUILTIN_SKILLS", () => {
     expect(body).not.toMatch(/(?<![_\w])(memory_save|memory_search|obs_note|obs_notes_recent)\b/)
     // Never write rows into the wake-owned table.
     expect(body).not.toContain("next_actions")
+  })
+
+  it("screenshot-intake dedupe ignores a sibling markdown note that reuses the image stem", () => {
+    const body = BUILTIN_SKILLS.find((s) => s.id === "screenshot-intake")?.body ?? ""
+    const script = /node -e '([^']+)' --/.exec(body)?.[1]
+    expect(script).toBeDefined()
+    const dir = mkdtempSync(join(tmpdir(), "screenshot-intake-"))
+    try {
+      const png = Buffer.from("not-really-a-png-but-stable-bytes")
+      const message = JSON.stringify({
+        message: {
+          content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: png.toString("base64") } }],
+        },
+      })
+      const run = (): { file: string; existed: boolean } => {
+        const out = execFileSync("node", ["-e", script as string, "--", dir, "2026-10-03", "shot", "0"], {
+          input: message,
+          encoding: "utf8",
+        })
+        return JSON.parse(out.trim().split("\n").pop() as string)
+      }
+      const first = run()
+      expect(first.existed).toBe(false)
+      // A sibling note reusing the image stem sorts before .png.
+      const stem = first.file.replace(/\.png$/, "")
+      writeFileSync(`${stem}.md`, "facts")
+      expect(readdirSync(dir).sort()[0]).toMatch(/\.md$/)
+      const second = run()
+      expect(second.existed).toBe(true)
+      expect(second.file).toBe(first.file)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("screenshot-intake does not promise a one-shot reminder from a cron-only scheduler", () => {
+    const body = BUILTIN_SKILLS.find((s) => s.id === "screenshot-intake")?.body ?? ""
+    expect(body).not.toContain("dated reminder")
+    expect(body).toContain("repeats every year")
+    expect(body).toContain("mcp__scheduler__schedule_cancel")
   })
 })
