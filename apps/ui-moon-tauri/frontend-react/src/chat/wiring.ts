@@ -783,6 +783,9 @@ function installWiringChromeAndWindow(ctx, engines) {
     if (e.key === 'luna_voice_mode') {
       if (VoiceEngine) VoiceEngine.applyExternalMode(e.newValue);
     }
+    if (e.key === 'luna_voice_owner') {
+      if (VoiceEngine) VoiceEngine.applyExternalOwner();
+    }
     if (e.key === 'luna_voice_tts_engine') {
       if (VoiceEngine) VoiceEngine.syncExternalEngine(e.newValue);
     }

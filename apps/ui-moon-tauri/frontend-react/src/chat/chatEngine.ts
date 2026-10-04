@@ -583,6 +583,13 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       this._ownsVoice = m !== 'off';
       if (m !== 'ptt') this._clearCapture();
       localStorage.setItem('luna_voice_mode', m);
+      // Ownership claim, unique per call: storage events only fire on a VALUE
+      // change, so a second window re-picking the mode already stored (e.g.
+      // 'ptt' -> 'ptt') would otherwise never tell this window it lost the
+      // capture. Every other window releases ownership on seeing this key.
+      try {
+        localStorage.setItem('luna_voice_owner', Date.now() + '-' + Math.random().toString(36).slice(2));
+      } catch (_) { /* quota */ }
       let result = Promise.resolve(null);
       if (this.available) {
         result = this.invoke('voice_set_mode', { mode: m })
@@ -619,7 +626,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         // would immediately kill or miss-disarm. 180ms is under a hold and
         // over a click.
         mic.addEventListener('pointerdown', () => {
-          if (!this.available || this.mode !== 'ptt' || this._ptt || this._holdTimer) return;
+          // A mirrored window (it does not own the capture) must not start one.
+          if (!this.available || !this._ownsVoice || this.mode !== 'ptt' || this._ptt || this._holdTimer) return;
           this._holdTimer = setTimeout(() => {
             this._holdTimer = null;
             this._holdStarted = true;
@@ -942,6 +950,16 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       // replies for a capture it did not start.
       this._ownsVoice = false;
       if (m !== 'ptt') this._clearCapture();
+      this.paintMic();
+      this.paintVoiceMenu();
+    },
+
+    // Another window claimed the voice (it called setMode, possibly with the
+    // very mode already stored, which fires no mode storage event). Keep the
+    // mirrored mode but give up the capture.
+    applyExternalOwner() {
+      this._ownsVoice = false;
+      this._clearCapture();
       this.paintMic();
       this.paintVoiceMenu();
     },

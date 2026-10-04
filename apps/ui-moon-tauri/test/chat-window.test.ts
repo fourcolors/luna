@@ -3768,6 +3768,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     it('Scenario: ptt mode — press-and-hold drives voice_ptt_down/up', async () => {
       const { invoke, V } = voiceReady()
       V.mode = 'ptt'
+      V._ownsVoice = true
       mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
       expect(called(invoke, 'voice_ptt_down')).toBe(false)
       await vi.advanceTimersByTimeAsync(180)
@@ -3950,6 +3951,38 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(V._ownsVoice).toBe(true)
       window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_mode', newValue: 'ptt' }))
       expect(V._ownsVoice).toBe(false)
+    })
+
+    it('Scenario: a hold in a mirrored window (does not own the voice) starts no capture', async () => {
+      const { invoke, V } = voiceReady()
+      window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_mode', newValue: 'ptt' }))
+      expect(V.mode).toBe('ptt')
+      mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      await vi.advanceTimersByTimeAsync(200)
+      expect(called(invoke, 'voice_ptt_down')).toBe(false)
+      expect(V._ptt).toBe(false)
+      window.dispatchEvent(new MouseEvent('pointerup'))
+    })
+
+    it('Scenario: another window re-picking the SAME stored mode still releases this window ownership', () => {
+      const { V } = voiceReady()
+      V.setMode('ptt')
+      expect(V._ownsVoice).toBe(true)
+      // Window B setMode('ptt') while storage already says 'ptt': no mode
+      // event fires, only the unique ownership claim does.
+      window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_owner', newValue: 'b-1' }))
+      expect(V._ownsVoice).toBe(false)
+      expect(V.mode).toBe('ptt')
+    })
+
+    it('Scenario: every setMode writes a fresh ownership claim to storage', () => {
+      const { V } = voiceReady()
+      V.setMode('ptt')
+      const a = localStorage.getItem('luna_voice_owner')
+      V.setMode('ptt')
+      const b = localStorage.getItem('luna_voice_owner')
+      expect(a).toBeTruthy()
+      expect(b).not.toBe(a)
     })
 
     // Regression (review F2): set_mode and ptt_down are separate async IPC
