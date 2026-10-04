@@ -16,8 +16,13 @@ enum Keychain {
     }
 
     static func save(_ value: String, account: String) {
-        if !saveKeychain(value, account: account) {
+        switch saveKeychain(value, account: account) {
+        case .saved:
+            UserDefaults.standard.removeObject(forKey: fallbackPrefix + account)
+        case .unavailable:
             UserDefaults.standard.set(value, forKey: fallbackPrefix + account)
+        case .failed:
+            break // memory-only — logged inside saveKeychain
         }
     }
 
@@ -50,7 +55,9 @@ enum Keychain {
         return nil
     }
 
-    private static func saveKeychain(_ value: String, account: String) -> Bool {
+    private enum SaveResult { case saved, unavailable, failed }
+
+    private static func saveKeychain(_ value: String, account: String) -> SaveResult {
         let data = Data(value.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -64,11 +71,20 @@ enum Keychain {
             insert[kSecValueData as String] = data
             status = SecItemAdd(insert as CFDictionary, nil)
         }
-        if status != errSecSuccess {
-            NSLog("[luna] Keychain save failed for %@ (OSStatus %d) — falling back to UserDefaults", account, status)
-            return false
+        switch status {
+        case errSecSuccess:
+            return .saved
+        case errSecMissingEntitlement:
+            // The plaintext fallback exists only for unsigned Debug/simulator
+            // builds that carry no keychain entitlement.
+            NSLog("[luna] Keychain save unavailable on unsigned build — falling back to UserDefaults for %@", account)
+            return .unavailable
+        default:
+            // Any other failure must NOT drop the bearer token into plaintext
+            // UserDefaults (which lands in device backups) — keep it in memory
+            // only and let the user re-pair after restart.
+            NSLog("[luna] Keychain save failed for %@ (OSStatus %d) — token kept in memory only", account, status)
+            return .failed
         }
-        UserDefaults.standard.removeObject(forKey: fallbackPrefix + account)
-        return true
     }
 }

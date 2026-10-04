@@ -351,6 +351,10 @@ final class AppState {
             subscribed.remove(threadId)
         case .threadUnarchived:
             refreshThreads()
+        case .threadArchiveError(_, let reason):
+            // The row was removed optimistically — put it back and say why.
+            banner = "Archive failed: \(reason)"
+            refreshThreads()
         case .resultDelivered:
             refreshThreads()
         case .ignored:

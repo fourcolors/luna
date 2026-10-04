@@ -137,6 +137,7 @@ enum ServerFrame {
     case turnComplete(threadId: String)
     case threadArchived(threadId: String)
     case threadUnarchived(threadId: String)
+    case threadArchiveError(threadId: String, reason: String)
     case resultDelivered(threadId: String, label: String, preview: String)
     /// Known or unknown frame types this client doesn't render.
     case ignored(String)
@@ -191,6 +192,10 @@ private struct ToolResultFrameIn: Codable {
     let truncated: Bool
 }
 private struct ThreadIDFrameIn: Codable { let threadId: String }
+private struct ThreadArchiveErrorFrameIn: Codable {
+    let threadId: String
+    let reason: String
+}
 private struct ResultDeliveredFrameIn: Codable {
     let threadId: String
     let label: String
@@ -255,6 +260,9 @@ enum FrameCodec {
         case "thread-unarchived":
             guard let f: ThreadIDFrameIn = d(ThreadIDFrameIn.self) else { return nil }
             return .threadUnarchived(threadId: f.threadId)
+        case "thread-archive-error":
+            guard let f: ThreadArchiveErrorFrameIn = d(ThreadArchiveErrorFrameIn.self) else { return nil }
+            return .threadArchiveError(threadId: f.threadId, reason: f.reason)
         case "result-delivered":
             guard let f: ResultDeliveredFrameIn = d(ResultDeliveredFrameIn.self) else { return nil }
             return .resultDelivered(threadId: f.threadId, label: f.label, preview: f.preview)

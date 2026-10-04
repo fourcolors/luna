@@ -30,10 +30,11 @@ bun run apps/server/scripts/pair-qr.ts            # auto-detects LAN IP
 bun run apps/server/scripts/pair-qr.ts --host 100.x.y.z   # tailnet/manual
 ```
 
-then in the app: Settings → Pair this device → **Scan QR Code** (or
-**Paste Link**). The `luna://connect?host&port&token&tls` payload fills all
-four fields and connects. The link carries your `UI_WS_TOKEN` — treat it
-like the token itself.
+then in the app: Settings → **Pair** → **Scan code** (or **Paste link**).
+The `luna://connect?host&port&token&tls` payload fills all four fields and
+connects. The link carries your `UI_WS_TOKEN` — treat it like the token
+itself. The printed QR defaults to the machine's first LAN IPv4 — it is only
+dialable if the server actually binds that interface (see below).
 
 **Manual:** the chat server binds `127.0.0.1:4753` by default. For a phone to reach it:
 
@@ -41,7 +42,8 @@ like the token itself.
 - **Physical iPhone on LAN**: run the server bound to `0.0.0.0`
   (`LUNA_UI_WS_HOST=0.0.0.0`) — it is bearer-token only,
   prefer a tailnet/tunnel for anything beyond a trusted LAN — then set host
-  to your machine's LAN IP.
+  to your machine's LAN IP. The app declares `NSLocalNetworkUsageDescription`
+  for this case.
 - Token: the server's `UI_WS_TOKEN` (≥16 chars), sent as
   `Authorization: Bearer <token>` on the `/ui` upgrade.
 
@@ -54,6 +56,16 @@ xcodebuild -project Luna.xcodeproj -scheme Luna \
 
 or open `Luna.xcodeproj` in Xcode and run.
 
+## Test
+
+```sh
+xcodebuild -project Luna.xcodeproj -scheme Luna \
+  -destination 'platform=iOS Simulator,name=iPhone 17' test
+```
+
+`LunaTests` covers the `luna://connect` pairing parser and the wire codec
+(`FrameCodec`), including the archive-error path.
+
 ## Layout
 
 ```
@@ -64,7 +76,9 @@ Luna/
   AppState.swift       session store: threads, timelines, streaming, retry
   ThreadListView.swift thread list
   ChatView.swift       chat timeline + input bar
-  NewThreadView.swift  create-thread sheet (model/effort)
+  NewChatView.swift    new-chat draft screen (model/effort picker)
+  QRScannerView.swift  camera scanner for luna://connect payloads
+  Pairing.swift        luna://connect link parser
   SettingsView.swift   host/port/token/TLS
   Keychain.swift       token storage
 ```

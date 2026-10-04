@@ -8,7 +8,7 @@ description: End-to-end test the apps/ios Luna SwiftUI app in an iPhone simulato
 ## Bring up a credentialed chat server
 
 ```sh
-cd ~/repos/luna
+cd <luna checkout>   # e.g. ~/repos/luna on a Devin box
 # Seed the default account pointer once (idempotent). Requires CLAUDE_CODE_OAUTH_TOKEN in env.
 bun run apps/server/scripts/seed-default-account.ts ~/.luna/luna.db
 # Boot with a test WS token. Pin the claude binary — the SDK's auto-detect only

@@ -85,5 +85,13 @@ const url =
 console.log(`\nLuna pairing link (keep private — it carries your UI_WS_TOKEN):\n\n  ${url}\n`)
 qrcode.generate(url, { small: true })
 console.log(
-  `Scan with the iOS app (Settings → Pair this device → Scan QR Code), or paste the link via Paste Link.\n`,
+  `Scan with the iOS app (Settings → Pair → Scan code), or paste the link via Paste link.\n`,
 )
+const boundLoopback = !configured || configured === "127.0.0.1" || configured === "::1"
+if (boundLoopback && !arg("--host")) {
+  console.log(
+    `Note: the chat server is not bound to a LAN interface (LUNA_UI_WS_HOST=${configured ?? "unset"}). ` +
+      `A physical iPhone can't reach ${host} until you run the server with LUNA_UI_WS_HOST=0.0.0.0 ` +
+      `— the QR only helps a simulator on this machine.\n`,
+  )
+}
