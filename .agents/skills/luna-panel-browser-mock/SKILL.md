@@ -51,8 +51,7 @@ Two options:
   use `downloaded`/`total` — read the reducer's `applyEvent`, don't guess.
 - On macOS, computer-tool `query`/`inspect` against Chrome may fail with
   "accessibility provider request failed" — assert UI state via screenshots and
-  `zoom` regions instead (Astryx `SegmentedControlItem` renders a plain
-  `<button role="radio" data-value>`; `data-testid` lands on the button itself).
+  `zoom` regions instead.
 
 ## WS-backed panels (settings.models, settings.vault, …)
 
@@ -111,6 +110,9 @@ with `secret-status{requestId, ok:true}` to watch the panel's
 - Astryx `Selector` is a combobox: click the trigger → a popover listbox opens
   (options are plain click targets by their label text; checkmark = current
   value). The panel's `data-testid` lands on the field wrapper, not the trigger.
+- Astryx `SegmentedControlItem` renders a plain `<button role="radio"
+  data-value aria-checked={selected}>`; `data-testid` lands on the button
+  itself, and `aria-checked` is the selected-state signal to assert on.
 - Remember the reducer's `isDirty` guard: a pushed `model-routing-list` is
   IGNORED while unsaved draft edits exist — only applies after a successful
   save ack clears dirty. Sequence push-while-dirty (no-op) → save → push
