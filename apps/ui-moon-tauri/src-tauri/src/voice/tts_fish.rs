@@ -155,13 +155,24 @@ fn write_atomic_0600(path: &std::path::Path, body: &str) -> Result<(), String> {
 /// attempts before failing closed. The file is removed by [`AuthHeaderFile`]'s
 /// Drop once curl no longer needs it.
 fn write_auth_header_file(key: &str) -> Result<std::path::PathBuf, String> {
-    use std::os::unix::fs::OpenOptionsExt as _;
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    write_auth_header_file_in(&std::env::temp_dir(), key, &COUNTER)
+}
+
+/// [`write_auth_header_file`] with the directory and name counter injected,
+/// so the collision-skip branch can be tested in a private directory with a
+/// private counter, never touching files that concurrently running tests own.
+fn write_auth_header_file_in(
+    dir: &std::path::Path,
+    key: &str,
+    counter: &std::sync::atomic::AtomicU64,
+) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
     for _ in 0..100 {
-        let path = std::env::temp_dir().join(format!(
+        let path = dir.join(format!(
             "luna-fish-auth-{}-{}.hdr",
             std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
+            counter.fetch_add(1, Ordering::Relaxed)
         ));
         let mut f = match std::fs::OpenOptions::new()
             .write(true)
@@ -1027,28 +1038,37 @@ mod tests {
             !guarded.exists(),
             "guard must remove the header file on drop"
         );
-        // A stale file left by a crashed predecessor (same pid, next counter
-        // value) must not fail the write: the counter marches past it.
-        let stale = {
-            let name = path.file_name().expect("file name").to_str().expect("utf8");
-            let counter: u64 = name
-                .trim_start_matches(&format!("luna-fish-auth-{}-", std::process::id()))
-                .trim_end_matches(".hdr")
-                .parse()
-                .expect("counter parses");
-            path.with_file_name(format!(
-                "luna-fish-auth-{}-{}.hdr",
-                std::process::id(),
-                counter + 1
-            ))
-        };
-        std::fs::write(&stale, b"stale").expect("plant stale file");
-        let skipped = write_auth_header_file("sekret3").expect("write past stale");
-        assert_ne!(skipped, stale, "must not reuse the stale name");
-        assert!(skipped.exists());
-        std::fs::remove_file(&stale).expect("cleanup stale");
-        std::fs::remove_file(&skipped).expect("cleanup");
         std::fs::remove_file(&path).expect("cleanup");
+    }
+
+    #[test]
+    fn auth_header_file_marches_past_stale_names_in_private_dir() {
+        // Private dir + private counter: nothing here can collide with the
+        // header files the e2e tests create in the shared temp dir.
+        let dir = std::env::temp_dir().join(format!(
+            "luna-fish-auth-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir(&dir).expect("create private dir");
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let name = |n: u64| dir.join(format!("luna-fish-auth-{}-{n}.hdr", std::process::id()));
+        // Stale files left by a crashed predecessor at counters 0 and 1.
+        std::fs::write(name(0), b"stale0").expect("plant stale 0");
+        std::fs::write(name(1), b"stale1").expect("plant stale 1");
+        let got = write_auth_header_file_in(&dir, "sekret3", &counter).expect("write past stale");
+        assert_eq!(got, name(2), "must skip both stale names");
+        assert_eq!(
+            std::fs::read_to_string(&got).expect("read back"),
+            "Authorization: Bearer sekret3\n"
+        );
+        // Stale files are untouched, not clobbered.
+        assert_eq!(std::fs::read(name(0)).expect("stale0"), b"stale0");
+        assert_eq!(std::fs::read(name(1)).expect("stale1"), b"stale1");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // -- engine e2e over a stub HTTP server ---------------------------------

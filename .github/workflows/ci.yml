@@ -356,4 +356,4 @@ jobs:
 
       - name: Test - Moon Rust binary (HARD GATE)
         working-directory: apps/ui-moon-tauri/src-tauri
-        run: cargo test --bin luna-moon-ui
+        run: cargo test --lib --bin luna-moon-ui
