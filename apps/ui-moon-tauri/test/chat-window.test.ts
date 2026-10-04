@@ -3271,6 +3271,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const V = M().VoiceEngine
       V.available = true
       V.mode = 'auto'
+      V._ownsVoice = true   // this window started the capture
       V.micPaused = false
       return V
     }
@@ -3382,6 +3383,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const V = M().VoiceEngine
       V.available = true
       V.mode = 'auto'
+      V._ownsVoice = true   // this window started the conversation
       V.speakReplies = true
       return { invoke, V }
     }
@@ -3569,7 +3571,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       setWs(M(), { readyState: WebSocket.OPEN, send: () => {} })
       const sendSpy = spyOnSend(M()).mockImplementation(() => {})
       M().State.activeThreadId = 'th-boot'
-      M().VoiceEngine.mode = 'auto'
+      M().VoiceEngine.setMode('auto')   // a local user action: this window owns the capture
       M().VoiceEngine.micPaused = false
       windowEventHandlers['voice-transcript']({ payload: { text: 'hello from voice', final: true } })
       expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({
@@ -3644,11 +3646,13 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // Boot bound the UI (init() ran with no core → unavailable); simulate the
     // probe having landed so the cluster is usable.
     function voiceReady(opts: { modelPresent?: boolean; engine?: string; fishKey?: boolean } = {}) {
-      const invoke = vi.fn(async (cmd: string) => {
+      const invoke = vi.fn(async (cmd: string, args?: any) => {
         if (cmd === 'voice_tts_info') {
           return { engine: opts.engine || 'system', engines: ['system', 'fish'],
                    fishKeyConfigured: opts.fishKey === true }
         }
+        // Rust echoes the effective VoiceStatus (what the real command returns).
+        if (cmd === 'voice_set_mode') return { mode: args.mode, state: 'idle' }
         return null
       })
       ;(window as any).__TAURI__.core = { invoke }
@@ -3659,6 +3663,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       V.fishKeyConfigured = opts.fishKey === true
       V.mode = 'off'
       V._ptt = false
+      V._ownsVoice = false
       V._holdTimer = null
       V._holdStarted = false
       V._ignoreNextMicClick = false
@@ -3678,11 +3683,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(wave().classList.contains('active')).toBe(true)
     })
 
-    it('Scenario: mic click starts dictating (ptt mode + immediate capture), click again stops', () => {
+    it('Scenario: mic click starts dictating (ptt mode, then capture once Rust confirmed), click again stops', async () => {
       const { invoke, V } = voiceReady()
       mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'ptt' })
-      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      await vi.waitFor(() => expect(called(invoke, 'voice_ptt_down')).toBe(true))
       expect(V.mode).toBe('ptt')
       expect(V._ptt).toBe(true)
       expect(mic().classList.contains('armed')).toBe(true)
@@ -3716,11 +3721,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect((document.getElementById('voice-model-row') as HTMLElement).hidden).toBe(true)
     })
 
-    it('Scenario: a missing fish key never blocks Dictate — it only gates spoken replies', () => {
+    it('Scenario: a missing fish key never blocks Dictate — it only gates spoken replies', async () => {
       const { invoke, V } = voiceReady({ engine: 'fish', fishKey: false })
       mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
       expect(menu().classList.contains('open')).toBe(false)
-      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      await vi.waitFor(() => expect(called(invoke, 'voice_ptt_down')).toBe(true))
       expect(V.mode).toBe('ptt')
     })
 
@@ -3739,12 +3744,12 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(invoke.mock.calls.filter((c: any[]) => c[0] === 'voice_set_mode' && c[1]?.mode === 'auto').length).toBeGreaterThan(0)
     })
 
-    it('Scenario: a real tap (pointerdown/up + click) starts dictate and does not immediately stop', () => {
+    it('Scenario: a real tap (pointerdown/up + click) starts dictate and does not immediately stop', async () => {
       const { invoke, V } = voiceReady()
       mic().dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
       mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
       window.dispatchEvent(new MouseEvent('pointerup'))
-      expect(called(invoke, 'voice_ptt_down')).toBe(true)
+      await vi.waitFor(() => expect(called(invoke, 'voice_ptt_down')).toBe(true))
       expect(called(invoke, 'voice_ptt_up')).toBe(false)
       expect(V._ptt).toBe(true)
       expect(V.mode).toBe('ptt')
@@ -3917,6 +3922,108 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_tts_engine', newValue: 'fish' }))
       expect(V.ttsEngine).toBe('fish')
       expect((document.getElementById('voice-fish-section') as HTMLElement).hidden).toBe(false)
+    })
+
+    // Regression (review F1): the mode preference is mirrored across windows,
+    // but the Rust transcript stream is app-wide. A window that did not start
+    // the capture must not auto-send the utterance into its own thread.
+    it('Scenario: a mode mirrored from another window never consumes transcripts or speaks replies', () => {
+      const { V } = voiceReady()
+      const sendSpy = spyOnSend(M()).mockImplementation(() => {})
+      window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_mode', newValue: 'ptt' }))
+      expect(V.mode).toBe('ptt')
+      const input = document.getElementById('message-input') as HTMLTextAreaElement
+      input.value = ''
+      V.handleTranscript('deploy it')
+      expect(input.value).toBe('')
+      expect(sendSpy).not.toHaveBeenCalled()
+      expect(document.querySelectorAll('#chat-messages .msg.user').length).toBe(0)
+      expect(V.shouldSpeak()).toBe(false)
+      // A local user action takes ownership back.
+      V.setMode('ptt')
+      expect(V.shouldSpeak()).toBe(true)
+    })
+
+    it('Scenario: another window taking over the mode releases this window ownership', () => {
+      const { V } = voiceReady()
+      V.setMode('auto')
+      expect(V._ownsVoice).toBe(true)
+      window.dispatchEvent(new StorageEvent('storage', { key: 'luna_voice_mode', newValue: 'ptt' }))
+      expect(V._ownsVoice).toBe(false)
+    })
+
+    // Regression (review F2): set_mode and ptt_down are separate async IPC
+    // commands; ptt_down sent before the pipeline exists is dropped by Rust.
+    it('Scenario: the first Dictate tap sends voice_ptt_down only AFTER voice_set_mode resolved', async () => {
+      const { V } = voiceReady()
+      let release: () => void = () => {}
+      const order: string[] = []
+      const invoke = vi.fn((cmd: string, args?: any) => {
+        order.push(cmd)
+        if (cmd === 'voice_set_mode') {
+          return new Promise((res) => { release = () => { order.push('set_mode:resolved'); res({ mode: args.mode, state: 'idle' }) } })
+        }
+        return Promise.resolve(null)
+      })
+      ;(window as any).__TAURI__.core = { invoke }
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+      expect(called(invoke, 'voice_ptt_down')).toBe(false)
+      expect(V._ptt).toBe(false)
+      release()
+      await vi.waitFor(() => expect(called(invoke, 'voice_ptt_down')).toBe(true))
+      expect(order.indexOf('set_mode:resolved')).toBeLessThan(order.indexOf('voice_ptt_down'))
+      expect(V._ptt).toBe(true)
+    })
+
+    it('Scenario: Dictate does not capture when Rust refuses ptt (effective mode off)', async () => {
+      const { V } = voiceReady()
+      const invoke = vi.fn(async (cmd: string) => (cmd === 'voice_set_mode' ? { mode: 'off', state: 'off' } : null))
+      ;(window as any).__TAURI__.core = { invoke }
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(V.micPaused).toBe(true))
+      expect(called(invoke, 'voice_ptt_down')).toBe(false)
+      expect(V._ptt).toBe(false)
+    })
+
+    // Regression (review F3): _ptt must not outlive the ptt pipeline.
+    it('Scenario: switching to Voice (auto) mid-dictation clears the capture flag and the armed mic', async () => {
+      const { invoke, V } = voiceReady()
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(V._ptt).toBe(true))
+      wave().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(V.mode).toBe('auto')
+      expect(V._ptt).toBe(false)
+      expect(mic().classList.contains('armed')).toBe(false)
+      expect(mic().title).toBe('Dictate')
+      expect(wave().classList.contains('active')).toBe(true)
+      // The next mic tap starts a fresh dictation instead of a no-op ptt_up.
+      invoke.mockClear()
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      expect(called(invoke, 'voice_ptt_up')).toBe(false)
+      expect(invoke).toHaveBeenCalledWith('voice_set_mode', { mode: 'ptt' })
+    })
+
+    it('Scenario: a voice error or an errored/off pipeline state clears the dictate capture flag', async () => {
+      const { V } = voiceReady()
+      mic().dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await vi.waitFor(() => expect(V._ptt).toBe(true))
+      expect(mic().title).toBe('Stop dictating')
+      V.onVoiceError({ message: 'no input device' })
+      expect(V._ptt).toBe(false)
+      expect(mic().title).not.toBe('Stop dictating')
+
+      V._ptt = true
+      V.onStateEvent({ state: 'error', mode: 'ptt' })
+      expect(V._ptt).toBe(false)
+
+      V._ptt = true
+      V.onStateEvent({ state: 'off', mode: 'off' })
+      expect(V._ptt).toBe(false)
+      // A healthy listening state leaves an active capture alone.
+      V._ptt = true
+      V.onStateEvent({ state: 'listening', mode: 'ptt', level: 0.2 })
+      expect(V._ptt).toBe(true)
     })
 
     it('Scenario: "Voice settings" opens the settings.voice widget and closes the menu', () => {

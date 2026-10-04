@@ -431,6 +431,12 @@ export function createChatEngine(ctx: ChatEngineCtx) {
                            // missing); fed by voice-state events + the
                            // VoiceStatus returned from voice_set_mode
     _ptt: false,
+    // THIS window started the live capture (a local user action). The mode
+    // preference is mirrored across windows via storage events, but the Rust
+    // voice-transcript / spoken-reply stream is app-wide - only the owning
+    // window may consume a transcript or speak replies, or one utterance
+    // would be auto-sent into every open thread.
+    _ownsVoice: false,
     _holdTimer: null,          // delayed pointerdown → hold-to-talk
     _holdStarted: false,       // capture was started by a hold, not a tap
     _ignoreNextMicClick: false, // swallow the click that follows a hold
@@ -565,18 +571,40 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       await this._refreshTtsInfo();
     },
 
+    // Returns the voice_set_mode promise (resolves the effective VoiceStatus,
+    // or null off-Tauri / on failure) so a caller can order a follow-up
+    // command after Rust has actually built the pipeline.
     setMode(mode) {
       const m = this.MODES.includes(mode) ? mode : 'off';
       this.mode = m;
       this.micPaused = false;
+      // setMode is only reached from local user actions (mic, waveform, menu):
+      // this window now owns the capture. 'off' releases it.
+      this._ownsVoice = m !== 'off';
+      if (m !== 'ptt') this._clearCapture();
       localStorage.setItem('luna_voice_mode', m);
+      let result = Promise.resolve(null);
       if (this.available) {
-        this.invoke('voice_set_mode', { mode: m })
-          .then((st) => this._applyModeResult(m, st));
+        result = this.invoke('voice_set_mode', { mode: m })
+          .then((st) => { this._applyModeResult(m, st); return st; });
       }
       if (m === 'off') this.stopSpeaking();
       this.paintMic();
       this.paintVoiceMenu();
+      return result;
+    },
+
+    // Drop every dictate-capture flag. Called whenever the pipeline leaves
+    // ptt (mode change, voice error, Rust off/error state) so the mic chip
+    // never claims a capture the pipeline no longer has.
+    _clearCapture() {
+      this._ptt = false;
+      this._holdStarted = false;
+      this._ignoreNextMicClick = false;
+      if (this._holdTimer) {
+        clearTimeout(this._holdTimer);
+        this._holdTimer = null;
+      }
     },
 
     // ── UI wiring (mic cluster + the voice quick-setup menu) ────────────────
@@ -678,8 +706,13 @@ export function createChatEngine(ctx: ChatEngineCtx) {
         this.openVoiceMenu();
         return;
       }
-      this.setMode('ptt');
-      this.pttDown();
+      // Start the capture only after Rust confirms ptt: set_mode and ptt_down
+      // are separate async IPC commands with no ordering guarantee, and a
+      // ptt_down that lands before the pipeline's control channel exists is
+      // silently dropped (the chip would say "Stop dictating" over silence).
+      this.setMode('ptt').then((st) => {
+        if (st && st.mode === 'ptt' && this.mode === 'ptt') this.pttDown();
+      });
     },
 
     // Voice (ChatGPT's waveform): one click starts/stops the hands-free
@@ -708,12 +741,14 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     pttDown() {
       if (!this.available || this.mode !== 'ptt' || this._ptt) return;
       this._ptt = true;
+      this.paintMic();
       this.invoke('voice_ptt_down');
     },
 
     pttUp() {
       if (!this._ptt) return;
       this._ptt = false;
+      this.paintMic();
       this.invoke('voice_ptt_up');
     },
 
@@ -902,6 +937,11 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       if (m !== 'off' && m !== 'ptt' && m !== 'auto') return;
       this.mode = m;
       this.micPaused = false;
+      // Mirror only: another window (or settings.voice) changed the shared
+      // preference, so this window must NOT consume transcripts or speak
+      // replies for a capture it did not start.
+      this._ownsVoice = false;
+      if (m !== 'ptt') this._clearCapture();
       this.paintMic();
       this.paintVoiceMenu();
     },
@@ -921,7 +961,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
       // (settings toggle) must never auto-send. The Rust side suppresses
       // transcripts whose inference a Stop rode through, but an event already
       // over the IPC bridge still arrives here.
-      if (this.mode === 'off' || this.micPaused) return;
+      if (this.mode === 'off' || this.micPaused || !this._ownsVoice) return;
       const t = String(text == null ? '' : text).trim();
       if (!t) return;
       const input = DOM.messageInput;
@@ -938,7 +978,7 @@ export function createChatEngine(ctx: ChatEngineCtx) {
 
     // ── Spoken replies (delta accumulator → sentences → speak_text) ─────
     shouldSpeak() {
-      return this.available && this.mode !== 'off' && this.speakReplies;
+      return this.available && this.mode !== 'off' && this._ownsVoice && this.speakReplies;
     },
 
     onAssistantDelta(turnId, cumText) {
@@ -1012,6 +1052,12 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     onStateEvent(p) {
       const state = (p && typeof p.state === 'string') ? p.state : '';
       this.state = state || 'off';
+      // The pipeline has no capture in these states: drop the JS capture flag
+      // so the mic chip cannot stay stuck on "Stop dictating".
+      if ((state === 'error' || state === 'off') && this._ptt) {
+        this._clearCapture();
+        this.paintMic();
+      }
       if (p && this.MODES.includes(p.mode)) this.rustMode = p.mode;
       const visual = (state && state !== 'off') ? state : '';
       const w = DOM.moonWrapper;
@@ -1034,6 +1080,8 @@ export function createChatEngine(ctx: ChatEngineCtx) {
     onVoiceError(p) {
       const msg = (p && typeof p.message === 'string' && p.message) ? p.message : 'Unknown voice error';
       Logger.warn('Voice error:', msg);
+      this._clearCapture();
+      this.paintMic();
       // Non-blocking transcript banner (the chat keeps working).
       try {
         ChatState.appendBanner(`⚠️ Voice: ${msg}`);
