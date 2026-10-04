@@ -623,15 +623,24 @@ const makeChatService = Effect.gen(function* () {
           // so a closeThread/reap landing in that window makes both offers
           // no-ops: the user's turn is persisted but never reaches the SDK,
           // and the symptom is "Luna just never replied".
-          const acceptedPending = yield* Queue.offer(entry.pendingTurns, {
-            userMessageId: messageId,
-            userText: text,
-          })
-          const acceptedInbox = yield* Queue.offer(entry.inbox, {
-            payload: userPayload,
-            memoryContext: recalled,
-            userMessageId: messageId,
-          })
+          // Under pendingTurnsLock so the recall path's seed bookkeeping
+          // (clear -> re-offer in the thread lifecycle) never observes the
+          // pair half-offered or interleaves its re-offer between them.
+          const [acceptedPending, acceptedInbox] =
+            yield* entry.pendingTurnsLock.withPermits(1)(
+              Effect.gen(function* () {
+                const pendingOk = yield* Queue.offer(entry.pendingTurns, {
+                  userMessageId: messageId,
+                  userText: text,
+                })
+                const inboxOk = yield* Queue.offer(entry.inbox, {
+                  payload: userPayload,
+                  memoryContext: recalled,
+                  userMessageId: messageId,
+                })
+                return [pendingOk, inboxOk] as const
+              }),
+            )
           if (!acceptedPending || !acceptedInbox) {
             yield* Effect.logWarning(
               `[chat] send(${threadId}): thread queue closed mid-send, turn ` +
