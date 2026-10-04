@@ -76,6 +76,11 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
   // BOTH a remote drop and our own rfb.disconnect() call, and unmount can
   // race either - the bridge close must run exactly once.
   const bridgeClosedRef = useRef(true)
+  // Connect generation: bumped by every teardown() (Disconnect, unmount, the
+  // start of a new connect). connect() captures it and re-checks after each
+  // await, so a dial or lazy import that resolves AFTER the user cancelled or
+  // reconnected can neither touch state nor resurrect a stale session.
+  const genRef = useRef(0)
 
   const closeBridge = useCallback(() => {
     if (bridgeClosedRef.current) return
@@ -88,6 +93,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
   }, [ctx])
 
   const teardown = useCallback(() => {
+    genRef.current += 1
     const rfb = rfbRef.current
     rfbRef.current = null
     try {
@@ -114,6 +120,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
         return
       }
       teardown()
+      const gen = genRef.current
       setConnState("connecting")
       setStatus(null)
       setNeedCreds(false)
@@ -129,10 +136,17 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
         }
         try {
           const info = (await ctx?.invoke("vnc_connect", { host: h, port: p })) as VncBridgeInfo
+          if (gen !== genRef.current) {
+            // Cancelled (or superseded) while dialing: the bridge Rust just
+            // opened belongs to nobody, so abort it and leave state alone.
+            ctx?.invoke("vnc_disconnect", { id: info.id }).catch(() => {})
+            return
+          }
           bridgeIdRef.current = info.id
           bridgeClosedRef.current = false
           url = info.url
         } catch (e) {
+          if (gen !== genRef.current) return
           setStatus(e instanceof Error ? e.message : String(e))
           setConnState("error")
           return
@@ -152,22 +166,32 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
         // connects, so every other panel type on this bundle never pays it.
         RfbCtor = (await import("@novnc/novnc")).default
       } catch (e) {
+        if (gen !== genRef.current) return
         setStatus("Viewer failed to load.")
         setConnState("error")
         closeBridge()
         return
       }
+      // Cancelled during the lazy import: teardown() already closed our bridge
+      // (bridgeClosedRef was false), and a newer connect may own the refs now.
+      if (gen !== genRef.current) return
       try {
         const rfb = new RfbCtor(target, url, {
           shared: true,
           credentials: passwordStr ? { password: passwordStr } : {},
         })
         rfb.scaleViewport = true
+        // Every listener ignores events from an RFB that is no longer current:
+        // noVNC fires 'disconnect' asynchronously after rfb.disconnect(), so
+        // an old instance would otherwise null the new rfbRef / abort the new
+        // bridge when the user reconnects quickly.
         rfb.addEventListener("connect", () => {
+          if (rfbRef.current !== rfb) return
           setConnState("connected")
           target.querySelector("canvas")?.focus()
         })
         rfb.addEventListener("disconnect", (e) => {
+          if (rfbRef.current !== rfb) return
           const clean = (e as CustomEvent<{ clean: boolean }>).detail?.clean
           rfbRef.current = null
           closeBridge()
@@ -181,15 +205,18 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
           }
         })
         rfb.addEventListener("credentialsrequired", (e) => {
+          if (rfbRef.current !== rfb) return
           const types = (e as CustomEvent<{ types: string[] }>).detail?.types ?? []
           setNeedUser(types.includes("username"))
           setNeedCreds(true)
         })
         rfb.addEventListener("securityfailure", (e) => {
+          if (rfbRef.current !== rfb) return
           const reason = (e as CustomEvent<{ reason?: string }>).detail?.reason
           setStatus(reason ? `Authentication failed: ${reason}` : "Authentication failed")
         })
         rfb.addEventListener("desktopname", (e) => {
+          if (rfbRef.current !== rfb) return
           setDesktopName((e as CustomEvent<{ name: string }>).detail?.name ?? "")
         })
         rfbRef.current = rfb

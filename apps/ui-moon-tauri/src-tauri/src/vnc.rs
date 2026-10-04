@@ -31,6 +31,8 @@ const MAX_BRIDGES: usize = 16;
 /// How long an unclaimed listener waits for its one WS client before giving
 /// up (the frontend dials within milliseconds of getting the URL).
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound on the TCP dial to the VNC server.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 /// TCP read chunk → one WS binary frame.
 const PIPE_BUF: usize = 64 * 1024;
 
@@ -105,6 +107,19 @@ fn validate_host(host: &str) -> Result<&str, String> {
     Ok(host)
 }
 
+/// Dial `host:port`, giving up after `limit` with a human-readable error.
+async fn dial_within(host: &str, port: u16, limit: Duration) -> Result<TcpStream, String> {
+    match tokio::time::timeout(limit, TcpStream::connect((host, port))).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(e)) => Err(format!("can't reach {host}:{port} - {e}")),
+        Err(_) => Err(format!("can't reach {host}:{port} - timed out")),
+    }
+}
+
+async fn dial(host: &str, port: u16) -> Result<TcpStream, String> {
+    dial_within(host, port, DIAL_TIMEOUT).await
+}
+
 #[tauri::command]
 pub(crate) async fn vnc_connect(
     app: AppHandle,
@@ -122,9 +137,9 @@ pub(crate) async fn vnc_connect(
     // Dial the VNC server first: a refused/unreachable target surfaces the
     // real error right here instead of handing back a ws URL that only
     // fails inside noVNC's own handshake.
-    let vnc = TcpStream::connect((host.as_str(), port))
-        .await
-        .map_err(|e| format!("can't reach {host}:{port} — {e}"))?;
+    // Bounded: the OS default connect timeout is ~75s on macOS, long enough
+    // for a panel to sit on "Connecting" far past the point a user gives up.
+    let vnc = dial(&host, port).await?;
     let _ = vnc.set_nodelay(true);
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -249,6 +264,19 @@ mod tests {
         assert!(validate_host("ws://evil/x").is_err());
         assert!(validate_host("user@host").is_err());
         assert!(validate_host("a b").is_err());
+    }
+
+    /// A black-holed target must fail within the bound, not the OS's ~75s.
+    /// 10.255.255.1 is unroutable on most networks; if the sandbox rejects it
+    /// instantly instead, the error is still "can't reach", so accept either.
+    #[tokio::test]
+    async fn dial_gives_up_within_the_bound() {
+        let started = std::time::Instant::now();
+        let err = dial_within("10.255.255.1", 5900, Duration::from_millis(300))
+            .await
+            .expect_err("dial should not succeed");
+        assert!(err.starts_with("can't reach 10.255.255.1:5900 - "), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// The pipe is the whole reason the bridge exists: prove bytes flow
