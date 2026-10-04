@@ -461,6 +461,15 @@ fn worker_main(
         if reap {
             if let Some(p) = pump.take() {
                 let _ = p.join.join();
+                // A panicking pump skips its own take-and-wait of curl, so
+                // the child would linger as a zombie; dropping a std `Child`
+                // does not wait. On a normal report the slot is already empty.
+                // Not `stop_pump`: that flushes the sink and would cut off
+                // audio still playing after a clean finish.
+                if let Some(mut c) = lock_unpoisoned(&p.child_slot).take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
             }
         }
 
@@ -1109,6 +1118,92 @@ mod tests {
             .map(|(_, p)| p["message"].as_str().unwrap_or("").to_string())
             .unwrap_or_default();
         assert!(msg.contains("invalid api key"), "expected api error text, got: {msg}");
+        drop(tts);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn pump_panic_surfaces_voice_error() {
+        // A sink whose write() panics kills the pump thread without a report.
+        // The worker must surface a voice-error, stop claiming to speak, and
+        // reap the curl child instead of leaving a zombie.
+        let pcm: Vec<i16> = (0..4000).map(|i| ((i % 100) as i16 - 50) * 300).collect();
+        let wav = wav_bytes(16000, 1, &pcm);
+        let (port, server) = stub_http(vec![http_ok_wav(&wav)]);
+        let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
+        struct TestSink(Arc<Mutex<Vec<(String, serde_json::Value)>>>);
+        impl EventSink for TestSink {
+            fn emit(&self, event: &str, payload: serde_json::Value) {
+                self.0.lock().unwrap().push((event.to_string(), payload));
+            }
+        }
+        struct PanicSink;
+        impl AudioSink for PanicSink {
+            fn write(&mut self, _s: &[f32]) {
+                panic!("simulated sink failure");
+            }
+            fn rate(&self) -> u32 {
+                16000
+            }
+            fn has_pending(&self) -> bool {
+                false
+            }
+            fn flush(&mut self) {}
+        }
+        let es = events.clone();
+        let mut tts = FishTts::with_sink_factory(
+            test_config(format!("http://127.0.0.1:{port}"), Some("k")),
+            Some(Arc::new(TestSink(es))),
+            Box::new(|| Ok(Box::new(PanicSink))),
+        );
+        tts.speak("this will panic the pump", false);
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(10) {
+            if events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(e, _)| e == "voice-error")
+            {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let msg = events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(e, _)| e == "voice-error")
+            .map(|(_, p)| p["message"].as_str().unwrap_or("").to_string())
+            .unwrap_or_default();
+        assert!(
+            msg.contains("died unexpectedly"),
+            "expected pump-died error, got: {msg:?}"
+        );
+        // The worker clears `speaking` on the same loop pass as the reap.
+        let t1 = std::time::Instant::now();
+        while tts.is_speaking() && t1.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!tts.is_speaking(), "engine must not stay speaking after a pump panic");
+        // No zombie curl child of this process (state Z) may remain.
+        #[cfg(unix)]
+        {
+            let me = std::process::id().to_string();
+            let out = std::process::Command::new("ps")
+                .args(["-A", "-o", "pid=,ppid=,stat="])
+                .output()
+                .expect("ps");
+            let zombies: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| {
+                    let f: Vec<&str> = l.split_whitespace().collect();
+                    f.len() >= 3 && f[1] == me && f[2].starts_with('Z')
+                })
+                .map(|l| l.trim().to_string())
+                .collect();
+            assert!(zombies.is_empty(), "zombie children left: {zombies:?}");
+        }
         drop(tts);
         let _ = server.join();
     }
