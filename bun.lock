@@ -80,7 +80,7 @@
     },
     "apps/ui-moon-tauri": {
       "name": "@luna/ui-moon-tauri",
-      "version": "0.0.89",
+      "version": "0.0.90",
       "dependencies": {
         "@astryxdesign/core": "0.1.8",
         "@fontsource/albert-sans": "5.3.0",
