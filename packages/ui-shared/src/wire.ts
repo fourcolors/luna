@@ -743,6 +743,9 @@ export interface ForkProposalWire {
   readonly status: ForkProposalStatus
   readonly createdAt: number
   readonly childThreadId?: string
+  /** Agent-created chat (create_thread): the client viewing the parent
+   *  thread switches to `childThreadId` once accepted. */
+  readonly autoOpen?: boolean
 }
 export interface ForkProposalSetFrame {
   readonly type: "fork-proposal-set"

@@ -28,6 +28,7 @@
 // @ts-nocheck
 
 import { createQueueTray } from './queueTray'
+import { createForkTray } from './forkTray'
 
 export interface FramesCtx {
   readonly Logger: {
@@ -63,6 +64,42 @@ export function createFrames(ctx: FramesCtx) {
     getActiveThreadId: () => State.activeThreadId,
     send: (f) => WebSocketEngine.send(f),
   });
+
+  // New-chat suggestions (fork_thread) above the composer, and the switch to
+  // a chat the agent created (create_thread). See src/chat/forkTray.ts.
+  const ForkTray = createForkTray({
+    get host() { return document.getElementById('fork-tray'); },
+    getActiveThreadId: () => State.activeThreadId,
+    send: (f) => WebSocketEngine.send(f),
+    openThread: (threadId, title, reason) => {
+      const now = Date.now();
+      ThreadDrawerEngine.upsertThread({ id: threadId, title, createdAt: now, lastMessageAt: now });
+      // A window pinned to one thread never changes thread: open the new
+      // chat in its own window instead (only on an explicit click).
+      if (State.pinnedThread) {
+        if (reason === 'auto') return false;
+        // Resolves the new window's label, or null on failure.
+        return Promise.resolve(ThreadDrawerEngine.openInNewWindow(threadId))
+          .then((label) => !!label, () => false);
+      }
+      // Never move a draft. A switch carries the composer text to the new
+      // chat, so with text in the box (or, for an agent-created chat, when
+      // this window is not focused) decline and let the tray show Open.
+      const input = document.getElementById('message-input');
+      const attachments = (window as unknown as { Attachments?: { hasAny?: () => boolean } }).Attachments;
+      const hasDraft =
+        !!(input && typeof input.value === 'string' && input.value.trim()) ||
+        !!(attachments && typeof attachments.hasAny === 'function' && attachments.hasAny());
+      if (reason !== 'open' && hasDraft) return false;
+      if (reason === 'auto' && typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+      ThreadDrawerEngine.onRowClick(threadId);
+      ForkTray.render();
+      return true;
+    },
+  });
+
+  MoonFrames.register('fork-proposal-set', (frame) => ForkTray.applySet(frame));
+  MoonFrames.register('fork-proposal-update', (frame) => ForkTray.applyUpdate(frame));
 
   // CHAT frame set only (Phase 4): skill-*/connector-*/vault-*/
   // register-op-token-status ride the settings PANELS' own connections, and
@@ -507,6 +544,7 @@ export function createFrames(ctx: FramesCtx) {
     // re-sends `queue-update` right after it when anything is waiting. The
     // redraw also swaps the tray to the newly active thread on a switch.
     QueueTray.clearThread(frame && frame.threadId);
+    ForkTray.render();
     // Always refresh the per-thread cache — even a late snapshot for a
     // non-active thread keeps switch-back instant (and correct after a
     // background turn finished while we were elsewhere).
