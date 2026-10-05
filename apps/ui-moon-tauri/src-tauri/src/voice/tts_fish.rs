@@ -146,6 +146,63 @@ fn write_atomic_0600(path: &std::path::Path, body: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Write `Authorization: Bearer <key>` to a 0600 temp file and return its
+/// path, so curl can take the bearer key via `-H @file` instead of on its
+/// argv — argv is visible to every same-user process in `ps` for the whole
+/// request lifetime. `create_new` never clobbers: on a name collision (a
+/// crashed predecessor can leave a stale file behind, and pids get reused)
+/// the counter marches forward until an unused name is found, bounded at 100
+/// attempts before failing closed. The file is removed by [`AuthHeaderFile`]'s
+/// Drop once curl no longer needs it.
+fn write_auth_header_file(key: &str) -> Result<std::path::PathBuf, String> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    write_auth_header_file_in(&std::env::temp_dir(), key, &COUNTER)
+}
+
+/// [`write_auth_header_file`] with the directory and name counter injected,
+/// so the collision-skip branch can be tested in a private directory with a
+/// private counter, never touching files that concurrently running tests own.
+fn write_auth_header_file_in(
+    dir: &std::path::Path,
+    key: &str,
+    counter: &std::sync::atomic::AtomicU64,
+) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    for _ in 0..100 {
+        let path = dir.join(format!(
+            "luna-fish-auth-{}-{}.hdr",
+            std::process::id(),
+            counter.fetch_add(1, Ordering::Relaxed)
+        ));
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("failed to write fish auth header file: {e}")),
+        };
+        if let Err(e) = f.write_all(format!("Authorization: Bearer {key}\n").as_bytes()) {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("failed to write fish auth header file: {e}"));
+        }
+        return Ok(path);
+    }
+    Err("failed to write fish auth header file: too many name collisions".to_string())
+}
+
+/// Owns the temp file from [`write_auth_header_file`]; removes it on drop.
+/// The pump thread holds one until the curl child is reaped; `fetch_models`
+/// drops its guard right after `.output()` returns.
+struct AuthHeaderFile(std::path::PathBuf);
+impl Drop for AuthHeaderFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 /// Persist the key (0600); empty/blank deletes the file.
 pub fn persist_fish_key(key: &str) -> Result<(), String> {
     let path = fish_key_path()?;
@@ -516,6 +573,13 @@ fn spawn_pump(
         "Fish voice needs an API key — add it under Settings → Voice".to_string()
     })?;
 
+    // The bearer key must not ride the curl argv (visible in `ps` to any
+    // same-user process for the whole request): hand it over in a 0600
+    // header file instead. The pump thread removes the file once curl is
+    // reaped; the Drop guard also covers every early-return path below.
+    let auth_header = AuthHeaderFile(write_auth_header_file(&key)?);
+    let auth_arg = format!("@{}", auth_header.0.display());
+
     // Mono PCM16 at the sink rate when the API supports it directly
     // (8/16/24/32/44.1k), else nearest supported rate + local resample.
     let sink_rate = lock_unpoisoned(&sink).rate();
@@ -542,7 +606,7 @@ fn spawn_pump(
             "POST",
             &format!("{}/v1/tts", cfg.api_base),
             "-H",
-            &format!("Authorization: Bearer {key}"),
+            &auth_arg,
             "-H",
             "Content-Type: application/json",
             "-H",
@@ -579,6 +643,10 @@ fn spawn_pump(
             if let Some(mut c) = lock_unpoisoned(&slot).take() {
                 let _ = c.wait();
             }
+            // curl read the header file at startup and has now exited; remove
+            // it so the key is not left on disk. (On thread-spawn failure the
+            // closure is dropped and the guard removes it the same way.)
+            drop(auth_header);
             let _ = report_tx.send(result);
         })
         .map_err(|e| {
@@ -732,6 +800,17 @@ fn fetch_models(cfg: &FishConfig, key: &str, own: bool) -> Vec<Voice> {
     } else {
         format!("{}/model?sort_by=task_count&page_size=40", cfg.api_base)
     };
+    // Bearer key via a 0600 header file, never on the curl argv (see
+    // spawn_pump). curl has exited by the time `.output()` returns, so the
+    // guard removes the file immediately after.
+    let auth_header = AuthHeaderFile(match write_auth_header_file(key) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("voice/tts-fish: {e}");
+            return Vec::new();
+        }
+    });
+    let auth_arg = format!("@{}", auth_header.0.display());
     let out = Command::new("curl")
         .args([
             "-sS",
@@ -739,7 +818,7 @@ fn fetch_models(cfg: &FishConfig, key: &str, own: bool) -> Vec<Voice> {
             "GET",
             &url,
             "-H",
-            &format!("Authorization: Bearer {key}"),
+            &auth_arg,
             "--max-time",
             &LIST_CURL_MAX_TIME_SECS.to_string(),
         ])
@@ -747,6 +826,7 @@ fn fetch_models(cfg: &FishConfig, key: &str, own: bool) -> Vec<Voice> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output();
+    drop(auth_header);
     let out = match out {
         Ok(o) if o.status.success() => o.stdout,
         Ok(o) => {
@@ -951,27 +1031,113 @@ mod tests {
         assert!(parse_model_list(b"{}").is_empty());
     }
 
+    // -- auth header file ----------------------------------------------------
+
+    #[test]
+    fn auth_header_file_holds_bearer_key_0600_and_cleans_up() {
+        let path = write_auth_header_file("sekret").expect("write header file");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "Authorization: Bearer sekret\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path)
+                .expect("metadata")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "header file must not be group/other readable");
+        }
+        // The Drop guard removes the file once curl no longer needs it.
+        let guarded = {
+            let guard = AuthHeaderFile(write_auth_header_file("sekret2").expect("write"));
+            guard.0.clone()
+        };
+        assert!(
+            !guarded.exists(),
+            "guard must remove the header file on drop"
+        );
+        std::fs::remove_file(&path).expect("cleanup");
+    }
+
+    #[test]
+    fn auth_header_file_marches_past_stale_names_in_private_dir() {
+        // Private dir + private counter: nothing here can collide with the
+        // header files the e2e tests create in the shared temp dir.
+        let dir = std::env::temp_dir().join(format!(
+            "luna-fish-auth-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir(&dir).expect("create private dir");
+        let counter = std::sync::atomic::AtomicU64::new(0);
+        let name = |n: u64| dir.join(format!("luna-fish-auth-{}-{n}.hdr", std::process::id()));
+        // Stale files left by a crashed predecessor at counters 0 and 1.
+        std::fs::write(name(0), b"stale0").expect("plant stale 0");
+        std::fs::write(name(1), b"stale1").expect("plant stale 1");
+        let got = write_auth_header_file_in(&dir, "sekret3", &counter).expect("write past stale");
+        assert_eq!(got, name(2), "must skip both stale names");
+        assert_eq!(
+            std::fs::read_to_string(&got).expect("read back"),
+            "Authorization: Bearer sekret3\n"
+        );
+        // Stale files are untouched, not clobbered.
+        assert_eq!(std::fs::read(name(0)).expect("stale0"), b"stale0");
+        assert_eq!(std::fs::read(name(1)).expect("stale1"), b"stale1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // -- engine e2e over a stub HTTP server ---------------------------------
 
     /// Serve `n` HTTP requests on 127.0.0.1, each returning `response`;
-    /// returns the bound port. Bodies are bytes — a WAV or a JSON error.
-    fn stub_http(responses: Vec<Vec<u8>>) -> (u16, std::thread::JoinHandle<()>) {
+    /// returns the bound port, the server thread, and the captured request
+    /// heads (headers only, up to the `\r\n\r\n` terminator) so tests can
+    /// assert on the headers curl actually transmitted. Bodies are bytes —
+    /// a WAV or a JSON error.
+    fn stub_http(
+        responses: Vec<Vec<u8>>,
+    ) -> (
+        u16,
+        std::thread::JoinHandle<()>,
+        Arc<Mutex<Vec<Vec<u8>>>>,
+    ) {
         use std::io::Read as _;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let captured: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let heads = captured.clone();
         let handle = std::thread::spawn(move || {
             for response in responses {
                 let Ok((mut conn, _)) = listener.accept() else {
                     return;
                 };
-                let mut req = [0u8; 8192];
-                // Read the request headers (body may follow; curl writes it
-                // in the same segment for our small JSON payloads).
-                let _ = conn.read(&mut req);
+                // Capture the request head: read until the end of the
+                // headers so header assertions are not at the mercy of a
+                // single short read.
+                let mut head = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let Ok(n) = conn.read(&mut chunk) else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    head.extend_from_slice(&chunk[..n]);
+                    if head.windows(4).any(|w| w == b"\r\n\r\n") || head.len() > 65536 {
+                        break;
+                    }
+                }
+                heads.lock().unwrap().push(head);
                 let _ = conn.write_all(&response);
             }
         });
-        (port, handle)
+        (port, handle, captured)
     }
 
     fn http_ok_wav(wav: &[u8]) -> Vec<u8> {
@@ -999,7 +1165,7 @@ mod tests {
         // 0.25s of 16k samples through a real curl→stub→parse→sink path.
         let pcm: Vec<i16> = (0..4000).map(|i| ((i % 100) as i16 - 50) * 300).collect();
         let wav = wav_bytes(16000, 1, &pcm);
-        let (port, server) = stub_http(vec![http_ok_wav(&wav)]);
+        let (port, server, captured) = stub_http(vec![http_ok_wav(&wav)]);
         let cfg = test_config(format!("http://127.0.0.1:{port}"), Some("k"));
 
         let collected: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1038,6 +1204,15 @@ mod tests {
         assert!((got[0] - expect0).abs() < 1e-6);
         drop(tts);
         let _ = server.join();
+        // The Bearer key must reach the server as a transmitted header — the
+        // point of the -H @file change. Fail loudly if curl omits it.
+        let heads = captured.lock().unwrap();
+        assert_eq!(heads.len(), 1, "stub must see exactly one request");
+        let head = String::from_utf8_lossy(&heads[0]);
+        assert!(
+            head.contains("Authorization: Bearer k\r\n"),
+            "curl must transmit the bearer header, got:\n{head}"
+        );
     }
 
     #[test]
@@ -1088,7 +1263,7 @@ mod tests {
         .into_iter()
         .chain(body)
         .collect();
-        let (port, server) = stub_http(vec![resp]);
+        let (port, server, captured) = stub_http(vec![resp]);
         let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
         struct TestSink(Arc<Mutex<Vec<(String, serde_json::Value)>>>);
         impl EventSink for TestSink {
@@ -1124,6 +1299,14 @@ mod tests {
         assert!(msg.contains("invalid api key"), "expected api error text, got: {msg}");
         drop(tts);
         let _ = server.join();
+        // The error-path request must also carry the bearer header.
+        let heads = captured.lock().unwrap();
+        assert_eq!(heads.len(), 1, "stub must see exactly one request");
+        let head = String::from_utf8_lossy(&heads[0]);
+        assert!(
+            head.contains("Authorization: Bearer bad\r\n"),
+            "curl must transmit the bearer header, got:\n{head}"
+        );
     }
 
     #[test]
