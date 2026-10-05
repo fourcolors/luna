@@ -334,6 +334,29 @@ describe("model-routing server routing", () => {
     client.close()
   })
 
+  it("classifier engine: a save passes it through, and an older client's save omits it", async () => {
+    const { svc, saves } = makeFakeModelRoutingService()
+    rig = await startModelRoutingRig(svc)
+    const client = await openClient(rig.url)
+    await client.waitFor((f) => f.type === "model-routing-list")
+
+    client.send({
+      type: "model-routing-save",
+      requestId: "req-ce-1",
+      providers: SEED_PROVIDERS,
+      roleBindings: SEED_ROLE_BINDINGS,
+      classifierEngine: { engine: "jev" },
+    })
+    await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-ce-1")
+    expect(saves[0]).toMatchObject({ classifierEngine: { engine: "jev" } })
+
+    // An older client never sends the field: the server must not invent one (the service keeps the stored choice).
+    client.send({ type: "model-routing-save", requestId: "req-ce-2", providers: SEED_PROVIDERS, roleBindings: SEED_ROLE_BINDINGS })
+    await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-ce-2")
+    expect("classifierEngine" in saves[1]!).toBe(false)
+    client.close()
+  })
+
   it("model-routing-save failure: status(ok:false, message); scheduleRestart NOT called", async () => {
     const { svc, scheduleRestart } = makeFakeModelRoutingService({ failOnSave: true })
     rig = await startModelRoutingRig(svc)
