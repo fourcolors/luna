@@ -55,6 +55,18 @@ export interface ThreadStripCtx {
   readonly insertAt: number
   /** True while a thread has work in flight - drives the row's busy dot. */
   readonly isBusy: (threadId: string) => boolean
+  /**
+   * Consumer-friendly unread dot (Main chat / Chats): true when the
+   * thread has activity newer than the user has seen. ABSENT = no unread
+   * dots, the exact pre-existing paint.
+   */
+  readonly isUnread?: (t: ThreadRow) => boolean
+  /**
+   * Empty-state wording overrides for the chat list. Absent = the
+   * pre-existing "No threads yet." / "No matching threads." text.
+   */
+  readonly emptyText?: string
+  readonly emptySearchText?: string
   /** Relative-time string for a row with no preview text. */
   readonly relTime: (t: ThreadRow) => string
   /** Attach the drag/click gesture to a freshly built row. Called BEFORE the
@@ -137,6 +149,9 @@ export function buildThreadRow(ctx: ThreadStripCtx, t: ThreadRow): HTMLElement {
   // A background thread with work in flight pulses; the ACTIVE one does not,
   // because the moon face already carries that state for the viewed thread.
   if (ctx.isBusy(t.id) && t.id !== ctx.activeThreadId) row.classList.add("busy")
+  // Unread: activity newer than the user has seen (the blue dot). The Main
+  // chat card never wears one — it is always in view by construction.
+  if (ctx.isUnread && ctx.isUnread(t)) row.classList.add("unread")
 
   row.innerHTML = ROW_SKELETON
   const titleEl = row.querySelector(".thread-row-title")
@@ -309,7 +324,9 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
   const hasContent = ctx.grouped ? ctx.grouped.sections.length > 0 : ctx.rows.length > 0
   if (ctx.emptyEl) {
     ctx.emptyEl.style.display = hasContent ? "none" : ""
-    ctx.emptyEl.textContent = (ctx.search || "").trim() ? "No matching threads." : "No threads yet."
+    ctx.emptyEl.textContent = (ctx.search || "").trim()
+      ? (ctx.emptySearchText ?? "No matching threads.")
+      : (ctx.emptyText ?? "No threads yet.")
   }
 
   const preview = ctx.preview

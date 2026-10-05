@@ -908,6 +908,29 @@ function installWiringChromeAndWindow(ctx, engines) {
       if (State.pinnedThread) return;
       try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ }
     });
+    // Main chat card: clicking it selects the active thread — a no-op when
+    // already there, since the card names where you are. The ⤢ button pops
+    // the main chat into a new window, mirroring the rows' pop-out.
+    if (DOM.mainChatCard) {
+      const goMain = () => {
+        const id = State.activeThreadId;
+        if (id) ThreadDrawerEngine.onRowClick(id);
+      };
+      DOM.mainChatCard.addEventListener('click', goMain);
+      DOM.mainChatCard.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goMain(); }
+      });
+    }
+    if (DOM.mainChatPop) {
+      // stopPropagation on pointerdown so the pop-out button never starts a
+      // card click — the same guard the rows' ⤢ buttons use against drags.
+      DOM.mainChatPop.addEventListener('pointerdown', (e) => e.stopPropagation());
+      DOM.mainChatPop.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = State.activeThreadId;
+        if (id) ThreadDrawerEngine.openInNewWindow(id);
+      });
+    }
     if (DOM.threadDrawerSearch) DOM.threadDrawerSearch.addEventListener('input', (e) => ThreadDrawerEngine.setSearch(e.target.value));
     // Redock return channel (#380): floater Redock button / native drag-release.
     try {
