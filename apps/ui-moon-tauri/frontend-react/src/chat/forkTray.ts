@@ -83,6 +83,17 @@ export function createForkTray(deps: ForkTrayDeps) {
       return
     }
     host.hidden = false
+
+    const head = document.createElement("div")
+    head.className = "fork-tray-head"
+    const headLabel = document.createElement("span")
+    headLabel.textContent = "Suggested · new chat"
+    const count = document.createElement("span")
+    count.className = "fork-tray-count"
+    count.textContent = String(live.length)
+    head.append(headLabel, count)
+    host.append(head)
+
     for (const p of live) {
       const card = document.createElement("div")
       card.className = "fork-card"
@@ -90,17 +101,16 @@ export function createForkTray(deps: ForkTrayDeps) {
 
       const text = document.createElement("div")
       text.className = "fork-card-text"
-      const label = document.createElement("span")
-      label.className = "fork-card-label"
-      label.textContent = "Suggested new chat"
       const title = document.createElement("span")
       title.className = "fork-card-title"
       title.textContent = p.title
-      text.append(label, title)
+      title.title = p.title
+      text.append(title)
       if (p.summary && p.summary !== p.title) {
         const summary = document.createElement("span")
         summary.className = "fork-card-summary"
         summary.textContent = p.summary
+        summary.title = p.summary
         text.append(summary)
       }
 
@@ -129,7 +139,10 @@ export function createForkTray(deps: ForkTrayDeps) {
         deps.send({ type: "fork-proposal-respond", threadId, proposalId: p.id, decision: "dismiss" })
       })
 
-      card.append(text, go, no)
+      const actions = document.createElement("div")
+      actions.className = "fork-card-actions"
+      actions.append(go, no)
+      card.append(text, actions)
       host.append(card)
     }
   }

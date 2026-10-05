@@ -1960,31 +1960,65 @@
     }
     .queue-tray-steer:disabled { opacity: .55; cursor: default; }
 
-    /* New-chat suggestion cards (src/chat/forkTray.ts). Sits above the input shell. */
-    .fork-tray { padding: 0 2px 6px; }
+    /* New-chat suggestion cards (src/chat/forkTray.ts). Sits above the input
+       shell. Same tray rhythm as .queue-tray; card type matches .thread-row;
+       actions follow .update-banner (filled primary, quiet secondary). */
+    .fork-tray {
+      display: flex; flex-direction: column; gap: 5px;
+      padding: 0 2px 6px;
+      max-height: 9.5rem;
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
     .fork-tray[hidden] { display: none; }
+    .fork-tray::-webkit-scrollbar { width: 6px; }
+    .fork-tray::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 3px; }
+    .fork-tray-head {
+      display: flex; justify-content: space-between; margin: 0 4px;
+      font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--ink-soft);
+    }
     .fork-card {
-      display: flex; align-items: center; gap: 8px; margin-bottom: 5px;
-      padding: 7px 7px 7px 12px; border-radius: 10px;
-      border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
-      background: color-mix(in oklab, var(--accent) 9%, transparent);
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
+      padding: 7px 9px 7px 12px; border-radius: 9px;
+      border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
+      background: color-mix(in oklab, var(--paper-2, var(--paper)) 70%, transparent);
     }
-    .fork-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-    .fork-card-label {
-      font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft);
-    }
+    .fork-card:has(.fork-card-go:disabled) { opacity: .72; }
+    .fork-card-text { flex: 1 1 10rem; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
     .fork-card-title, .fork-card-summary {
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
-    .fork-card-title { color: var(--ink); font-size: 13px; font-weight: 600; }
-    .fork-card-summary { color: var(--ink-soft); font-size: 12px; }
-    .fork-card-go, .fork-card-dismiss {
-      flex: 0 0 auto; border-radius: 999px; padding: 3px 11px;
-      font: inherit; font-size: 12px; cursor: pointer;
+    .fork-card-title { color: var(--ink); font-size: 0.79rem; font-weight: 600; }
+    .fork-card-summary { color: var(--ink-soft); font-size: 0.66rem; }
+    .fork-card-actions {
+      flex: 0 0 auto; margin-left: auto;
+      display: flex; align-items: center; gap: 6px;
     }
-    .fork-card-go { border: 1px solid var(--accent); background: var(--accent); color: var(--paper); }
-    .fork-card-dismiss { border: 1px solid var(--ink-faint); background: transparent; color: var(--ink-soft); }
+    .fork-card-go, .fork-card-dismiss {
+      font: inherit; font-size: 0.74rem; cursor: pointer;
+      border-radius: 8px; padding: 4px 10px; white-space: nowrap;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+    }
+    .fork-card-go {
+      border: 1px solid transparent;
+      background: color-mix(in oklab, var(--accent) 82%, var(--paper));
+      color: var(--paper); font-weight: 600;
+    }
+    .fork-card-go:hover:not(:disabled) { background: var(--accent); }
+    .fork-card-dismiss {
+      border: 1px solid var(--ink-faint);
+      background: transparent; color: var(--ink-soft);
+    }
+    .fork-card-dismiss:hover:not(:disabled) {
+      color: var(--ink); border-color: var(--ink-soft);
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+    }
     .fork-card-go:disabled, .fork-card-dismiss:disabled { opacity: .55; cursor: default; }
+    .fork-card-go:focus-visible, .fork-card-dismiss:focus-visible {
+      outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
+      outline-offset: 1px;
+    }
 
     .composer-input-wrap {
       position: relative;
