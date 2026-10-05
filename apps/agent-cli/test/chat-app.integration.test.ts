@@ -194,6 +194,15 @@ describe("luna chat app", () => {
     expect(isAutoApprovedLocalShellCwd("relative/path")).toBe(false)
   })
 
+  it("still approves in-scope cwds when the dangerous root has a trailing slash", () => {
+    expect(isAutoApprovedLocalShellCwd("/root/luna", "/root/luna/")).toBe(true)
+    expect(isAutoApprovedLocalShellCwd("/root/luna/", "/root/luna/")).toBe(true)
+    expect(isAutoApprovedLocalShellCwd("/root/luna/subdir", "/root/luna/")).toBe(true)
+
+    expect(isAutoApprovedLocalShellCwd("/root/luna-other", "/root/luna/")).toBe(false)
+    expect(isAutoApprovedLocalShellCwd("/etc", "/root/luna/")).toBe(false)
+  })
+
   it("creates a thread, sends one user message, renders assistant output, and quits", async () => {
     const chat = await startChatServer()
     const stdin = new PassThrough()
