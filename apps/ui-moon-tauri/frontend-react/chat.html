@@ -1215,31 +1215,38 @@
       flex-shrink: 0;
       border-bottom: 1px solid var(--ink-faint);
     }
-    /* ── Main chat card: the active thread, pinned above the chat list.
-       Same accent wash, radius, padding, and type as an active .thread-row
-       so it reads as "where you are", not a separate card language. ── */
+    /* ── Main chat card: the fixed go-to thread, pinned above the chat list.
+       Neutral when you are in another chat; the accent wash (same as an
+       active .thread-row) only when the main chat is the one open. ── */
     .main-chat-card {
       flex-shrink: 0;
       display: flex; align-items: center; gap: 8px;
       margin: 8px 8px 0; padding: 7px 8px 7px 6px;
       border-radius: 9px;
-      background: color-mix(in oklab, var(--accent) 17%, transparent);
-      border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
+      background: color-mix(in oklab, var(--ink) 4%, transparent);
+      border: 1px solid color-mix(in oklab, var(--ink) 10%, transparent);
       cursor: pointer;
       transition: background 0.14s ease, border-color 0.14s ease;
     }
     .main-chat-card[hidden] { display: none; }
     .main-chat-card:hover {
-      background: color-mix(in oklab, var(--accent) 20%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 38%, transparent);
+      background: color-mix(in oklab, var(--ink) 7%, transparent);
     }
-    .main-chat-card:active {
+    .main-chat-card.active {
       background: color-mix(in oklab, var(--accent) 17%, transparent);
       border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+    }
+    .main-chat-card.active:hover {
+      background: color-mix(in oklab, var(--accent) 20%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 38%, transparent);
     }
     .main-chat-card:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent); outline-offset: -2px; }
     .main-chat-dot {
       flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+      background: color-mix(in oklab, var(--ink) 22%, transparent);
+    }
+    .main-chat-card.active .main-chat-dot,
+    .main-chat-card.unread .main-chat-dot {
       background: color-mix(in oklab, var(--accent) 72%, transparent);
     }
     .main-chat-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -2783,10 +2790,10 @@
            involved in. Painted by ThreadDrawerEngine.renderAgentChips
            (textContent only); hidden until the server advertises agents. -->
       <div class="agent-chips" id="agent-chips" role="group" aria-label="Filter chats by agent" hidden></div>
-      <!-- Main chat: the active thread, pinned above the chat list so the
-           drawer reads like a consumer chat app. Painted in place by
+      <!-- Main chat: the fixed go-to thread, pinned above the chat list. It
+           does not follow the open chat. Painted in place by
            ThreadDrawerEngine.renderMainChat (textContent only); hidden until
-           there is an active thread. -->
+           there is a thread. -->
       <div class="main-chat-card" id="main-chat-card" role="button" tabindex="0" aria-label="Main chat" hidden>
         <span class="main-chat-dot" aria-hidden="true"></span>
         <span class="main-chat-text">

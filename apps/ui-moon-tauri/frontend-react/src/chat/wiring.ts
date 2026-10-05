@@ -908,12 +908,12 @@ function installWiringChromeAndWindow(ctx, engines) {
       if (State.pinnedThread) return;
       try { ChatEngine.newConversation(); } catch (_) { /* best-effort */ }
     });
-    // Main chat card: clicking it selects the active thread — a no-op when
-    // already there, since the card names where you are. The ⤢ button pops
-    // the main chat into a new window, mirroring the rows' pop-out.
+    // Main chat card: clicking it opens the fixed Main chat (a no-op when
+    // already there). The ⤢ button pops the main chat into a new window,
+    // mirroring the rows' pop-out.
     if (DOM.mainChatCard) {
       const goMain = () => {
-        const id = State.activeThreadId;
+        const id = ThreadDrawerEngine._mainThreadId();
         if (id) ThreadDrawerEngine.onRowClick(id);
       };
       DOM.mainChatCard.addEventListener('click', goMain);
@@ -927,7 +927,7 @@ function installWiringChromeAndWindow(ctx, engines) {
       DOM.mainChatPop.addEventListener('pointerdown', (e) => e.stopPropagation());
       DOM.mainChatPop.addEventListener('click', (e) => {
         e.stopPropagation();
-        const id = State.activeThreadId;
+        const id = ThreadDrawerEngine._mainThreadId();
         if (id) ThreadDrawerEngine.openInNewWindow(id);
       });
     }
