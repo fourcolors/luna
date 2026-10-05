@@ -49,6 +49,10 @@ export function createDom() {
       threadDrawerSearch:  document.getElementById('thread-drawer-search-input'),
       threadDrawerClose:   document.getElementById('thread-drawer-close'),
       threadDrawerNew:     document.getElementById('thread-drawer-new'),
+      // Main chat card (consumer-friendly sidebar): the pinned active thread.
+      mainChatCard:        document.getElementById('main-chat-card'),
+      mainChatTitle:       document.getElementById('main-chat-title'),
+      mainChatPop:         document.getElementById('main-chat-pop'),
       toggleThreads:       document.getElementById('toggle-threads'),
       threadDivider:       document.getElementById('thread-divider'),
       // Phase 3 D3: UserAsk / survey panel handles.

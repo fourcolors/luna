@@ -414,7 +414,70 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     // handler, never at this script's own top level.
     _ts(t) { return ThreadListLogic.threadTimestamp(t); },
 
-    _visibleThreads() { return ThreadListLogic.visibleThreads(State); },
+    /**
+     * The rows the side-chat list paints. The ACTIVE thread is excluded: it
+     * renders as the pinned "Main chat" card above the list, so the strip is
+     * side chats only. Every consumer of this delegate — render(), the
+     * redock insert-index math, the drag engine's next-thread lookup, e2e's
+     * listThreadIds — sees exactly the row set the strip paints, so the
+     * counts can never drift apart.
+     */
+    _visibleThreads() {
+      const rows = ThreadListLogic.visibleThreads(State);
+      const active = State.activeThreadId;
+      return active ? rows.filter((t) => !t || t.id !== active) : rows;
+    },
+
+    // --- consumer-friendly unread (Main chat / Side chats) ------------------
+    // `State.threadSeenAt` maps thread id -> epoch ms of the newest activity
+    // the user has seen. render() seeds an entry for every id it meets (so
+    // only FUTURE activity lights the dot) and keeps the active thread's
+    // entry current (it is always in view, so it can never be unread).
+    // Persisted to localStorage, throttled, pruned to live threads.
+    SEEN_AT_KEY: 'luna.threadSeenAt',
+
+    _seenAt() {
+      if (!State.threadSeenAt || typeof State.threadSeenAt !== 'object') {
+        let seed = {};
+        try {
+          const raw = localStorage.getItem(this.SEEN_AT_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') seed = parsed;
+          }
+        } catch (_) { /* private mode / corrupt */ }
+        State.threadSeenAt = seed;
+      }
+      return State.threadSeenAt;
+    },
+
+    _markSeen(id) {
+      if (!id) return;
+      const seen = this._seenAt();
+      const t = (Array.isArray(State.threads) ? State.threads : [])
+        .find((x) => x && x.id === id);
+      const ts = t ? this._ts(t) : 0;
+      if (ts > (seen[id] || 0)) { seen[id] = ts; this._seenAtDirty = true; }
+    },
+
+    _persistSeenAt() {
+      if (!this._seenAtDirty) return;
+      const now = Date.now();
+      if (now - (this._seenAtSavedAt || 0) < 2000) return;
+      try {
+        // Prune ids for threads that no longer exist so the map cannot grow
+        // unbounded across months of chats.
+        const live = new Set(
+          (Array.isArray(State.threads) ? State.threads : [])
+            .map((t) => t && t.id).filter(Boolean),
+        );
+        const seen = this._seenAt();
+        for (const k of Object.keys(seen)) if (!live.has(k)) delete seen[k];
+        localStorage.setItem(this.SEEN_AT_KEY, JSON.stringify(seen));
+        this._seenAtDirty = false;
+        this._seenAtSavedAt = now;
+      } catch (_) { /* private mode / quota */ }
+    },
 
     // --- render -------------------------------------------------------------
     render() {
@@ -431,6 +494,18 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       // after painting (or only when every chip vanished) left one render
       // showing an empty, unfilterable-looking list.
       this._validateAgentFilter();
+      // Unread bookkeeping (Main chat / Side chats): seed a "seen" entry for
+      // every thread id without one, so the dot only ever lights for FUTURE
+      // activity, then keep the active thread's entry current — it is always
+      // in view, so it can never be unread. render() is the one place every
+      // thread switch funnels through, so no switch path can skip this.
+      const seen = this._seenAt();
+      for (const t of (Array.isArray(State.threads) ? State.threads : [])) {
+        if (t && t.id && !(t.id in seen)) { seen[t.id] = this._ts(t); this._seenAtDirty = true; }
+      }
+      this._markSeen(State.activeThreadId);
+      this._persistSeenAt();
+      this.renderMainChat();
       const rows = this._visibleThreads();
       const preview = State.redockPreview;
       // Row building lives in src/chat/threadStrip.ts (stack23 S17c). The
@@ -449,6 +524,9 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
           ? this._insertIndexForRatio(rows.length, preview.yRatio)
           : -1,
         isBusy: (id) => ThreadCache.isBusy(id),
+        isUnread: (t) => ThreadListLogic.isThreadUnread(t, State.threadSeenAt, State.activeThreadId),
+        emptyText: 'No side chats yet. Tap + above to start one.',
+        emptySearchText: 'No matching side chats.',
         relTime: (t) => this._relTime(t),
         wireRow: (row, t) => this._wireRow(row, t),
         makeInsertGap: (p) => this._makeInsertGap(p),
@@ -546,6 +624,29 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         chip.addEventListener('contextmenu', toggle);
         host.appendChild(chip);
       }
+    },
+
+    // --- Main chat card (consumer-friendly sidebar) --------------------------
+    /**
+     * Paints the pinned "Main chat" card above the side-chat list: the
+     * ACTIVE thread, i.e. the conversation in this window. The card is
+     * updated in place (textContent only — server data never becomes
+     * markup) so it never steals focus on a repaint. Clicking it selects
+     * the active thread (a no-op when already there — the card names where
+     * you are); the ⤢ button pops it into a new window like rows do.
+     * Wired once in wiring.ts; hidden when there is no active thread.
+     */
+    renderMainChat() {
+      const card = DOM.mainChatCard;
+      if (!card) return;
+      const activeId = State.activeThreadId;
+      const t = (Array.isArray(State.threads) ? State.threads : [])
+        .find((x) => x && x.id === activeId) || null;
+      card.hidden = !t;
+      if (!t) return;
+      const title = (t.title && String(t.title).trim()) || 'Untitled thread';
+      if (DOM.mainChatTitle) DOM.mainChatTitle.textContent = title;
+      card.setAttribute('aria-label', 'Main chat: ' + title);
     },
 
     // --- agent sections (S5) ------------------------------------------------

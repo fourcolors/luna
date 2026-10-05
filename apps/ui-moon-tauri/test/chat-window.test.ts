@@ -5263,12 +5263,17 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rows[0].querySelector('.thread-row-title')!.textContent).toBe('Beta')
     })
 
-    it('Scenario: the active row is highlighted', () => {
+    it('Scenario: the active thread is surfaced as the Main chat card', () => {
       const m = M()
       m.State.activeThreadId = 'b'
       seed()
-      const rowB = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')!
-      expect(rowB.classList.contains('active')).toBe(true)
+      // The active thread leaves the side-chat list and pins to the Main
+      // chat card above it — that card is the "highlighted" state now.
+      expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')).toBeNull()
+      const card = document.getElementById('main-chat-card') as HTMLElement
+      expect(card.hidden).toBe(false)
+      expect(document.getElementById('main-chat-title')!.textContent).toBe('Beta')
+      expect(card.getAttribute('aria-label')).toBe('Main chat: Beta')
     })
 
     // Live subagents nest under their thread's row instead of the server

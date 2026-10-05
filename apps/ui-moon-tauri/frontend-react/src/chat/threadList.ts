@@ -391,3 +391,25 @@ export function groupByAgent(
     .sort((a, b) => recency(b.s) - recency(a.s) || a.i - b.i)
     .map(({ s }) => s)
 }
+
+/**
+ * Consumer-friendly unread (the blue dot on a side chat): a thread whose
+ * newest activity is NEWER than the last time it was on screen. The active
+ * thread is never unread — it renders as the pinned Main chat card, always
+ * in view. `seenAt` maps thread id -> epoch ms of the newest activity the
+ * user has seen; a thread with NO entry is treated as seen (the drawer
+ * seeds entries on first sight, so only future activity lights the dot),
+ * and a thread with no timestamp at all can never be unread.
+ *
+ * Pure — no DOM, no State import, same contract as visibleThreads.
+ */
+export function isThreadUnread(
+  t: ThreadRow | null | undefined,
+  seenAt: Record<string, number> | null | undefined,
+  activeThreadId: string | null | undefined,
+): boolean {
+  if (!t || !t.id || t.id === activeThreadId) return false
+  const ts = threadTimestamp(t)
+  if (!ts) return false
+  return ts > ((seenAt && seenAt[t.id]) || 0)
+}
