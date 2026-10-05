@@ -171,8 +171,15 @@ describe("markdownToTelegramHtml — block structure", () => {
   })
 
   it("renders horizontal rules as a divider line, not a bullet", () => {
-    expect(markdownToTelegramHtml("---")).toBe("──────────")
-    expect(markdownToTelegramHtml("***")).toBe("──────────")
+    expect(markdownToTelegramHtml("---")).toBe("───")
+    expect(markdownToTelegramHtml("***")).toBe("───")
+  })
+
+  it("never expands text: a max-size chunk of horizontal rules stays under 4096", () => {
+    const md = Array(1024).fill("---").join("\n")
+    expect(md.length).toBe(4095)
+    const visible = markdownToTelegramHtml(md).replace(/<[^>]*>/g, "")
+    expect(visible.length).toBeLessThanOrEqual(4096)
   })
 
   it("applies inline styling inside headings, bullets, and quotes", () => {
