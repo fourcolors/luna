@@ -4470,6 +4470,8 @@ const buildServerLayer = (
             // fails into the catchCause below, which releases the claim.
             const seeded = yield* chat.send(child.id, claimed.seed)
             if (Option.isNone(seeded)) {
+              // Archive the empty child so a retry never leaves orphans.
+              yield* chat.archiveThread(child.id)
               return yield* Effect.fail(new Error(`seed rejected for ${child.id}`))
             }
 

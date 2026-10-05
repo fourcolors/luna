@@ -120,7 +120,7 @@ describe("forkTray", () => {
     expect(opened).toEqual([])
   })
 
-  it("a declined switch (draft in the box) becomes a New chat ready card; Open switches, Later clears", () => {
+  it("a declined switch (draft in the box) becomes a New chat ready card; Open switches, Later clears", async () => {
     accept = false
     tray.applyUpdate({ threadId: "thr-a", proposal: P({ autoOpen: true, status: "accepted", childThreadId: "thr-made" }) })
     expect(reasons).toEqual(["auto"])
@@ -130,6 +130,7 @@ describe("forkTray", () => {
     // Open is an explicit action.
     accept = true
     ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    await Promise.resolve(); await Promise.resolve()
     expect(reasons).toEqual(["auto", "open"])
     expect(opened).toEqual([["thr-made", "Clef vs Jev"]])
     expect(host.hidden).toBe(true)
@@ -146,5 +147,36 @@ describe("forkTray", () => {
     ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
     tray.applyUpdate({ threadId: "thr-a", proposal: P({ status: "accepted", childThreadId: "thr-new" }) })
     expect(reasons).toEqual(["click"])
+  })
+
+  it("A -> B -> A drops a stale click-accept (no jump on return)", () => {
+    tray.applySet({ threadId: "thr-a", proposals: [P()] })
+    ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    active = "thr-b"
+    tray.render() // the window shows B
+    active = "thr-a"
+    tray.render() // and back to A before the accept lands
+    tray.applyUpdate({ threadId: "thr-a", proposal: P({ status: "accepted", childThreadId: "thr-new" }) })
+    expect(opened).toEqual([])
+  })
+
+  it("an async open that fails keeps (or creates) the ready card", async () => {
+    let ok = false
+    const t2 = createForkTray({
+      host,
+      getActiveThreadId: () => active,
+      send: () => undefined,
+      openThread: () => Promise.resolve(ok),
+    })
+    t2.applyUpdate({ threadId: "thr-a", proposal: P({ autoOpen: true, status: "accepted", childThreadId: "thr-x" }) })
+    await Promise.resolve(); await Promise.resolve()
+    expect(t2._ready("thr-a")).toHaveLength(1)
+    ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    await Promise.resolve(); await Promise.resolve()
+    expect(t2._ready("thr-a")).toHaveLength(1) // failed open: card stays
+    ok = true
+    ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    await Promise.resolve(); await Promise.resolve()
+    expect(t2._ready("thr-a")).toHaveLength(0)
   })
 })

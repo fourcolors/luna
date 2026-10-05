@@ -48,9 +48,14 @@ export interface ForkTrayDeps {
   /**
    * Switch this window to a newly created chat. `reason` says who asked:
    * "click" (Continue), "auto" (create_thread), or "open" (the ready card's
-   * Open button). Return false to decline; the tray then shows a ready card.
+   * Open button). Return (or resolve) false to decline or on failure; the
+   * tray then shows (or keeps) a ready card.
    */
-  readonly openThread: (threadId: string, title: string, reason: "click" | "auto" | "open") => boolean
+  readonly openThread: (
+    threadId: string,
+    title: string,
+    reason: "click" | "auto" | "open",
+  ) => boolean | Promise<boolean>
 }
 
 interface ReadyChat {
@@ -63,8 +68,12 @@ const isLive = (p: ForkProposal): boolean =>
 
 export function createForkTray(deps: ForkTrayDeps) {
   const byThread = new Map<string, Map<string, ForkProposal>>()
-  /** Proposals THIS window accepted; only these switch on a click-accept. */
-  const acceptedHere = new Set<string>()
+  /**
+   * Proposals THIS window accepted (id -> parent thread). Only these switch on
+   * a click-accept, and an entry is dropped the moment this window shows a
+   * different thread, so A -> B -> A never revives a stale intent.
+   */
+  const acceptedHere = new Map<string, string>()
   /** Children already handled (opened or parked), so a replay never repeats. */
   const opened = new Set<string>()
   /** Declined switches, per parent thread, waiting on an Open click. */
@@ -84,13 +93,17 @@ export function createForkTray(deps: ForkTrayDeps) {
     const onParent = deps.getActiveThreadId() === p.parentThreadId
     if (!onParent) return // you moved on: the new chat is in Chats, no jump
     if (!mine && p.autoOpen !== true) return
-    opened.add(p.childThreadId)
-    const switched = deps.openThread(p.childThreadId, p.title, mine ? "click" : "auto")
-    if (!switched) {
+    const child = p.childThreadId
+    opened.add(child)
+    const park = () => {
       let m = ready.get(p.parentThreadId)
       if (!m) { m = new Map(); ready.set(p.parentThreadId, m) }
-      m.set(p.childThreadId, { childThreadId: p.childThreadId, title: p.title })
+      m.set(child, { childThreadId: child, title: p.title })
+      render()
     }
+    const result = deps.openThread(child, p.title, mine ? "click" : "auto")
+    if (result === false) park()
+    else if (result !== true) void Promise.resolve(result).then((ok) => { if (!ok) park() }, park)
   }
 
   function dropReady(parent: string, child: string): void {
@@ -122,10 +135,16 @@ export function createForkTray(deps: ForkTrayDeps) {
     go.textContent = "Open"
     go.setAttribute("aria-label", `Open new chat: ${r.title}`)
     go.addEventListener("click", () => {
-      if (deps.openThread(r.childThreadId, r.title, "open")) {
-        dropReady(parent, r.childThreadId)
-        render()
-      }
+      go.disabled = true
+      // Keep the card until the open actually succeeds (a pinned window opens
+      // a separate window, which can fail).
+      void Promise.resolve(deps.openThread(r.childThreadId, r.title, "open")).then(
+        (ok) => {
+          if (ok) dropReady(parent, r.childThreadId)
+          render()
+        },
+        () => render(),
+      )
     })
     const no = document.createElement("button")
     no.type = "button"
@@ -147,6 +166,7 @@ export function createForkTray(deps: ForkTrayDeps) {
     const host = deps.host
     if (!host) return
     const threadId = deps.getActiveThreadId()
+    for (const [id, parent] of acceptedHere) if (parent !== threadId) acceptedHere.delete(id)
     const m = threadId ? byThread.get(threadId) : undefined
     const live = m ? [...m.values()].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)) : []
     const parked = threadId ? [...(ready.get(threadId)?.values() ?? [])] : []
@@ -205,7 +225,7 @@ export function createForkTray(deps: ForkTrayDeps) {
       go.addEventListener("click", () => {
         go.disabled = true
         go.textContent = "Opening…"
-        acceptedHere.add(p.id)
+        acceptedHere.set(p.id, threadId)
         deps.send({ type: "fork-proposal-respond", threadId, proposalId: p.id, decision: "accept" })
       })
 

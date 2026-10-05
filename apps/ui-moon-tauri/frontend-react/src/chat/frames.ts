@@ -78,14 +78,18 @@ export function createFrames(ctx: FramesCtx) {
       // chat in its own window instead (only on an explicit click).
       if (State.pinnedThread) {
         if (reason === 'auto') return false;
-        ThreadDrawerEngine.openInNewWindow(threadId);
-        return true;
+        // Resolves the new window's label, or null on failure.
+        return Promise.resolve(ThreadDrawerEngine.openInNewWindow(threadId))
+          .then((label) => !!label, () => false);
       }
       // Never move a draft. A switch carries the composer text to the new
       // chat, so with text in the box (or, for an agent-created chat, when
       // this window is not focused) decline and let the tray show Open.
       const input = document.getElementById('message-input');
-      const hasDraft = !!(input && typeof input.value === 'string' && input.value.trim());
+      const attachments = (window as unknown as { Attachments?: { hasAny?: () => boolean } }).Attachments;
+      const hasDraft =
+        !!(input && typeof input.value === 'string' && input.value.trim()) ||
+        !!(attachments && typeof attachments.hasAny === 'function' && attachments.hasAny());
       if (reason !== 'open' && hasDraft) return false;
       if (reason === 'auto' && typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
       ThreadDrawerEngine.onRowClick(threadId);
