@@ -1216,42 +1216,43 @@
       border-bottom: 1px solid var(--ink-faint);
     }
     /* ── Main chat card: the fixed go-to thread, pinned above the chat list.
-       Neutral when you are in another chat; the accent wash (same as an
-       active .thread-row) only when the main chat is the one open. ── */
+       Same chrome as a .thread-row so the pinned slot is not a second
+       language: idle is paper (no grey well), hover/active use the row
+       accent wash, and the dot matches the list (hidden idle, 72% accent
+       when this chat is open, solid --accent when unread elsewhere). ── */
     .main-chat-card {
       flex-shrink: 0;
       display: flex; align-items: center; gap: 8px;
-      margin: 8px 8px 0; padding: 7px 8px 7px 6px;
+      margin: 6px 8px 0; padding: 7px 9px 7px 6px;
       border-radius: 9px;
-      background: color-mix(in oklab, var(--ink) 4%, transparent);
-      border: 1px solid color-mix(in oklab, var(--ink) 10%, transparent);
+      background: transparent;
+      border: 1px solid transparent;
       cursor: pointer;
       transition: background 0.14s ease, border-color 0.14s ease;
     }
     .main-chat-card[hidden] { display: none; }
     .main-chat-card:hover {
-      background: color-mix(in oklab, var(--ink) 7%, transparent);
+      background: color-mix(in oklab, var(--accent) 10%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 20%, transparent);
     }
     .main-chat-card.active {
       background: color-mix(in oklab, var(--accent) 17%, transparent);
       border-color: color-mix(in oklab, var(--accent) 34%, transparent);
     }
-    .main-chat-card.active:hover {
-      background: color-mix(in oklab, var(--accent) 20%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 38%, transparent);
-    }
     .main-chat-card:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent); outline-offset: -2px; }
     .main-chat-dot {
       flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
-      background: color-mix(in oklab, var(--ink) 22%, transparent);
-    }
-    .main-chat-card.active .main-chat-dot,
-    .main-chat-card.unread .main-chat-dot {
       background: color-mix(in oklab, var(--accent) 72%, transparent);
+      opacity: 0; transition: opacity 0.14s ease, background 0.14s ease;
+    }
+    .main-chat-card.active .main-chat-dot { opacity: 1; }
+    .main-chat-card.unread .main-chat-dot {
+      opacity: 1;
+      background: var(--accent);
     }
     .main-chat-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
     .main-chat-label {
-      font-size: 0.66rem; font-weight: 700; letter-spacing: 0.045em;
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.045em;
       text-transform: uppercase; color: var(--ink-soft);
     }
     .main-chat-title {
