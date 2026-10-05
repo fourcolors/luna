@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest"
 import { Effect } from "effect"
 import { createThreadInputSchema, forkThreadInputSchema, makeForkThreadTools } from "../src/tools.js"
+import { checkCreateAllowed, CREATE_THREAD_MAX_PER_WINDOW, CREATE_THREAD_WINDOW_MS } from "../src/layer.js"
+import { AGENT_CREATED_TAG, FORK_CHILD_TAG } from "../src/types.js"
 
 describe("fork_thread input bounds", () => {
   it("accepts a valid proposal", () => {
@@ -152,5 +154,43 @@ describe("create_thread", () => {
     expect(createThreadInputSchema.safeParse({ title: "", seed: "s" }).success).toBe(false)
     expect(createThreadInputSchema.safeParse({ title: "t", seed: "x".repeat(8001) }).success).toBe(false)
     expect(createThreadInputSchema.safeParse({ title: "t", seed: "s" }).success).toBe(true)
+  })
+})
+
+describe("create_thread gate (checkCreateAllowed)", () => {
+  it("refuses forked, agent-created, and channel chats", () => {
+    for (const tag of [FORK_CHILD_TAG, AGENT_CREATED_TAG, "channel"]) {
+      expect(checkCreateAllowed(new Map(), "t", [tag], 0)).toMatch(/only available/)
+    }
+    expect(checkCreateAllowed(new Map(), "t", [], 0)).toBeNull()
+  })
+
+  it("allows at most CREATE_THREAD_MAX_PER_WINDOW per chat per window, then recovers", () => {
+    const budget = new Map<string, number[]>()
+    for (let i = 0; i < CREATE_THREAD_MAX_PER_WINDOW; i++) {
+      expect(checkCreateAllowed(budget, "t", [], 1000 + i)).toBeNull()
+    }
+    expect(checkCreateAllowed(budget, "t", [], 2000)).toMatch(/budget/)
+    expect(checkCreateAllowed(budget, "other", [], 2000)).toBeNull()
+    expect(checkCreateAllowed(budget, "t", [], 1000 + CREATE_THREAD_WINDOW_MS + 5)).toBeNull()
+  })
+
+  it("the tool surfaces a gate refusal as an error and stages nothing", async () => {
+    let calls = 0
+    const tools = makeForkThreadTools(
+      { propose: () => Effect.sync(() => { calls++; return { id: "x" } }) },
+      () => "t",
+      () => false,
+      () => 1,
+      () => "nope",
+    )
+    const r = await tools.find((t) => t.name === "create_thread")!.handler({ title: "T", seed: "s" }, {} as never)
+    expect(r.isError).toBe(true)
+    expect(calls).toBe(0)
+  })
+
+  it("tag strings are pinned (ui-ws UNATTENDED_THREAD_TAGS lists these same strings)", () => {
+    expect(FORK_CHILD_TAG).toBe("forked-from-parent")
+    expect(AGENT_CREATED_TAG).toBe("agent-created")
   })
 })

@@ -127,3 +127,35 @@ describe("ForkProposalStore", () => {
     )
   })
 })
+
+describe("ForkProposalStore claim race and release", () => {
+  it("exactly one of many concurrent first claims wins", async () => {
+    await run(
+      Effect.gen(function* () {
+        const store = yield* ForkProposalStore
+        const row = yield* store.propose({ parentThreadId: "p", title: "T", summary: "S", seed: "s", nowMs: 1 })
+        const results = yield* Effect.all(
+          Array.from({ length: 16 }, () => Effect.yieldNow.pipe(Effect.andThen(store.claim(row.id, "p")))),
+          { concurrency: "unbounded" },
+        )
+        expect(results.filter((r) => r !== null)).toHaveLength(1)
+      }),
+    )
+  })
+
+  it("release returns a failed fork marker to pending and closes a failed create_thread", async () => {
+    await run(
+      Effect.gen(function* () {
+        const store = yield* ForkProposalStore
+        const fork = yield* store.propose({ parentThreadId: "p", title: "F", summary: "F", seed: "s", nowMs: 1 })
+        yield* store.claim(fork.id, "p")
+        expect((yield* store.release(fork.id, "p"))?.status).toBe("pending")
+        const made = yield* store.propose({ parentThreadId: "p", title: "C", summary: "C", seed: "s", nowMs: 1, mode: "create" })
+        yield* store.claim(made.id, "p")
+        expect((yield* store.release(made.id, "p"))?.status).toBe("dismissed")
+        // Not accepting -> no-op.
+        expect(yield* store.release(made.id, "p")).toBeNull()
+      }),
+    )
+  })
+})

@@ -1355,6 +1355,18 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             }
           }
 
+          // Restore the thread's persisted tags on recovery. Tags decide
+          // security posture (an UNATTENDED tag keeps a forked, channel, or
+          // agent-created thread off the operator's personal machines and
+          // blocks create_thread), so a recovered thread must carry them;
+          // without this a restart silently promoted it to "attended".
+          const savedTags =
+            persistedSdkId !== undefined || knownButNoSid
+              ? ((yield* store.get(threadId).pipe(
+                  Effect.catchCause(() => Effect.succeed(null)),
+                ))?.tags ?? [])
+              : []
+
           // Case B: known thread, no sdk_session_id → re-create live
           if (knownButNoSid) {
             yield* Effect.logWarning(
@@ -1366,6 +1378,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 : undefined
             yield* createThread({
               threadIdOverride: threadId,
+              ...(savedTags.length > 0 ? { tags: savedTags } : {}),
               ...(savedModel !== undefined ? { model: savedModel } : {}),
               ...(validEffort !== undefined ? { effort: validEffort } : {}),
               ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
@@ -1387,6 +1400,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 : undefined
             yield* createThread({
               threadIdOverride: threadId,
+              ...(savedTags.length > 0 ? { tags: savedTags } : {}),
               resumeFromSessionId: persistedSdkId,
               ...(savedModel !== undefined ? { model: savedModel } : {}),
               ...(validEffort !== undefined ? { effort: validEffort } : {}),

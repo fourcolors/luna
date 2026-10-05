@@ -70,6 +70,12 @@ export const makeForkThreadTools = (
   currentThreadId: () => string | null,
   isForkChildThread: () => boolean,
   nowMs: () => number = () => Date.now(),
+  /**
+   * create_thread gate: returns null to allow, or the refusal reason. The
+   * layer refuses unattended threads (fork children, agent-created chats,
+   * channel threads) and enforces a per-thread creation budget.
+   */
+  createGate: (threadId: string, nowMs: number) => string | null = () => null,
 ) => {
   const forkThread = defineTool({
     name: "fork_thread",
@@ -136,8 +142,9 @@ export const makeForkThreadTools = (
       "task clearly deserves its own chat and the operator has said to go " +
       "ahead. The new chat starts fresh (it does not inherit this " +
       "conversation), so the seed must stand alone. Do not call it to answer " +
-      "something you can answer here, and never call it from inside a chat " +
-      "you just created unless the operator asks.",
+      "something you can answer here. It is refused inside forked, " +
+      "agent-created, and channel chats, and limited to a few per chat " +
+      "in a short window.",
     inputSchema: createThreadShape,
     alwaysLoad: true,
     searchHint:
@@ -152,6 +159,12 @@ export const makeForkThreadTools = (
               op: "create",
               cause: "no chat session is bound",
             }),
+          )
+        }
+        const refusal = createGate(threadId, nowMs())
+        if (refusal !== null) {
+          return yield* Effect.fail(
+            new ToolError({ tool: "create_thread", op: "create", cause: refusal }),
           )
         }
         const row = yield* store.propose({

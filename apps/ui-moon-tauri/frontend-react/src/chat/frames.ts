@@ -71,13 +71,26 @@ export function createFrames(ctx: FramesCtx) {
     get host() { return document.getElementById('fork-tray'); },
     getActiveThreadId: () => State.activeThreadId,
     send: (f) => WebSocketEngine.send(f),
-    openThread: (threadId, title) => {
-      // A window pinned to one thread never changes thread.
-      if (State.pinnedThread) return;
+    openThread: (threadId, title, reason) => {
       const now = Date.now();
       ThreadDrawerEngine.upsertThread({ id: threadId, title, createdAt: now, lastMessageAt: now });
+      // A window pinned to one thread never changes thread: open the new
+      // chat in its own window instead (only on an explicit click).
+      if (State.pinnedThread) {
+        if (reason === 'auto') return false;
+        ThreadDrawerEngine.openInNewWindow(threadId);
+        return true;
+      }
+      // Never move a draft. A switch carries the composer text to the new
+      // chat, so with text in the box (or, for an agent-created chat, when
+      // this window is not focused) decline and let the tray show Open.
+      const input = document.getElementById('message-input');
+      const hasDraft = !!(input && typeof input.value === 'string' && input.value.trim());
+      if (reason !== 'open' && hasDraft) return false;
+      if (reason === 'auto' && typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
       ThreadDrawerEngine.onRowClick(threadId);
       ForkTray.render();
+      return true;
     },
   });
 

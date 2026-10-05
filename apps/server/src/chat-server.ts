@@ -4464,6 +4464,15 @@ const buildServerLayer = (
                 : {}),
             })
 
+            // Seed the sibling so the agent turn starts on the pivoted topic.
+            // Seed BEFORE finalizing: an accepted proposal always names a
+            // chat that already has its opening message. A rejected seed
+            // fails into the catchCause below, which releases the claim.
+            const seeded = yield* chat.send(child.id, claimed.seed)
+            if (Option.isNone(seeded)) {
+              return yield* Effect.fail(new Error(`seed rejected for ${child.id}`))
+            }
+
             const accepted = yield* forkStore.completeAccept(
               claimed.id,
               input.threadId,
@@ -4475,9 +4484,6 @@ const buildServerLayer = (
                 message: "proposal already resolved",
               }
             }
-
-            // Seed the sibling so the agent turn starts on the pivoted topic.
-            yield* chat.send(child.id, claimed.seed)
 
             // Parent breadcrumb: one-line note that the topic moved.
             if (!isCreate) {
@@ -4501,14 +4507,23 @@ const buildServerLayer = (
               childThreadId: child.id,
             }
           }).pipe(
-            // The E channel here is `never` (every yielded effect above is
-            // infallible) - this handler can't actually run, but catch
-            // still requires a total callback.
-            Effect.catch((e) =>
-              Effect.succeed({
-                ok: false as const,
-                message: String(e),
-              }),
+            // ANY failure after the claim (a typed error, a createThread
+            // defect, a rejected seed) releases the claim so the proposal is
+            // never stuck "accepting": a fork marker returns to pending, a
+            // create_thread request is closed. The result is always a value,
+            // so the create_thread observer's worker fibers cannot die.
+            Effect.catchCause((cause) =>
+              forkStore.release(input.proposalId, input.threadId).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    console.error(
+                      `[luna/thread-fork] accept ${input.proposalId} failed; claim released:`,
+                      String(cause),
+                    )
+                    return { ok: false as const, message: "fork accept failed" }
+                  }),
+                ),
+              ),
             ),
           ),
       }

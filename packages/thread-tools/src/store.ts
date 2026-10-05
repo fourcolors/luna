@@ -27,6 +27,15 @@ export interface ForkProposalStoreApi {
     id: string,
     parentThreadId: string,
   ) => Effect.Effect<ForkProposal | null>
+  /**
+   * Undo a claim whose creation failed: accepting → pending for a fork marker
+   * (the operator can retry), accepting → dismissed for create_thread.
+   * Returns null when the proposal is not `accepting`.
+   */
+  readonly release: (
+    id: string,
+    parentThreadId: string,
+  ) => Effect.Effect<ForkProposal | null>
   /** Finalize after createThread: accepting → accepted with childThreadId. */
   readonly completeAccept: (
     id: string,
@@ -81,36 +90,42 @@ export class ForkProposalStore extends Context.Service<ForkProposalStore, ForkPr
 
       const claim: ForkProposalStoreApi["claim"] = (id, parentThreadId) =>
         Effect.gen(function* () {
-          // Single-threaded Effect runtime + Ref: check-then-set is safe for
-          // our in-process proposal store (no concurrent fibers share one
-          // Ref.modify call without yielding). Claim before createThread.
-          const current = (yield* Ref.get(rows)).get(id)
-          if (
-            current === undefined ||
-            current.parentThreadId !== parentThreadId ||
-            current.status !== "pending"
-          ) {
-            return null
-          }
-          const next: ForkProposal = { ...current, status: "accepting" }
-          yield* Ref.update(rows, (m) => {
-            // Re-check under the update so a second claim loses cleanly.
+          // ONE Ref.modify decides the winner: the check and the write happen
+          // in a single atomic step, so two concurrent claims can never both
+          // see "pending" and both succeed.
+          const won = yield* Ref.modify(rows, (m): readonly [ForkProposal | null, Map<string, ForkProposal>] => {
             const cur = m.get(id)
-            if (
-              cur === undefined ||
-              cur.parentThreadId !== parentThreadId ||
-              cur.status !== "pending"
-            ) {
-              return m
+            if (cur === undefined || cur.parentThreadId !== parentThreadId || cur.status !== "pending") {
+              return [null, m]
+            }
+            const next: ForkProposal = { ...cur, status: "accepting" }
+            const map = new Map(m)
+            map.set(id, next)
+            return [next, map]
+          })
+          if (won !== null) yield* emit(won)
+          return won
+        })
+
+      const release: ForkProposalStoreApi["release"] = (id, parentThreadId) =>
+        Effect.gen(function* () {
+          const out = yield* Ref.modify(rows, (m): readonly [ForkProposal | null, Map<string, ForkProposal>] => {
+            const cur = m.get(id)
+            if (cur === undefined || cur.parentThreadId !== parentThreadId || cur.status !== "accepting") {
+              return [null, m]
+            }
+            // A failed fork marker goes back to pending so the operator can
+            // retry; a failed create_thread is closed (nobody is waiting on it).
+            const next: ForkProposal = {
+              ...cur,
+              status: cur.mode === "create" ? "dismissed" : "pending",
             }
             const map = new Map(m)
             map.set(id, next)
-            return map
+            return [next, map]
           })
-          const after = (yield* Ref.get(rows)).get(id)
-          if (after === undefined || after.status !== "accepting") return null
-          yield* emit(after)
-          return after
+          if (out !== null) yield* emit(out)
+          return out
         })
 
       const completeAccept: ForkProposalStoreApi["completeAccept"] = (
@@ -191,6 +206,7 @@ export class ForkProposalStore extends Context.Service<ForkProposalStore, ForkPr
       return {
         propose,
         claim,
+        release,
         completeAccept,
         accept,
         dismiss,

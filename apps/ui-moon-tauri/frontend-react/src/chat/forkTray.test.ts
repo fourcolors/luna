@@ -18,6 +18,8 @@ describe("forkTray", () => {
   let active: string | null
   let sent: Array<Record<string, unknown>>
   let opened: Array<[string, string]>
+  let reasons: string[]
+  let accept: boolean
   let tray: ReturnType<typeof createForkTray>
 
   beforeEach(() => {
@@ -26,11 +28,17 @@ describe("forkTray", () => {
     active = "thr-a"
     sent = []
     opened = []
+    reasons = []
+    accept = true
     tray = createForkTray({
       host,
       getActiveThreadId: () => active,
       send: (f) => sent.push(f),
-      openThread: (id, title) => opened.push([id, title]),
+      openThread: (id, title, reason) => {
+        reasons.push(reason)
+        if (accept) opened.push([id, title])
+        return accept
+      },
     })
   })
 
@@ -41,6 +49,7 @@ describe("forkTray", () => {
     expect(host.hidden).toBe(false)
     expect(titles()).toEqual(["Clef vs Jev"])
     expect(host.querySelector(".fork-card-summary")!.textContent).toBe("Compare the model to Jev")
+    expect(host.querySelector(".fork-tray-count")!.textContent).toBe("1")
     tray.applyUpdate({ threadId: "thr-a", proposal: P({ id: "fork_2", title: "Second", createdAt: 2 }) })
     expect(titles()).toEqual(["Clef vs Jev", "Second"])
   })
@@ -97,5 +106,45 @@ describe("forkTray", () => {
     tray.applySet({ threadId: "thr-a", proposals: [P({ title: "<img src=x onerror=alert(1)>" })] })
     expect(titles()).toEqual(["<img src=x onerror=alert(1)>"])
     expect(host.querySelector("img")).toBeNull()
+  })
+
+  it("drops a click-accept if you moved to another chat before it finished (no surprise jump)", () => {
+    tray.applySet({ threadId: "thr-a", proposals: [P()] })
+    ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    active = "thr-b"
+    tray.applyUpdate({ threadId: "thr-a", proposal: P({ status: "accepted", childThreadId: "thr-new" }) })
+    expect(opened).toEqual([])
+    // Coming back later does not replay it either.
+    active = "thr-a"
+    tray.applyUpdate({ threadId: "thr-a", proposal: P({ status: "accepted", childThreadId: "thr-new" }) })
+    expect(opened).toEqual([])
+  })
+
+  it("a declined switch (draft in the box) becomes a New chat ready card; Open switches, Later clears", () => {
+    accept = false
+    tray.applyUpdate({ threadId: "thr-a", proposal: P({ autoOpen: true, status: "accepted", childThreadId: "thr-made" }) })
+    expect(reasons).toEqual(["auto"])
+    expect(host.hidden).toBe(false)
+    expect(host.querySelector(".fork-tray-head")!.textContent).toContain("Ready")
+    expect(tray._ready("thr-a")).toHaveLength(1)
+    // Open is an explicit action.
+    accept = true
+    ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    expect(reasons).toEqual(["auto", "open"])
+    expect(opened).toEqual([["thr-made", "Clef vs Jev"]])
+    expect(host.hidden).toBe(true)
+
+    accept = false
+    tray.applyUpdate({ threadId: "thr-a", proposal: P({ id: "fork_2", autoOpen: true, status: "accepted", childThreadId: "thr-2" }) })
+    ;(host.querySelector(".fork-card-dismiss") as HTMLButtonElement).click()
+    expect(host.hidden).toBe(true)
+    expect(tray._ready("thr-a")).toHaveLength(0)
+  })
+
+  it("passes \"click\" as the reason for a Continue accept", () => {
+    tray.applySet({ threadId: "thr-a", proposals: [P()] })
+    ;(host.querySelector(".fork-card-go") as HTMLButtonElement).click()
+    tray.applyUpdate({ threadId: "thr-a", proposal: P({ status: "accepted", childThreadId: "thr-new" }) })
+    expect(reasons).toEqual(["click"])
   })
 })

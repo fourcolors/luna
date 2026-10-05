@@ -12,10 +12,16 @@
  *    accepts at once. It is never drawn. When it arrives `accepted`, the
  *    window that is viewing the parent thread switches to the new chat.
  *
- * Every Moon window receives every update, so the switch rule is narrow: only
- * the window that clicked Continue, or (for autoOpen) the window currently on
- * the parent thread, switches. The server stays the source of truth: a click
- * only disables its button; the next update redraws the card.
+ * Every Moon window receives every update, so the switch rule is narrow:
+ *  - the window must still be ON the parent thread (an intent from a thread
+ *    you have since left is dropped, never a surprise navigation), and
+ *  - it must be the window that clicked Continue, or (autoOpen) any window on
+ *    the parent.
+ * The host may still decline (`openThread` returns false), for example while
+ * you are typing a draft. A declined switch becomes a "New chat ready" card
+ * with an Open button, so nothing is lost and nothing moves under you.
+ * The server stays the source of truth: a click only disables its button;
+ * the next update redraws the card.
  */
 
 export interface ForkProposal {
@@ -39,8 +45,17 @@ export interface ForkTrayDeps {
     readonly proposalId: string
     readonly decision: "accept" | "dismiss"
   }) => void
-  /** Switch this window to a newly created chat. */
-  readonly openThread: (threadId: string, title: string) => void
+  /**
+   * Switch this window to a newly created chat. `reason` says who asked:
+   * "click" (Continue), "auto" (create_thread), or "open" (the ready card's
+   * Open button). Return false to decline; the tray then shows a ready card.
+   */
+  readonly openThread: (threadId: string, title: string, reason: "click" | "auto" | "open") => boolean
+}
+
+interface ReadyChat {
+  readonly childThreadId: string
+  readonly title: string
 }
 
 const isLive = (p: ForkProposal): boolean =>
@@ -50,8 +65,10 @@ export function createForkTray(deps: ForkTrayDeps) {
   const byThread = new Map<string, Map<string, ForkProposal>>()
   /** Proposals THIS window accepted; only these switch on a click-accept. */
   const acceptedHere = new Set<string>()
-  /** Children already opened, so a replayed update never switches twice. */
+  /** Children already handled (opened or parked), so a replay never repeats. */
   const opened = new Set<string>()
+  /** Declined switches, per parent thread, waiting on an Open click. */
+  const ready = new Map<string, Map<string, ReadyChat>>()
 
   function store(p: ForkProposal): void {
     let m = byThread.get(p.parentThreadId)
@@ -63,12 +80,67 @@ export function createForkTray(deps: ForkTrayDeps) {
 
   function maybeOpen(p: ForkProposal): void {
     if (p.status !== "accepted" || !p.childThreadId || opened.has(p.childThreadId)) return
-    const mine = acceptedHere.has(p.id)
-    const auto = p.autoOpen === true && deps.getActiveThreadId() === p.parentThreadId
-    if (!mine && !auto) return
-    acceptedHere.delete(p.id)
+    const mine = acceptedHere.delete(p.id)
+    const onParent = deps.getActiveThreadId() === p.parentThreadId
+    if (!onParent) return // you moved on: the new chat is in Chats, no jump
+    if (!mine && p.autoOpen !== true) return
     opened.add(p.childThreadId)
-    deps.openThread(p.childThreadId, p.title)
+    const switched = deps.openThread(p.childThreadId, p.title, mine ? "click" : "auto")
+    if (!switched) {
+      let m = ready.get(p.parentThreadId)
+      if (!m) { m = new Map(); ready.set(p.parentThreadId, m) }
+      m.set(p.childThreadId, { childThreadId: p.childThreadId, title: p.title })
+    }
+  }
+
+  function dropReady(parent: string, child: string): void {
+    const m = ready.get(parent)
+    if (!m) return
+    m.delete(child)
+    if (m.size === 0) ready.delete(parent)
+  }
+
+  function renderReady(host: HTMLElement, parent: string, r: ReadyChat): void {
+    // Same structure and classes as a suggestion card (see render), so the
+    // tray styling covers both.
+    const card = document.createElement("div")
+    card.className = "fork-card fork-card-ready"
+    card.dataset.childThreadId = r.childThreadId
+    const text = document.createElement("div")
+    text.className = "fork-card-text"
+    const title = document.createElement("span")
+    title.className = "fork-card-title"
+    title.textContent = r.title
+    title.title = r.title
+    const summary = document.createElement("span")
+    summary.className = "fork-card-summary"
+    summary.textContent = "Created. Open it now, or find it in Chats later."
+    text.append(title, summary)
+    const go = document.createElement("button")
+    go.type = "button"
+    go.className = "fork-card-go"
+    go.textContent = "Open"
+    go.setAttribute("aria-label", `Open new chat: ${r.title}`)
+    go.addEventListener("click", () => {
+      if (deps.openThread(r.childThreadId, r.title, "open")) {
+        dropReady(parent, r.childThreadId)
+        render()
+      }
+    })
+    const no = document.createElement("button")
+    no.type = "button"
+    no.className = "fork-card-dismiss"
+    no.textContent = "Later"
+    no.setAttribute("aria-label", `Keep ${r.title} in Chats for later`)
+    no.addEventListener("click", () => {
+      dropReady(parent, r.childThreadId)
+      render()
+    })
+    const actions = document.createElement("div")
+    actions.className = "fork-card-actions"
+    actions.append(go, no)
+    card.append(text, actions)
+    host.append(card)
   }
 
   function render(): void {
@@ -77,22 +149,31 @@ export function createForkTray(deps: ForkTrayDeps) {
     const threadId = deps.getActiveThreadId()
     const m = threadId ? byThread.get(threadId) : undefined
     const live = m ? [...m.values()].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)) : []
+    const parked = threadId ? [...(ready.get(threadId)?.values() ?? [])] : []
     host.replaceChildren()
-    if (!threadId || live.length === 0) {
+    if (!threadId || (live.length === 0 && parked.length === 0)) {
       host.hidden = true
       return
     }
     host.hidden = false
 
-    const head = document.createElement("div")
-    head.className = "fork-tray-head"
-    const headLabel = document.createElement("span")
-    headLabel.textContent = "Suggested · new chat"
-    const count = document.createElement("span")
-    count.className = "fork-tray-count"
-    count.textContent = String(live.length)
-    head.append(headLabel, count)
-    host.append(head)
+    const header = (text: string, n: number) => {
+      const head = document.createElement("div")
+      head.className = "fork-tray-head"
+      const headLabel = document.createElement("span")
+      headLabel.textContent = text
+      const count = document.createElement("span")
+      count.className = "fork-tray-count"
+      count.textContent = String(n)
+      head.append(headLabel, count)
+      host.append(head)
+    }
+
+    if (parked.length > 0) {
+      header("Ready · new chat", parked.length)
+      for (const r of parked) renderReady(host, threadId, r)
+    }
+    if (live.length > 0) header("Suggested · new chat", live.length)
 
     for (const p of live) {
       const card = document.createElement("div")
@@ -169,8 +250,9 @@ export function createForkTray(deps: ForkTrayDeps) {
     },
     /** Redraw for the current active thread (call on thread switch). */
     render,
-    /** Test hook. */
+    /** Test hooks. */
     _live: (threadId: string) => [...(byThread.get(threadId)?.values() ?? [])],
+    _ready: (threadId: string) => [...(ready.get(threadId)?.values() ?? [])],
   }
 }
 
