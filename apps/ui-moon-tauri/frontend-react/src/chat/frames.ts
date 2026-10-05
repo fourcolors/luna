@@ -361,7 +361,14 @@ export function createFrames(ctx: FramesCtx) {
   //
   // Clear-after-send (Copilot review): the stash is only cleared once the
   // frame has been handed to an OPEN socket; if send fails, restore it.
-  function flushPendingUserMessage(threadId) {
+  //
+  // `opts.background`: deliver for a mint the user already navigated away
+  // from. The minted thread is never made active (and the server hides it from
+  // thread-list until it has a user message), so the viewed-thread gate below
+  // would strand the message forever. The server's user-message handler sends
+  // to the thread without a prior subscribe, and the thread then appears in
+  // thread-list by itself once it has a message.
+  function flushPendingUserMessage(threadId, opts?) {
     if (!State.pendingUserMessage) return;
     if (!threadId) return;
     const pending = State.pendingUserMessage;
@@ -380,7 +387,7 @@ export function createFrames(ctx: FramesCtx) {
       return;
     }
     // Still require the bound thread to be the viewed one (user didn't leave).
-    if (threadId !== State.activeThreadId) return;
+    if (!(opts && opts.background) && threadId !== State.activeThreadId) return;
     // ENGINE-AWARE ONLY (#500). This used to re-check `State.ws` on top of
     // the predicate, which PoolEngine never assigns - so under the default
     // engine the second clause was always false and a stashed message could
@@ -459,9 +466,13 @@ export function createFrames(ctx: FramesCtx) {
       bindPendingUserMessage(createdThreadId);
       flushPendingUserMessage(createdThreadId);
     } else if (frame && frame.thread && frame.thread.id) {
-      // User already moved on, but still bind so a later intentional open of
-      // this thread can flush (and never into a stranger).
+      // User already moved on. Bind the stash to THIS mint and deliver it to
+      // the minted thread directly: nothing can ever open that thread (it has
+      // no message yet, so the server hides it from the drawer), so waiting for
+      // a "later intentional open" would drop the message. If the socket is
+      // down the stash stays bound to this thread (never misdelivered).
       bindPendingUserMessage(frame.thread.id);
+      flushPendingUserMessage(frame.thread.id, { background: true });
     }
   });
 

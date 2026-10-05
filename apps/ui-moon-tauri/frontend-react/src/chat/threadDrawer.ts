@@ -1098,9 +1098,16 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       // threadListAutoSelectPending) atomically — no call site can bypass
       // those invariants. Returns false when already on this thread.
       if (!setActiveThread(id, 'row-click')) return;
+      // A first message stashed for a mint still IN FLIGHT survives the row
+      // click: thread-created (frames.ts background branch) binds it to the
+      // minted thread and sends it there. With no create in flight the stash
+      // can never be bound by an ack (offline-queued: pendingFreshThread was
+      // just cleared by setActiveThread), so it must not outlive the click or
+      // the next unrelated mint would bind and send it into a stranger thread.
+      const mintInFlight = State.threadCreateIntent !== null;
       ThreadCreateState.moveToBackground();       // a late create ack must not steal selection
       State.activeTurnId = null;
-      State.pendingUserMessage = null;
+      if (!mintInFlight) State.pendingUserMessage = null;
       try { WebSocketEngine.clearTurnTimeout(); } catch (_) {}
       // Instant paint from per-thread cache when available (ChatGPT-style).
       // Server re-snapshot is still sent below — it is the authoritative
