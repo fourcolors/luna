@@ -1,5 +1,5 @@
 ---
-description: Cut a Luna Moon release — bump the four version files, push master, then push the moon-v tag (which fires the macOS build), monitor it, and write the release notes.
+description: Cut a Luna Moon release — bump the five version files, push master, then push the moon-v tag (which fires the macOS build), monitor it, and write the release notes.
 argument-hint: "[x.y.z]  (optional — omit to auto-bump the patch)"
 model: sonnet
 allowed-tools: Read, Bash(git fetch:*), Bash(git pull:*), Bash(git push:*), Bash(git log:*), Bash(git status:*), Bash(git ls-remote:*), Bash(git tag:*), Bash(grep:*), Bash(bun run:*), Bash(gh run list:*), Bash(gh run watch:*), Bash(gh run view:*), Bash(gh release view:*), Bash(gh release edit:*), Bash(curl:*)
@@ -7,7 +7,7 @@ allowed-tools: Read, Bash(git fetch:*), Bash(git pull:*), Bash(git push:*), Bash
 
 # /cut-release — cut a Luna Moon release
 
-Cut a Luna **Moon** desktop release (`moon-v<x.y.z>`): bump the four version files, push the
+Cut a Luna **Moon** desktop release (`moon-v<x.y.z>`): bump the five version files, push the
 bump to `master`, then push the `moon-v` tag that fires the macOS build. Monitor it, report
 back inline, and write the GitHub release notes. Requested version: **$ARGUMENTS** (may be
 empty → auto-bump the patch).
@@ -16,7 +16,7 @@ Mechanics live in `scripts/bump-moon.ts`, `.github/workflows/release-moon.yml`, 
 
 ## Context (auto-loaded)
 
-- Version sync (all four files must agree): !`bun run scripts/bump-moon.ts --check 2>&1 | tail -5`
+- Version sync (all five files must agree): !`bun run scripts/bump-moon.ts --check 2>&1 | tail -5`
 - Latest existing Moon tags: !`git fetch --tags --quiet origin 2>/dev/null; git tag --list 'moon-v*' --sort=-version:refname | head -3`
 - Branch / tree state: !`git status -sb | head -1`
 
@@ -38,13 +38,13 @@ released commit is always on `master`. Pushing the `moon-v*` tag is what trigger
 `release-moon.yml` (`on: push: tags: "moon-v*"`).
 
 ```
-bun run scripts/bump-moon.ts <x.y.z> --tag   # bump 4 files in lockstep, commit, create tag — does NOT push
+bun run scripts/bump-moon.ts <x.y.z> --tag   # bump 5 files in lockstep, commit, create tag — does NOT push
 git push origin master                        # bump commit lands on master FIRST
 git push origin moon-v<x.y.z>                 # ← fires the macOS build; the irreversible publish step
 ```
 
-`bump-moon.ts --tag` rewrites all four version files (`package.json` / `tauri.conf.json` /
-`Cargo.toml` / `Cargo.lock`), commits `chore(ui-moon-tauri): bump to <x.y.z>`, and creates the
+`bump-moon.ts --tag` rewrites all five version files (`package.json` / `tauri.conf.json` /
+`Cargo.toml` / `Cargo.lock` / `bun.lock`), commits `chore(ui-moon-tauri): bump to <x.y.z>`, and creates the
 annotated tag — but does **not** push. You push `master` first, then the tag. The tag push is
 the user-facing publish — it will prompt for approval.
 
