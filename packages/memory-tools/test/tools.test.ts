@@ -342,6 +342,88 @@ describe("memory tools search mode", () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]!.topK).toBe(20)
   })
+
+  it("returns a belief hit's statement as its text (beliefs have no content.text)", async () => {
+    // Regression: the DTO read only `content.text`, so every belief came back
+    // with text "" and was useless to the caller even when search found it.
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(null),
+      query: () => Stream.empty,
+      delete: () => Effect.succeed(false),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: () =>
+        Stream.succeed({
+          record: makeRecord({
+            id: "belief-user-1",
+            namespace: "operator",
+            kind: "belief",
+            content: {
+              statement: "The operator prefers plain-language status reports.",
+              status: "active",
+              confidence: 0.9,
+            },
+          }),
+          score: 1,
+        }),
+    } satisfies MemoryRouter
+    const [, searchTool] = makeMemoryTools(router)
+
+    const hits = parseTextResult<ReadonlyArray<{ id: string; text: string; kind: string; beliefStatus?: string }>>(
+      await searchTool.handler(searchArgs({ query: "status reports", limit: 3 }), undefined),
+    )
+
+    expect(hits).toHaveLength(1)
+    expect(hits[0]!.kind).toBe("belief")
+    expect(hits[0]!.text).toBe("The operator prefers plain-language status reports.")
+    expect(hits[0]!.beliefStatus).toBe("active")
+  })
+
+  it("marks a retired belief hit with beliefStatus and leaves non-beliefs unmarked", async () => {
+    const router = {
+      put: () => Effect.void,
+      get: () => Effect.succeed(null),
+      query: () => Stream.empty,
+      delete: () => Effect.succeed(false),
+      backendFor: () => {
+        throw new Error("not used")
+      },
+      exportAll: () => Effect.succeed([]),
+      search: () =>
+        Stream.fromIterable([
+          {
+            record: makeRecord({
+              id: "belief-old",
+              namespace: "operator",
+              kind: "belief",
+              content: { statement: "The operator prefers terse reports.", status: "retired" },
+            }),
+            score: 1,
+          },
+          {
+            record: makeRecord({
+              id: "note-1",
+              namespace: "operator",
+              kind: "note",
+              content: { text: "plain note" },
+            }),
+            score: 0.5,
+          },
+        ]),
+    } satisfies MemoryRouter
+    const [, searchTool] = makeMemoryTools(router)
+
+    const hits = parseTextResult<ReadonlyArray<{ id: string; beliefStatus?: string }>>(
+      await searchTool.handler(searchArgs({ query: "reports", limit: 5 }), undefined),
+    )
+
+    expect(hits.find((h) => h.id === "belief-old")!.beliefStatus).toBe("retired")
+    expect(hits.find((h) => h.id === "note-1")).toBeDefined()
+    expect("beliefStatus" in hits.find((h) => h.id === "note-1")!).toBe(false)
+  })
 })
 
 describe("memory tools scope isolation", () => {
