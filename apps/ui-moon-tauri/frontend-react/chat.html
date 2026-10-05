@@ -1839,6 +1839,34 @@
        Tier 1 = the input shell: + (left) · textarea · send (right).
        Tier 2 = a quiet control bar: optional feedback on the left when the
        server advertises it, model/effort cluster on the right. */
+    /* Queue + Steer tray (src/chat/queueTray.ts). Sits above the input shell. */
+    .queue-tray { padding: 0 2px 6px; }
+    .queue-tray[hidden] { display: none; }
+    .queue-tray-head {
+      display: flex; justify-content: space-between; margin: 0 4px 5px;
+      font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+    .queue-tray-item {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 5px;
+      padding: 6px 7px 6px 12px; border-radius: 10px;
+      border: 1px dashed var(--ink-faint);
+      background: color-mix(in oklab, var(--paper-2, var(--paper)) 70%, transparent);
+    }
+    .queue-tray-text {
+      flex: 1; min-width: 0; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; color: var(--ink); font-size: 13px;
+    }
+    .queue-tray-steer {
+      flex: 0 0 auto; border: 1px solid var(--accent); background: transparent;
+      color: var(--accent); border-radius: 999px; padding: 3px 11px;
+      font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .queue-tray-steer:hover:not(:disabled) {
+      background: var(--accent); color: var(--paper);
+    }
+    .queue-tray-steer:disabled { opacity: .55; cursor: default; }
+
     .composer-input-wrap {
       position: relative;
       display: flex;
@@ -2877,6 +2905,11 @@
            imperatively by src/chat/mentionMenu.ts (textContent only). -->
       <div id="mention-menu" class="slash-menu" role="listbox" aria-label="Agents" aria-hidden="true"></div>
       <input type="file" id="file-input" multiple hidden>
+
+      <!-- Queue + Steer: messages waiting behind the running turn, each with a
+           Steer button. Painted by src/chat/queueTray.ts from server
+           queue-update frames (textContent only). Hidden when empty. -->
+      <div id="queue-tray" class="queue-tray" role="region" aria-label="Queued messages" aria-live="polite" hidden></div>
 
       <!-- Tier 1 — input shell: + (left) · textarea · send (right). -->
       <div class="composer-input-wrap">
