@@ -69,6 +69,7 @@ describe("ForkProposalStore", () => {
       title: "T",
       summary: "S",
       seed: "SECRET SEED",
+      mode: "propose",
       status: "pending",
       createdAt: 0,
     })
@@ -81,6 +82,25 @@ describe("ForkProposalStore", () => {
       createdAt: 0,
     })
     expect("seed" in wire).toBe(false)
+  })
+
+  it("a create_thread proposal records mode \"create\" and goes out with autoOpen", async () => {
+    await run(
+      Effect.gen(function* () {
+        const store = yield* ForkProposalStore
+        const plain = yield* store.propose({
+          parentThreadId: "thr_p", title: "A", summary: "A", seed: "s", nowMs: 1,
+        })
+        expect(plain.mode).toBe("propose")
+        expect("autoOpen" in toForkProposalWire(plain)).toBe(false)
+        const made = yield* store.propose({
+          parentThreadId: "thr_p", title: "B", summary: "B", seed: "s", nowMs: 2, mode: "create",
+        })
+        expect(made.mode).toBe("create")
+        expect(toForkProposalWire(made).autoOpen).toBe(true)
+        expect("mode" in toForkProposalWire(made)).toBe(false)
+      }),
+    )
   })
 
   it("changes stream emits on propose", async () => {

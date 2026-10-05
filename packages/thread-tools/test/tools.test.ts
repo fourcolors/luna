@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { Effect } from "effect"
-import { forkThreadInputSchema, makeForkThreadTools } from "../src/tools.js"
+import { createThreadInputSchema, forkThreadInputSchema, makeForkThreadTools } from "../src/tools.js"
 
 describe("fork_thread input bounds", () => {
   it("accepts a valid proposal", () => {
@@ -92,5 +92,65 @@ describe("makeForkThreadTools handler", () => {
     expect((r2.content as Array<{ text: string }>)[0]?.text).toMatch(
       /fork-loop guard/i,
     )
+  })
+})
+
+describe("create_thread", () => {
+  const find = (tools: ReturnType<typeof makeForkThreadTools>) =>
+    tools.find((t) => t.name === "create_thread")!
+
+  it("stages a mode \"create\" proposal so the server accepts it at once", async () => {
+    const proposed: Array<Record<string, unknown>> = []
+    const tools = makeForkThreadTools(
+      {
+        propose: (input) =>
+          Effect.sync(() => {
+            proposed.push(input as never)
+            return { id: "fork_new" }
+          }),
+      },
+      () => "thr_main",
+      () => false,
+      () => 7,
+    )
+    const r = await find(tools).handler(
+      { title: "Clef vs Jev", seed: "Compare the two." },
+      {} as never,
+    )
+    expect(r.isError).toBeFalsy()
+    expect(proposed).toEqual([
+      {
+        parentThreadId: "thr_main",
+        title: "Clef vs Jev",
+        summary: "Clef vs Jev",
+        seed: "Compare the two.",
+        nowMs: 7,
+        mode: "create",
+      },
+    ])
+  })
+
+  it("works from a fork child (no fork-loop guard), but not when unbound", async () => {
+    const fromChild = makeForkThreadTools(
+      { propose: () => Effect.succeed({ id: "x" }) },
+      () => "thr_child",
+      () => true,
+    )
+    const ok = await find(fromChild).handler({ title: "T", seed: "s" }, {} as never)
+    expect(ok.isError).toBeFalsy()
+
+    const unbound = makeForkThreadTools(
+      { propose: () => Effect.succeed({ id: "x" }) },
+      () => null,
+      () => false,
+    )
+    const bad = await find(unbound).handler({ title: "T", seed: "s" }, {} as never)
+    expect(bad.isError).toBe(true)
+  })
+
+  it("enforces the same title and seed bounds as fork_thread", () => {
+    expect(createThreadInputSchema.safeParse({ title: "", seed: "s" }).success).toBe(false)
+    expect(createThreadInputSchema.safeParse({ title: "t", seed: "x".repeat(8001) }).success).toBe(false)
+    expect(createThreadInputSchema.safeParse({ title: "t", seed: "s" }).success).toBe(true)
   })
 })

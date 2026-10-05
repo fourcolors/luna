@@ -66,6 +66,7 @@ export class ForkProposalStore extends Context.Service<ForkProposalStore, ForkPr
             title: input.title.trim(),
             summary: input.summary.trim(),
             seed: input.seed,
+            mode: input.mode ?? "propose",
             status: "pending",
             createdAt: input.nowMs,
           }
@@ -210,4 +211,5 @@ export const toForkProposalWire = (p: ForkProposal): ForkProposalWire => ({
   status: p.status,
   createdAt: p.createdAt,
   ...(p.childThreadId !== undefined ? { childThreadId: p.childThreadId } : {}),
+  ...(p.mode === "create" ? { autoOpen: true } : {}),
 })

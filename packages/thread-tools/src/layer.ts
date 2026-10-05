@@ -33,7 +33,12 @@ export const THREAD_TOOLS_SYSTEM_PROMPT_ADDENDUM =
   "clicks to enter. Provide a short title, one-line summary, and a self-contained " +
   "`seed` restating their pivoted ask for the new thread. Propose sparingly; a " +
   "missed fork is far cheaper than a wrong one. Do not call fork_thread from a " +
-  "thread that was itself created by a fork."
+  "thread that was itself created by a fork. " +
+  "The same server also has `mcp__thread_tools__create_thread(title, seed)`: it " +
+  "creates a new chat IMMEDIATELY, sends `seed` as its first message, and switches " +
+  "the operator's window to it. Use it when the operator asks you to make a new " +
+  "chat, or approves one. The new chat does not see this conversation, so the seed " +
+  "must restate everything it needs."
 
 const createConfig = (
   store: ForkProposalStoreApi,

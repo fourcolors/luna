@@ -481,6 +481,7 @@ import {
   ForkProposalStore,
   toForkProposalWire,
   FORK_CHILD_TAG,
+  AGENT_CREATED_TAG,
 } from "@luna/thread-tools"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
@@ -4433,13 +4434,19 @@ const buildServerLayer = (
               }
             }
 
+            // create_thread (mode "create") makes a FRESH chat: no resume, no
+            // parent agent section, no fork tag (so the new chat may itself
+            // create chats later), and no breadcrumb in the parent — the
+            // agent's own reply there already says what it did.
+            const isCreate = claimed.mode === "create"
+
             // Resume-fork: inherit parent SDK session when known, and the
             // parent's agent section (agent sidebar S2 — a fork child is a
             // continuation of the same conversation, so it files where its
             // parent lives; write-once at the child's own INSERT).
             let resumeFromSessionId: string | undefined
             let parentAgentName: string | undefined
-            if (Option.isSome(threadRegistryOption)) {
+            if (!isCreate && Option.isSome(threadRegistryOption)) {
               const row = yield* threadRegistryOption.value.get(input.threadId)
               if (row?.sdkSessionId) resumeFromSessionId = row.sdkSessionId
               if (row?.agentName) parentAgentName = row.agentName
@@ -4448,7 +4455,7 @@ const buildServerLayer = (
             const child = yield* chat.createThread({
               title: claimed.title,
               parentSessionId: input.threadId,
-              tags: [FORK_CHILD_TAG],
+              tags: [isCreate ? AGENT_CREATED_TAG : FORK_CHILD_TAG],
               ...(resumeFromSessionId !== undefined
                 ? { resumeFromSessionId }
                 : {}),
@@ -4473,18 +4480,20 @@ const buildServerLayer = (
             yield* chat.send(child.id, claimed.seed)
 
             // Parent breadcrumb: one-line note that the topic moved.
-            yield* chat.deliverResult({
-              threadId: input.threadId,
-              text: `↪ Moved "${claimed.title}" to a new thread.`,
-              source: "thread-fork",
-              label: claimed.title,
-            })
+            if (!isCreate) {
+              yield* chat.deliverResult({
+                threadId: input.threadId,
+                text: `↪ Moved "${claimed.title}" to a new thread.`,
+                source: "thread-fork",
+                label: claimed.title,
+              })
+            }
 
             // Telemetry for accept-rate gating of future auto-fork.
             // (EventSink is optional; best-effort via console when sparse.)
             writeSync(
               1,
-              `[luna/thread-fork] accepted "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
+              `[luna/thread-fork] ${isCreate ? "created" : "accepted"} "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
             )
 
             return {
@@ -4503,6 +4512,35 @@ const buildServerLayer = (
             ),
           ),
       }
+
+      // create_thread: the tool stages a mode "create" proposal; accept it here
+      // at once through the same claim → createThread → seed path the click
+      // uses, so there is one creation path. The claim is atomic, so a
+      // duplicate event can never create two chats. Each accept runs on its
+      // own fiber so a slow createThread never stalls later proposals.
+      yield* Effect.forkScoped(
+        forkStore.changes.pipe(
+          Stream.filter((p) => p.mode === "create" && p.status === "pending"),
+          Stream.runForEach((p) =>
+            Effect.forkScoped(
+              threadForksHandle
+                .respond({ threadId: p.parentThreadId, proposalId: p.id, decision: "accept" })
+                .pipe(
+                  Effect.tap((r) =>
+                    r.ok
+                      ? Effect.void
+                      : Effect.sync(() =>
+                          console.warn(`[luna/thread-fork] create_thread "${p.title}" failed: ${r.message ?? "unknown"}`),
+                        ),
+                  ),
+                ),
+            ),
+          ),
+          Effect.catchCause((c) =>
+            Effect.sync(() => console.error("[luna/thread-fork] create_thread observer died:", String(c))),
+          ),
+        ),
+      )
 
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content

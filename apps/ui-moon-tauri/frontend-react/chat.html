@@ -1960,6 +1960,32 @@
     }
     .queue-tray-steer:disabled { opacity: .55; cursor: default; }
 
+    /* New-chat suggestion cards (src/chat/forkTray.ts). Sits above the input shell. */
+    .fork-tray { padding: 0 2px 6px; }
+    .fork-tray[hidden] { display: none; }
+    .fork-card {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 5px;
+      padding: 7px 7px 7px 12px; border-radius: 10px;
+      border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
+      background: color-mix(in oklab, var(--accent) 9%, transparent);
+    }
+    .fork-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .fork-card-label {
+      font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft);
+    }
+    .fork-card-title, .fork-card-summary {
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .fork-card-title { color: var(--ink); font-size: 13px; font-weight: 600; }
+    .fork-card-summary { color: var(--ink-soft); font-size: 12px; }
+    .fork-card-go, .fork-card-dismiss {
+      flex: 0 0 auto; border-radius: 999px; padding: 3px 11px;
+      font: inherit; font-size: 12px; cursor: pointer;
+    }
+    .fork-card-go { border: 1px solid var(--accent); background: var(--accent); color: var(--paper); }
+    .fork-card-dismiss { border: 1px solid var(--ink-faint); background: transparent; color: var(--ink-soft); }
+    .fork-card-go:disabled, .fork-card-dismiss:disabled { opacity: .55; cursor: default; }
+
     .composer-input-wrap {
       position: relative;
       display: flex;
@@ -3020,6 +3046,11 @@
            Steer button. Painted by src/chat/queueTray.ts from server
            queue-update frames (textContent only). Hidden when empty. -->
       <div id="queue-tray" class="queue-tray" role="region" aria-label="Queued messages" aria-live="polite" hidden></div>
+
+      <!-- New-chat suggestions from fork_thread: one card per pending marker
+           with Continue / Dismiss. Painted by src/chat/forkTray.ts from server
+           fork-proposal frames (textContent only). Hidden when empty. -->
+      <div id="fork-tray" class="fork-tray" role="region" aria-label="Suggested new chats" aria-live="polite" hidden></div>
 
       <!-- Tier 1 — input shell: + (left) · textarea · send (right). -->
       <div class="composer-input-wrap">
