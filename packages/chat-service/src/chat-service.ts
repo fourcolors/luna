@@ -91,6 +91,13 @@ import {
 } from "./types.js"
 import { appendThreadConfigEntry } from "./thread-session-map.js"
 import {
+  previewText,
+  publishQueue,
+  queueUpdateFrame,
+  steerLocked,
+  type TurnQueue,
+} from "./chat-service-turn-queue.js"
+import {
   clampEffort,
   isEffort,
   isUltracode,
@@ -149,6 +156,12 @@ const warnCause =
 export interface TurnPrompt {
   readonly payload: SDKUserMessage
   readonly memoryContext: string | null
+  /** The SessionStore id of the user message this prompt was offered for.
+   *  Locks it to the matching `pendingTurns` seed (offered in the same
+   *  send() step) so per-query consumers can tell which seeds belong to
+   *  the turns they actually ran — the folded-steering drain in
+   *  chat-service-thread-lifecycle.ts relies on this. */
+  readonly userMessageId: string
 }
 
 export interface ThreadEntry {
@@ -171,7 +184,17 @@ export interface ThreadEntry {
     readonly userMessageId: string
     readonly userText: string
   }>
+  /** Serializes pendingTurns polls that can race the recall path's
+   *  post-query folded-seed drain (interrupt() runs on the caller's
+   *  fiber, the drain on the query fiber). Result/failure handlers don't
+   *  take it — they run on the query fiber itself, sequential with the
+   *  drain. */
+  readonly pendingTurnsLock: Semaphore.Semaphore
   readonly assistantText: Ref.Ref<string>
+  /** Queue + Steer state for mid-turn sends. Present on the recall path
+   *  only (see chat-service-turn-queue.ts); the ordinary path's long-lived
+   *  prompt stream hands every send to the CLI as it arrives. */
+  readonly turnQueue?: TurnQueue
   readonly recallMemory?: ThreadToolsBinding["recallMemory"]
   readonly observeTurn?: ThreadToolsBinding["observeTurn"]
 }
@@ -611,14 +634,45 @@ const makeChatService = Effect.gen(function* () {
           // so a closeThread/reap landing in that window makes both offers
           // no-ops: the user's turn is persisted but never reaches the SDK,
           // and the symptom is "Luna just never replied".
-          const acceptedPending = yield* Queue.offer(entry.pendingTurns, {
-            userMessageId: messageId,
-            userText: text,
-          })
-          const acceptedInbox = yield* Queue.offer(entry.inbox, {
-            payload: userPayload,
-            memoryContext: recalled,
-          })
+          // Under pendingTurnsLock so the recall path's seed bookkeeping
+          // (clear -> re-offer in the thread lifecycle) never observes the
+          // pair half-offered or interleaves its re-offer between them.
+          const tq = entry.turnQueue
+          const [acceptedPending, acceptedInbox, listedWaiting] =
+            yield* entry.pendingTurnsLock.withPermits(1)(
+              Effect.gen(function* () {
+                const pendingOk = yield* Queue.offer(entry.pendingTurns, {
+                  userMessageId: messageId,
+                  userText: text,
+                })
+                const inboxOk = yield* Queue.offer(entry.inbox, {
+                  payload: userPayload,
+                  memoryContext: recalled,
+                  userMessageId: messageId,
+                })
+                // A send that lands behind a running turn waits for it
+                // (Queue + Steer). List it in the SAME locked step as the
+                // inbox offer: the turn loop removes an id from `waiting`
+                // under this lock right after taking it, so it can never
+                // remove an id before it was added.
+                let listed = false
+                if (inboxOk && tq !== undefined && (yield* Ref.get(tq.busy))) {
+                  yield* Ref.update(tq.waiting, (w) => [
+                    ...w,
+                    { userMessageId: messageId, text: previewText(text) },
+                  ])
+                  // Publish under the lock too (the pubsub is unbounded, so
+                  // this never blocks): every waiting-list change publishes
+                  // under it, so queue frames reach clients in change order.
+                  yield* publishQueue(entry, tq, threadId)
+                  listed = true
+                }
+                return [pendingOk, inboxOk, listed] as const
+              }),
+            )
+          if (listedWaiting) {
+            yield* inc("luna.chat.user_messages.queued")
+          }
           if (!acceptedPending || !acceptedInbox) {
             yield* Effect.logWarning(
               `[chat] send(${threadId}): thread queue closed mid-send, turn ` +
@@ -805,7 +859,9 @@ const makeChatService = Effect.gen(function* () {
           // the matching observation seed here so the next successful result
           // cannot be paired with stale user text. Candidate capture remains
           // useful for an interrupted turn and stays off the interrupt path.
-          const pending = yield* Queue.poll(entry.pendingTurns)
+          const pending = yield* entry.pendingTurnsLock.withPermits(1)(
+            Queue.poll(entry.pendingTurns),
+          )
           const assistantText = yield* Ref.getAndSet(entry.assistantText, "")
           if (Option.isSome(pending) && entry.observeTurn !== undefined) {
             yield* entry
@@ -822,6 +878,33 @@ const makeChatService = Effect.gen(function* () {
               )
           }
           yield* inc("luna.chat.interrupts.total")
+        })
+
+      /**
+       * Steer: push a message that is waiting behind the running turn into
+       * that turn now, instead of letting it run after. Returns true when the
+       * message was moved. Returns false when there is nothing to steer: the
+       * thread is unknown, the thread is on the ordinary path, no turn is
+       * running, or the message already started. In every false case the
+       * message (if it exists) still runs on its own; nothing is lost.
+       */
+      const steer = (
+        threadId: string,
+        userMessageId: string,
+      ): Effect.Effect<boolean, never> =>
+        Effect.gen(function* () {
+          const entry = (yield* Ref.get(threads)).get(threadId)
+          const tq = entry?.turnQueue
+          if (entry === undefined || tq === undefined) return false
+          const moved = yield* entry.pendingTurnsLock.withPermits(1)(
+            Effect.gen(function* () {
+              const ok = yield* steerLocked(entry, tq, userMessageId)
+              if (ok) yield* publishQueue(entry, tq, threadId)
+              return ok
+            }),
+          )
+          yield* inc("luna.chat.steers.total", { moved: String(moved) })
+          return moved
         })
 
       /**
@@ -1213,6 +1296,13 @@ const makeChatService = Effect.gen(function* () {
           // attached) as ONE set frame right after the snapshot. Best-effort
           // — a store error must not break the subscribe / snapshot path.
           const frames: ChatFrame[] = [snapshotFrame]
+          // Re-send the waiting list when anything is waiting. Clients clear
+          // their queue view on every snapshot, so an absent frame means empty.
+          const live = (yield* Ref.get(threads)).get(threadId)
+          if (live?.turnQueue !== undefined) {
+            const waiting = yield* Ref.get(live.turnQueue.waiting)
+            if (waiting.length > 0) frames.push(queueUpdateFrame(threadId, waiting))
+          }
           yield* Option.match(suggestedActions, {
             onNone: () => Effect.void,
             onSome: (sa) =>
@@ -1677,6 +1767,7 @@ const makeChatService = Effect.gen(function* () {
         send,
         deliverResult,
         interrupt,
+        steer,
         setThreadConfig,
         subscribe,
         /** One-shot snapshot without a live PubSub sub (re-paint on re-entry). */

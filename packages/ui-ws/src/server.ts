@@ -2449,6 +2449,17 @@ export const startUIWebSocketServer = (
                     yield* chat.interrupt(frame.threadId)
                     return
                   }
+                  case "steer": {
+                    if (chat === null) return
+                    if (
+                      typeof frame.threadId !== "string" ||
+                      typeof frame.userMessageId !== "string"
+                    ) return
+                    // The queue-update this publishes is the ack; a false
+                    // result means the message already runs on its own.
+                    yield* chat.steer(frame.threadId, frame.userMessageId)
+                    return
+                  }
                   case "set-thread-config": {
                     // Model + effort switcher. Gated on chat being bound (which
                     // implies effortSelection: true in capabilities). The ack

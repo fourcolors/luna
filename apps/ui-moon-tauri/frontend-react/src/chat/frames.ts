@@ -27,6 +27,8 @@
  */
 // @ts-nocheck
 
+import { createQueueTray } from './queueTray'
+
 export interface FramesCtx {
   readonly Logger: {
     info: (m?: unknown, ...a: unknown[]) => void
@@ -53,6 +55,14 @@ export function createFrames(ctx: FramesCtx) {
   } = ctx.engines
 
   const MoonFrames = LunaWS.createFrameRegistry();
+
+  // Queue + Steer tray above the composer. The host is looked up at render
+  // time so this factory does not depend on DOM order.
+  const QueueTray = createQueueTray({
+    get host() { return document.getElementById('queue-tray'); },
+    getActiveThreadId: () => State.activeThreadId,
+    send: (f) => WebSocketEngine.send(f),
+  });
 
   // CHAT frame set only (Phase 4): skill-*/connector-*/vault-*/
   // register-op-token-status ride the settings PANELS' own connections, and
@@ -493,6 +503,10 @@ export function createFrames(ctx: FramesCtx) {
   });
 
   MoonFrames.register('thread-snapshot', (frame) => {
+    // A snapshot replaces the thread's state, queue included: the server
+    // re-sends `queue-update` right after it when anything is waiting. The
+    // redraw also swaps the tray to the newly active thread on a switch.
+    QueueTray.clearThread(frame && frame.threadId);
     // Always refresh the per-thread cache — even a late snapshot for a
     // non-active thread keeps switch-back instant (and correct after a
     // background turn finished while we were elsewhere).
@@ -760,6 +774,11 @@ export function createFrames(ctx: FramesCtx) {
     SurveyEngine.show(frame);
   });
 
+  MoonFrames.register('queue-update', (frame) => {
+    // Messages waiting behind the running turn (Queue + Steer).
+    QueueTray.applyUpdate(frame);
+  });
+
   MoonFrames.register('user-accepted', (frame) => {
     // The server persisted a user message. Moon already drew the bubble
     // optimistically, so the only job here is the per-thread cache: without
@@ -835,5 +854,7 @@ export function createFrames(ctx: FramesCtx) {
     ),
     /** Test hook only. */
     MoonFrames,
+    /** Test hook only. */
+    QueueTray,
   }
 }
