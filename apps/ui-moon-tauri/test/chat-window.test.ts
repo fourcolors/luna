@@ -5267,7 +5267,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       const m = M()
       m.State.activeThreadId = 'b'
       seed()
-      // The active thread leaves the side-chat list and pins to the Main
+      // The active thread leaves the chat list and pins to the Main
       // chat card above it — that card is the "highlighted" state now.
       expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')).toBeNull()
       const card = document.getElementById('main-chat-card') as HTMLElement

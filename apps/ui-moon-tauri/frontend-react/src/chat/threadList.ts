@@ -393,7 +393,7 @@ export function groupByAgent(
 }
 
 /**
- * Consumer-friendly unread (the blue dot on a side chat): a thread whose
+ * Consumer-friendly unread (the blue dot on a chat): a thread whose
  * newest activity is NEWER than the last time it was on screen. The active
  * thread is never unread — it renders as the pinned Main chat card, always
  * in view. `seenAt` maps thread id -> epoch ms of the newest activity the

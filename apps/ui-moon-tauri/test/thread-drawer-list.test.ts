@@ -234,7 +234,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       // A server list that legitimately cannot contain 'fresh' yet.
       eng().applyList([{ id: 'a', lastMessageAt: 2_000 }])
       // The carve-out keeps it in State.threads; the drawer shows it as the
-      // Main chat card, not as a side-chat row.
+      // Main chat card, not as a chat row.
       expect(State().threads.map((t: any) => t.id).sort()).toEqual(['a', 'fresh'])
       expect(ids()).toEqual(['a'])
       expect(document.getElementById('main-chat-title')!.textContent).toBe('Untitled thread')
@@ -273,7 +273,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       expect(rows).toHaveLength(1)
       expect(rows[0].title).toBe('Real title')
       // It is active, so it renders as the Main chat card - never as a
-      // side-chat row, and never duplicated.
+      // chat row, and never duplicated.
       expect(ids()).toEqual([])
       expect(document.getElementById('main-chat-title')!.textContent).toBe('Real title')
     })
@@ -296,7 +296,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       M().ThreadCreateState.begin(State())      // "+ New" pressed
       M().handleFrame(created('fresh'))
       // 'fresh' becomes the active thread, so it lands on the Main chat
-      // card; the side-chat list keeps the rest.
+      // card; the chat list keeps the rest.
       expect(State().activeThreadId).toBe('fresh')
       expect(ids()).toEqual(['a'])
       expect((document.getElementById('main-chat-card') as HTMLElement).hidden).toBe(false)
@@ -445,8 +445,8 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
     })
   })
 
-  // ── Main chat card + Side chats (consumer-friendly sidebar) ───────────────
-  describe('Main chat card and side-chat list', () => {
+  // ── Main chat card + Chats (consumer-friendly sidebar) ───────────────
+  describe('Main chat card and chat list', () => {
     it('excludes the active thread from _visibleThreads (it renders as the Main chat card)', () => {
       State().threads = [
         { id: 'a', title: 'A', lastMessageAt: 1 },
@@ -462,7 +462,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       expect(ids().sort()).toEqual(['a', 'b'])
     })
 
-    it('paints the Main chat card with the active thread title and hides its side-chat row', () => {
+    it('paints the Main chat card with the active thread title and hides its chat row', () => {
       State().threads = [
         { id: 'a', title: 'Side A', lastMessageAt: 1 },
         { id: 'b', title: 'Main B', lastMessageAt: 2 },
@@ -494,7 +494,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       expect(document.querySelector('#main-chat-card img')).toBeNull()
     })
 
-    it('marks a side chat unread when its activity is newer than last seen, and clears it on open', () => {
+    it('marks a chat unread when its activity is newer than last seen, and clears it on open', () => {
       State().threads = [
         { id: 'a', title: 'A', lastMessageAt: 100 },
         { id: 'b', title: 'B', lastMessageAt: 200 },
@@ -503,7 +503,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       eng().render()
       // First sight seeds "seen" — nothing is unread yet.
       expect(document.querySelector('#thread-drawer-list .thread-row.unread')).toBeNull()
-      // Background activity lands on the side chat.
+      // Background activity lands on the chat.
       State().threads = [
         { id: 'a', title: 'A', lastMessageAt: 300 },
         { id: 'b', title: 'B', lastMessageAt: 200 },
@@ -515,6 +515,43 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       State().activeThreadId = 'a'
       eng().render()
       expect(document.querySelector('#thread-drawer-list .thread-row.unread')).toBeNull()
+    })
+
+    it('a seen-state write skipped by the 2s throttle still lands: trailing timer, or forced on hide', () => {
+      vi.useFakeTimers()
+      try {
+        const saved = () => JSON.parse(localStorage.getItem('luna.threadSeenAt') || '{}')
+        State().threads = [
+          { id: 'a', title: 'A', lastMessageAt: 100 },
+          { id: 'b', title: 'B', lastMessageAt: 200 },
+        ]
+        State().activeThreadId = 'b'
+        eng().render() // first write goes straight through
+        expect(saved()).toEqual({ a: 100, b: 200 })
+
+        // New activity on B is seen inside the throttle window: not written yet.
+        State().threads = [
+          { id: 'a', title: 'A', lastMessageAt: 100 },
+          { id: 'b', title: 'B', lastMessageAt: 250 },
+        ]
+        eng().render()
+        expect(saved().b).toBe(200)
+        // The trailing timer writes it once the window ends.
+        vi.advanceTimersByTime(2000)
+        expect(saved().b).toBe(250)
+
+        // Inside a fresh window, a forced flush (window hiding/closing) bypasses it.
+        State().threads = [
+          { id: 'a', title: 'A', lastMessageAt: 100 },
+          { id: 'b', title: 'B', lastMessageAt: 300 },
+        ]
+        eng().render()
+        expect(saved().b).toBe(250)
+        eng()._persistSeenAt(true)
+        expect(saved().b).toBe(300)
+      } finally {
+        vi.useRealTimers()
+      }
     })
 
     it('the active thread never wears the unread dot', () => {

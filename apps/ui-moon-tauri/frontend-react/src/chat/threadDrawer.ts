@@ -324,6 +324,13 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
         openRaw = localStorage.getItem('luna.sidebar.open');
       } catch (_) {}
       if (pref > 0) State.lastOpenWidth = pref;
+      // Flush unread "seen" state when the window hides or closes, past the
+      // write throttle in _persistSeenAt.
+      const flushSeen = () => this._persistSeenAt(true);
+      window.addEventListener('pagehide', flushSeen);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushSeen();
+      });
       // An absent flag (fresh install, or pre-flag persistence where the stored
       // width was 0 when collapsed) infers open from a saved positive width;
       // otherwise honour the explicit '1'/'0'.
@@ -415,9 +422,9 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     _ts(t) { return ThreadListLogic.threadTimestamp(t); },
 
     /**
-     * The rows the side-chat list paints. The ACTIVE thread is excluded: it
+     * The rows the chat list paints. The ACTIVE thread is excluded: it
      * renders as the pinned "Main chat" card above the list, so the strip is
-     * side chats only. Every consumer of this delegate — render(), the
+     * the other chats only. Every consumer of this delegate — render(), the
      * redock insert-index math, the drag engine's next-thread lookup, e2e's
      * listThreadIds — sees exactly the row set the strip paints, so the
      * counts can never drift apart.
@@ -428,7 +435,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       return active ? rows.filter((t) => !t || t.id !== active) : rows;
     },
 
-    // --- consumer-friendly unread (Main chat / Side chats) ------------------
+    // --- consumer-friendly unread (Main chat / Chats) ------------------
     // `State.threadSeenAt` maps thread id -> epoch ms of the newest activity
     // the user has seen. render() seeds an entry for every id it meets (so
     // only FUTURE activity lights the dot) and keeps the active thread's
@@ -460,10 +467,24 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       if (ts > (seen[id] || 0)) { seen[id] = ts; this._seenAtDirty = true; }
     },
 
-    _persistSeenAt() {
+    // Throttled to one localStorage write per 2s. A write skipped by the
+    // throttle is not dropped: a trailing timer writes it once the 2s window
+    // ends, and `force` (window hide/close, see initSidebar) bypasses the
+    // throttle so quitting right after viewing a chat still records it as seen.
+    _persistSeenAt(force = false) {
       if (!this._seenAtDirty) return;
       const now = Date.now();
-      if (now - (this._seenAtSavedAt || 0) < 2000) return;
+      const wait = 2000 - (now - (this._seenAtSavedAt || 0));
+      if (!force && wait > 0) {
+        if (!this._seenAtTimer) {
+          this._seenAtTimer = setTimeout(() => {
+            this._seenAtTimer = null;
+            this._persistSeenAt();
+          }, wait);
+        }
+        return;
+      }
+      if (this._seenAtTimer) { clearTimeout(this._seenAtTimer); this._seenAtTimer = null; }
       try {
         // Prune ids for threads that no longer exist so the map cannot grow
         // unbounded across months of chats.
@@ -494,7 +515,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       // after painting (or only when every chip vanished) left one render
       // showing an empty, unfilterable-looking list.
       this._validateAgentFilter();
-      // Unread bookkeeping (Main chat / Side chats): seed a "seen" entry for
+      // Unread bookkeeping (Main chat / Chats): seed a "seen" entry for
       // every thread id without one, so the dot only ever lights for FUTURE
       // activity, then keep the active thread's entry current — it is always
       // in view, so it can never be unread. render() is the one place every
@@ -525,8 +546,8 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
           : -1,
         isBusy: (id) => ThreadCache.isBusy(id),
         isUnread: (t) => ThreadListLogic.isThreadUnread(t, State.threadSeenAt, State.activeThreadId),
-        emptyText: 'No side chats yet. Use + to start one.',
-        emptySearchText: 'No matching side chats.',
+        emptyText: 'No chats yet. Use + to start one.',
+        emptySearchText: 'No matching chats.',
         relTime: (t) => this._relTime(t),
         wireRow: (row, t) => this._wireRow(row, t),
         makeInsertGap: (p) => this._makeInsertGap(p),
@@ -628,7 +649,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
 
     // --- Main chat card (consumer-friendly sidebar) --------------------------
     /**
-     * Paints the pinned "Main chat" card above the side-chat list: the
+     * Paints the pinned "Main chat" card above the chat list: the
      * ACTIVE thread, i.e. the conversation in this window. The card is
      * updated in place (textContent only — server data never becomes
      * markup) so it never steals focus on a repaint. Clicking it selects

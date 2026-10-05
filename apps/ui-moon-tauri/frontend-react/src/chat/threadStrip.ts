@@ -56,13 +56,13 @@ export interface ThreadStripCtx {
   /** True while a thread has work in flight - drives the row's busy dot. */
   readonly isBusy: (threadId: string) => boolean
   /**
-   * Consumer-friendly unread dot (Main chat / Side chats): true when the
+   * Consumer-friendly unread dot (Main chat / Chats): true when the
    * thread has activity newer than the user has seen. ABSENT = no unread
    * dots, the exact pre-existing paint.
    */
   readonly isUnread?: (t: ThreadRow) => boolean
   /**
-   * Empty-state wording overrides for the side-chat list. Absent = the
+   * Empty-state wording overrides for the chat list. Absent = the
    * pre-existing "No threads yet." / "No matching threads." text.
    */
   readonly emptyText?: string

@@ -1177,7 +1177,7 @@
     .chat-panel.sidebar-resizing .thread-divider { transition: none; }
     /* Keep the inner content from squishing while the width animates/drags — it
        clips (Things-3 feel) instead of reflowing. */
-    .thread-drawer-topbar, .main-chat-card, .side-chats-header, .agent-chips, .thread-drawer-list { min-width: 200px; }
+    .thread-drawer-topbar, .main-chat-card, .chats-header, .agent-chips, .thread-drawer-list { min-width: 200px; }
     /* Draggable divider at the sidebar's right edge; doubles as the collapsed
        grabber (parks at the window's left edge when --sidebar-w is 0). */
     .thread-divider {
@@ -1215,7 +1215,7 @@
       flex-shrink: 0;
       border-bottom: 1px solid var(--ink-faint);
     }
-    /* ── Main chat card: the active thread, pinned above the side-chat list.
+    /* ── Main chat card: the active thread, pinned above the chat list.
        Same accent wash, radius, padding, and type as an active .thread-row
        so it reads as "where you are", not a separate card language. ── */
     .main-chat-card {
@@ -1267,16 +1267,16 @@
       outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
       outline-offset: 1px;
     }
-    /* ── Side chats section header + the drawer's "+" (new side chat).
+    /* ── Chats section header + the drawer's "+" (new chat).
        Type matches .thread-section-name; the + stays visible (it is the
        only new-thread control) and uses the same hover wash as
        .thread-section-new. ── */
-    .side-chats-header {
+    .chats-header {
       flex-shrink: 0;
       display: flex; align-items: center; gap: 7px;
       padding: 10px 8px 4px;
     }
-    .side-chats-label {
+    .chats-label {
       flex: 1; min-width: 0;
       font-size: 0.7rem; font-weight: 700;
       letter-spacing: 0.045em; text-transform: uppercase; color: var(--ink-soft);
@@ -1412,7 +1412,7 @@
       opacity: 0; transition: opacity 0.14s ease;
     }
     .thread-row.active .thread-row-dot { opacity: 1; }
-    /* Unread side chat: activity newer than the user has seen. A solid
+    /* Unread chat: activity newer than the user has seen. A solid
        accent dot; the busy pulse below wins when both apply (same
        specificity, later in source). */
     .thread-row.unread .thread-row-dot {
@@ -2579,7 +2579,7 @@
     <span class="bar-title" id="bar-title-root">Luna</span>
     <!-- Right cluster balances the traffic lights so the title stays centered
          (same .bar-end structure as panel.html / widget.html). New thread lives
-         ONLY in the thread drawer (the "+" in the "Side chats" header,
+         ONLY in the thread drawer (the "+" in the "Chats" header,
          #thread-drawer-new) — the title bar
          used to carry a duplicate + button here, and it was removed. -->
     <div class="bar-end">
@@ -2783,7 +2783,7 @@
            involved in. Painted by ThreadDrawerEngine.renderAgentChips
            (textContent only); hidden until the server advertises agents. -->
       <div class="agent-chips" id="agent-chips" role="group" aria-label="Filter chats by agent" hidden></div>
-      <!-- Main chat: the active thread, pinned above the side-chat list so the
+      <!-- Main chat: the active thread, pinned above the chat list so the
            drawer reads like a consumer chat app. Painted in place by
            ThreadDrawerEngine.renderMainChat (textContent only); hidden until
            there is an active thread. -->
@@ -2795,17 +2795,17 @@
         </span>
         <button type="button" class="main-chat-pop" id="main-chat-pop" title="Open in new window" aria-label="Open main chat in new window">⤢</button>
       </div>
-      <!-- Side chats: every other thread. The "+" is #thread-drawer-new — the
+      <!-- Chats: every other thread. The "+" is #thread-drawer-new — the
            drawer's only new-thread affordance — moved here from the old
-           header so creating a side chat reads as part of the section. -->
-      <div class="side-chats-header">
-        <span class="side-chats-label">Side chats</span>
-        <button class="thread-drawer-new" id="thread-drawer-new" type="button" title="New side chat" aria-label="New side chat">
+           header so creating a chat reads as part of the section. -->
+      <div class="chats-header">
+        <span class="chats-label">Chats</span>
+        <button class="thread-drawer-new" id="thread-drawer-new" type="button" title="New chat" aria-label="New chat">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
         </button>
       </div>
       <div class="thread-drawer-list" id="thread-drawer-list" role="list">
-        <div class="thread-drawer-empty" id="thread-drawer-empty">No side chats yet.</div>
+        <div class="thread-drawer-empty" id="thread-drawer-empty">No chats yet.</div>
       </div>
     </aside>
 
