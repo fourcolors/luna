@@ -212,8 +212,11 @@ export const markdownToTelegramHtml = (md: string): string => {
     }
 
     // Horizontal rule BEFORE bullets: "---"/"***" are rules, not list items.
+    // Emit 3 box-drawing chars, matching the input length, so the converter
+    // never grows the text: the header invariant ("a <=4096-char markdown
+    // chunk can never overflow") breaks if any transform expands its input.
     if (HR_RE.test(line)) {
-      out.push("──────────")
+      out.push("───")
       i++
       continue
     }
