@@ -1,5 +1,5 @@
 import { homedir, hostname } from "node:os"
-import { join, posix as pathPosix, resolve as resolvePath } from "node:path"
+import { join, resolve as resolvePath } from "node:path"
 import type { Readable, Writable } from "node:stream"
 import type { ServerFrame } from "@luna/ui-ws"
 import { createLineReader, writeError, writeOut as write, writeErr } from "../views/readline.js"
@@ -14,6 +14,7 @@ import {
 import {
   addLocalShellRoot,
   executeLocalCommand,
+  isCwdWithinRoot,
   isCwdWithinRoots,
   makeLocalShellState,
   removeLocalShellRoot,
@@ -153,12 +154,12 @@ export const isAutoApprovedLocalShellCwd = (
   root = DEFAULT_AUTO_APPROVED_LOCAL_SHELL_ROOT,
 ): boolean => {
   if (cwd === undefined) return true
-  if (!cwd.startsWith("/") || !root.startsWith("/")) return false
-
-  const normalizedRoot = pathPosix.normalize(root)
-  const normalized = pathPosix.normalize(cwd)
-  return normalized === normalizedRoot
-    || normalized.startsWith(`${normalizedRoot}/`)
+  // Delegate to the canonical scope check: pathPosix.normalize preserves a
+  // trailing slash, so comparing raw normalized values made a configured
+  // root of "/root/luna/" deny every in-scope cwd (double slash in the
+  // startsWith prefix, failed equality). isCwdWithinRoot strips the slash
+  // (see PR #738) and treats root "/" as containing everything.
+  return isCwdWithinRoot(cwd, root)
 }
 
 export const connectWithRecovery = async (
