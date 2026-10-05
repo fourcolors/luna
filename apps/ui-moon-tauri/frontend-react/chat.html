@@ -1210,71 +1210,93 @@
     .chat-panel.sidebar-collapsed .thread-divider-grip { opacity: 0.5; }
     .chat-panel.sidebar-collapsed .thread-divider:hover .thread-divider-grip { opacity: 1; }
     .thread-drawer-topbar {
-      display: flex; align-items: center; gap: 8px;
-      padding: 11px 10px 4px 10px;
+      display: flex; align-items: center; gap: 6px;
+      padding: 10px 8px 8px;
       flex-shrink: 0;
+      border-bottom: 1px solid var(--ink-faint);
     }
-    /* ── Main chat card: the active thread, pinned above the side-chat list
-       so the drawer reads like a consumer chat app. Same accent wash as an
-       active row, with its own dot so it scans as "where you are". ── */
+    /* ── Main chat card: the active thread, pinned above the side-chat list.
+       Same accent wash, radius, padding, and type as an active .thread-row
+       so it reads as "where you are", not a separate card language. ── */
     .main-chat-card {
       flex-shrink: 0;
       display: flex; align-items: center; gap: 8px;
-      margin: 8px 10px 2px; padding: 8px 10px 8px 9px;
-      border-radius: 10px;
+      margin: 8px 8px 0; padding: 7px 8px 7px 6px;
+      border-radius: 9px;
       background: color-mix(in oklab, var(--accent) 17%, transparent);
       border: 1px solid color-mix(in oklab, var(--accent) 34%, transparent);
       cursor: pointer;
       transition: background 0.14s ease, border-color 0.14s ease;
     }
     .main-chat-card[hidden] { display: none; }
-    .main-chat-card:hover { background: color-mix(in oklab, var(--accent) 24%, transparent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+    .main-chat-card:hover {
+      background: color-mix(in oklab, var(--accent) 20%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 38%, transparent);
+    }
+    .main-chat-card:active {
+      background: color-mix(in oklab, var(--accent) 17%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+    }
     .main-chat-card:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent); outline-offset: -2px; }
     .main-chat-dot {
       flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
-      background: var(--accent);
+      background: color-mix(in oklab, var(--accent) 72%, transparent);
     }
     .main-chat-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
     .main-chat-label {
-      font-size: 0.6rem; font-weight: 700; letter-spacing: 0.07em;
+      font-size: 0.66rem; font-weight: 700; letter-spacing: 0.045em;
       text-transform: uppercase; color: var(--ink-soft);
     }
     .main-chat-title {
-      font-size: 0.78rem; font-weight: 600; color: var(--ink);
+      font-size: 0.79rem; font-weight: 600; color: var(--ink);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .main-chat-pop {
       flex-shrink: 0; width: 24px; height: 24px; border-radius: 6px;
       border: 1px solid transparent; background: transparent;
       color: var(--ink-soft); font-size: 0.78rem; line-height: 1;
-      cursor: pointer; opacity: 0; transition: opacity 0.12s ease, background 0.12s ease;
+      cursor: pointer; opacity: 0; padding: 0;
+      transition: opacity 0.12s ease, background 0.12s ease;
       display: inline-flex; align-items: center; justify-content: center;
     }
     .main-chat-card:hover .main-chat-pop,
     .main-chat-card:focus-within .main-chat-pop { opacity: 1; }
     .main-chat-pop:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); color: var(--ink); border-color: color-mix(in oklab, var(--ink) 12%, transparent); }
-    /* ── Side chats section header + the drawer's "+" (new side chat). ── */
+    .main-chat-pop:focus-visible {
+      opacity: 1;
+      outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
+      outline-offset: 1px;
+    }
+    /* ── Side chats section header + the drawer's "+" (new side chat).
+       Type matches .thread-section-name; the + stays visible (it is the
+       only new-thread control) and uses the same hover wash as
+       .thread-section-new. ── */
     .side-chats-header {
       flex-shrink: 0;
       display: flex; align-items: center; gap: 7px;
-      padding: 9px 12px 3px;
+      padding: 10px 8px 4px;
     }
     .side-chats-label {
-      flex: 1; font-size: 0.66rem; font-weight: 700;
-      letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-soft);
+      flex: 1; min-width: 0;
+      font-size: 0.7rem; font-weight: 700;
+      letter-spacing: 0.045em; text-transform: uppercase; color: var(--ink-soft);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .thread-drawer-new {
-      flex-shrink: 0; width: 22px; height: 22px;
+      flex-shrink: 0; width: 22px; height: 22px; padding: 0;
       display: inline-flex; align-items: center; justify-content: center;
       border-radius: 6px; border: 1px solid transparent; background: transparent;
       color: var(--ink-soft); cursor: pointer;
       transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
     }
+    .thread-drawer-new svg { display: block; }
     .thread-drawer-new:hover {
-      background: color-mix(in oklab, var(--accent) 15%, transparent);
-      border-color: color-mix(in oklab, var(--accent) 35%, transparent);
+      background: color-mix(in oklab, var(--accent) 18%, transparent);
+      border-color: color-mix(in oklab, var(--accent) 34%, transparent);
       color: var(--ink);
+    }
+    .thread-drawer-new:active {
+      background: color-mix(in oklab, var(--accent) 12%, transparent);
     }
     .thread-drawer-new:focus-visible { outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent); outline-offset: 1px; }
     /* .thread-drawer-close: the in-drawer toggle. Inherits .close-btn chrome
@@ -1286,20 +1308,24 @@
     .thread-drawer-search {
       flex: 1; min-width: 0;
       display: flex; align-items: center; gap: 6px;
-      padding: 5px 9px; border-radius: 8px;
+      height: 28px;
+      padding: 0 8px; border-radius: 8px;
       background: color-mix(in oklab, var(--ink) 4%, transparent);
       border: 1px solid var(--ink-faint);
+      transition: border-color 0.2s, background 0.2s;
     }
+    .thread-drawer-search svg { color: var(--ink-faint); flex-shrink: 0; display: block; }
+    .thread-drawer-search:focus-within { border-color: var(--accent); }
     .thread-drawer-search input {
       flex: 1; min-width: 0; background: transparent; border: none; outline: none;
       color: var(--ink); font-size: 0.76rem; font-family: var(--font-body);
     }
-    .thread-drawer-search input::placeholder { color: var(--ink-faint); }
+    .thread-drawer-search input::placeholder { color: var(--ink-soft); }
     /* ── Agent chips (PR2) — the click-an-agent lookup ─────────────────── */
     .agent-chips {
       flex-shrink: 0;
       display: flex; flex-wrap: wrap; gap: 5px;
-      margin: 4px 10px 2px;
+      margin: 6px 8px 0;
     }
     .agent-chips[hidden] { display: none !important; }
     .agent-chip {
@@ -1417,6 +1443,11 @@
     .thread-row:hover .thread-row-pop,
     .thread-row:focus-within .thread-row-pop { opacity: 1; }
     .thread-row-pop:hover { background: color-mix(in oklab, var(--ink) 8%, transparent); color: var(--ink); border-color: color-mix(in oklab, var(--ink) 12%, transparent); }
+    .thread-row-pop:focus-visible {
+      opacity: 1;
+      outline: 2px solid color-mix(in oklab, var(--accent) 55%, transparent);
+      outline-offset: 1px;
+    }
     /* ── Agent sections (agent sidebar S5) ───────────────────────────────
        Headers are SIBLINGS of .thread-row inside #thread-drawer-list —
        never wrappers (redock's flat querySelectorAll('.thread-row') +
@@ -1726,8 +1757,8 @@
     /* NEVER scale .widget-shell for redock preview: native traffic lights are
        AppKit chrome outside the CSS box and desync from the scaled panel. */
     .thread-drawer-empty {
-      font-size: 0.76rem; color: var(--ink-soft); text-align: center;
-      padding: 26px 12px; font-style: italic;
+      font-size: 0.72rem; color: var(--ink-soft); text-align: center;
+      padding: 16px 14px; font-style: italic; line-height: 1.45;
     }
     /* The threads toggle is a .close-btn, and moon-theme.css's `.close-btn`
        forces display:flex — which beats the UA [hidden]{display:none} by
@@ -2737,7 +2768,7 @@
     <aside class="thread-drawer" id="thread-drawer" aria-label="Chats" aria-hidden="true">
       <div class="thread-drawer-topbar">
         <div class="thread-drawer-search">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--ink-faint);flex-shrink:0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
           <input type="text" id="thread-drawer-search-input" placeholder="Search chats…" autocomplete="off" spellcheck="false" aria-label="Search chats" />
         </div>
         <button class="close-btn thread-drawer-close" id="thread-drawer-close" type="button" title="Close chats" aria-label="Close chats" aria-controls="thread-drawer">
@@ -2770,7 +2801,7 @@
       <div class="side-chats-header">
         <span class="side-chats-label">Side chats</span>
         <button class="thread-drawer-new" id="thread-drawer-new" type="button" title="New side chat" aria-label="New side chat">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
         </button>
       </div>
       <div class="thread-drawer-list" id="thread-drawer-list" role="list">

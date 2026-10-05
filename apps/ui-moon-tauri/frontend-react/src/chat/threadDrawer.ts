@@ -525,7 +525,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
           : -1,
         isBusy: (id) => ThreadCache.isBusy(id),
         isUnread: (t) => ThreadListLogic.isThreadUnread(t, State.threadSeenAt, State.activeThreadId),
-        emptyText: 'No side chats yet. Tap + above to start one.',
+        emptyText: 'No side chats yet. Use + to start one.',
         emptySearchText: 'No matching side chats.',
         relTime: (t) => this._relTime(t),
         wireRow: (row, t) => this._wireRow(row, t),
