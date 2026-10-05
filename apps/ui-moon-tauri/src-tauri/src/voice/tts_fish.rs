@@ -1361,7 +1361,7 @@ mod tests {
         // reap the curl child instead of leaving a zombie.
         let pcm: Vec<i16> = (0..4000).map(|i| ((i % 100) as i16 - 50) * 300).collect();
         let wav = wav_bytes(16000, 1, &pcm);
-        let (port, server) = stub_http(vec![http_ok_wav(&wav)]);
+        let (port, server, _captured) = stub_http(vec![http_ok_wav(&wav)]);
         let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
         struct TestSink(Arc<Mutex<Vec<(String, serde_json::Value)>>>);
         impl EventSink for TestSink {
