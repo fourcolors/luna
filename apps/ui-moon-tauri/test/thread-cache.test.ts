@@ -221,6 +221,28 @@ describe("threadCache", () => {
       expect(get(ctx, "a")!.messages).toHaveLength(2)
     })
 
+    it("skips a message the snapshot already covers (seq <= throughSeq)", () => {
+      const { ctx } = makeCtx()
+      put(ctx, "a", [{ seq: 1 }, { seq: 2 }], 2)
+      appendMessage(ctx, "a", { seq: 2 })
+      appendMessage(ctx, "a", { seq: 1 })
+      expect(get(ctx, "a")!.messages).toHaveLength(2)
+      // Messages without a seq are still appended.
+      appendMessage(ctx, "a", { text: "no seq" })
+      expect(get(ctx, "a")!.messages).toHaveLength(3)
+    })
+
+    it("keeps prompt and reply together: user-accepted then assistant-done", () => {
+      const { ctx } = makeCtx()
+      put(ctx, "a", [{ seq: 1, role: "user" }, { seq: 2, role: "assistant" }], 2)
+      appendMessage(ctx, "a", { seq: 3, role: "user" })
+      appendMessage(ctx, "a", { seq: 4, role: "assistant" })
+      expect(get(ctx, "a")!.messages.map((m) => (m as { role: string }).role)).toEqual([
+        "user", "assistant", "user", "assistant",
+      ])
+      expect(get(ctx, "a")!.throughSeq).toBe(4)
+    })
+
     it("is a no-op when there is no cached entry for the thread", () => {
       const { ctx } = makeCtx()
       expect(() => appendMessage(ctx, "missing", { seq: 1 })).not.toThrow()

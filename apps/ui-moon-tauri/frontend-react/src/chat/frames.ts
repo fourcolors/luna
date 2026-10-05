@@ -750,7 +750,15 @@ export function createFrames(ctx: FramesCtx) {
   });
 
   MoonFrames.register('user-accepted', (frame) => {
-    // The user message was accepted by the server. Remove typing indicator when streaming starts
+    // The server persisted a user message. Moon already drew the bubble
+    // optimistically, so the only job here is the per-thread cache: without
+    // this, a switch-away-and-back painted the reply (appended on
+    // assistant-done) without the prompt that produced it until the
+    // re-subscribe snapshot landed. appendMessage skips seqs the snapshot
+    // already covers.
+    if (frame && frame.threadId && frame.message) {
+      ThreadCache.appendMessage(frame.threadId, frame.message);
+    }
   });
 
 
