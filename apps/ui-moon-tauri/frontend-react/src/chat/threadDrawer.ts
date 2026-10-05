@@ -422,17 +422,35 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     _ts(t) { return ThreadListLogic.threadTimestamp(t); },
 
     /**
-     * The rows the chat list paints. The ACTIVE thread is excluded: it
-     * renders as the pinned "Main chat" card above the list, so the strip is
-     * the other chats only. Every consumer of this delegate — render(), the
+     * The rows the chat list paints. The MAIN thread is excluded: it
+     * renders as the fixed "Main chat" card above the list, so the strip is
+     * the other chats only. The active thread stays in the list (highlighted)
+     * when it is not the main one, so opening a chat never reshuffles rows. Every consumer of this delegate — render(), the
      * redock insert-index math, the drag engine's next-thread lookup, e2e's
      * listThreadIds — sees exactly the row set the strip paints, so the
      * counts can never drift apart.
      */
     _visibleThreads() {
       const rows = ThreadListLogic.visibleThreads(State);
-      const active = State.activeThreadId;
-      return active ? rows.filter((t) => !t || t.id !== active) : rows;
+      const main = this._mainThreadId();
+      return main ? rows.filter((t) => !t || t.id !== main) : rows;
+    },
+
+    // --- Main chat (fixed go-to thread) -------------------------------------
+    // The Main chat is ONE stable thread id persisted in localStorage. It does
+    // not follow the active thread. ThreadListLogic.resolveMainThreadId picks a
+    // replacement only when the stored thread is gone (archived/deleted), and
+    // on first run adopts the thread you are already in.
+    MAIN_THREAD_KEY: 'luna.mainThreadId',
+
+    _mainThreadId() {
+      let stored = null;
+      try { stored = localStorage.getItem(this.MAIN_THREAD_KEY); } catch (_) { /* private mode */ }
+      const id = ThreadListLogic.resolveMainThreadId(State.threads, stored, State.activeThreadId);
+      if (id && id !== stored) {
+        try { localStorage.setItem(this.MAIN_THREAD_KEY, id); } catch (_) { /* private mode */ }
+      }
+      return id;
     },
 
     // --- consumer-friendly unread (Main chat / Chats) ------------------
@@ -649,24 +667,29 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
 
     // --- Main chat card (consumer-friendly sidebar) --------------------------
     /**
-     * Paints the pinned "Main chat" card above the chat list: the
-     * ACTIVE thread, i.e. the conversation in this window. The card is
-     * updated in place (textContent only — server data never becomes
-     * markup) so it never steals focus on a repaint. Clicking it selects
-     * the active thread (a no-op when already there — the card names where
-     * you are); the ⤢ button pops it into a new window like rows do.
-     * Wired once in wiring.ts; hidden when there is no active thread.
+     * Paints the fixed "Main chat" card above the chat list: the MAIN
+     * thread (see _mainThreadId), not whatever is open. The card is updated
+     * in place (textContent only — server data never becomes markup) so it
+     * never steals focus on a repaint. It wears `.active` when the main chat
+     * is the open conversation and `.unread` when it has unseen activity
+     * while you are in another chat. Clicking it opens the main chat; the ⤢
+     * button pops it into a new window like rows do. Wired once in
+     * wiring.ts; hidden only when there are no threads at all.
      */
     renderMainChat() {
       const card = DOM.mainChatCard;
       if (!card) return;
-      const activeId = State.activeThreadId;
+      const mainId = this._mainThreadId();
       const t = (Array.isArray(State.threads) ? State.threads : [])
-        .find((x) => x && x.id === activeId) || null;
+        .find((x) => x && x.id === mainId) || null;
       card.hidden = !t;
       if (!t) return;
       const title = (t.title && String(t.title).trim()) || 'Untitled thread';
       if (DOM.mainChatTitle) DOM.mainChatTitle.textContent = title;
+      card.dataset.threadId = t.id;
+      card.classList.toggle('active', t.id === State.activeThreadId);
+      card.classList.toggle('unread',
+        ThreadListLogic.isThreadUnread(t, State.threadSeenAt, State.activeThreadId));
       card.setAttribute('aria-label', 'Main chat: ' + title);
     },
 

@@ -4936,6 +4936,11 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
   // Feature: Thread drawer (left slide-out thread switcher)
   // ───────────────────────────────────────────────────────────────────────────
   describe('Feature: Thread drawer', () => {
+    // Most drawer scenarios exercise list mechanics. With a fixed Main chat in
+    // play one thread would leave the list for the card, so those scenarios
+    // opt out; the Main chat scenarios below run the real resolution.
+    const noMainChat = () =>
+      vi.spyOn((window as any).__MoonInternals.ThreadDrawerEngine, '_mainThreadId').mockReturnValue(null)
     const M = () => (window as any).__MoonInternals
     const sampleThreads = [
       { id: 'a', title: 'Alpha', lastMessagePreview: 'first',  lastMessageAt: 3000 },
@@ -5246,6 +5251,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: a thread-list frame renders one row per thread, sorted newest-first', () => {
+      noMainChat() // list mechanics under test, not the Main chat card
       M().State.activeThreadId = 'keep' // handler early-returns (no auto-subscribe)
       seed()
       const rows = [...document.querySelectorAll('#thread-drawer-list .thread-row')]
@@ -5263,17 +5269,42 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(rows[0].querySelector('.thread-row-title')!.textContent).toBe('Beta')
     })
 
-    it('Scenario: the active thread is surfaced as the Main chat card', () => {
+    it('Scenario: on first run the open chat becomes the Main chat card', () => {
       const m = M()
       m.State.activeThreadId = 'b'
       seed()
-      // The active thread leaves the chat list and pins to the Main
-      // chat card above it — that card is the "highlighted" state now.
       expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')).toBeNull()
       const card = document.getElementById('main-chat-card') as HTMLElement
       expect(card.hidden).toBe(false)
       expect(document.getElementById('main-chat-title')!.textContent).toBe('Beta')
       expect(card.getAttribute('aria-label')).toBe('Main chat: Beta')
+      expect(card.classList.contains('active')).toBe(true)
+      expect(localStorage.getItem('luna.mainThreadId')).toBe('b')
+    })
+
+    it('Scenario: opening another chat does NOT move the Main chat card', () => {
+      const m = M()
+      localStorage.setItem('luna.mainThreadId', 'b')
+      m.State.activeThreadId = 'a'
+      seed()
+      const card = document.getElementById('main-chat-card') as HTMLElement
+      // The Main chat stays Beta even though Alpha is open.
+      expect(document.getElementById('main-chat-title')!.textContent).toBe('Beta')
+      expect(card.classList.contains('active')).toBe(false)
+      // The open chat stays in the Chats list, highlighted; Main is not listed.
+      const rowA = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]')!
+      expect(rowA.classList.contains('active')).toBe(true)
+      expect(document.querySelector('#thread-drawer-list .thread-row[data-thread-id="b"]')).toBeNull()
+      expect(localStorage.getItem('luna.mainThreadId')).toBe('b')
+    })
+
+    it('Scenario: when the Main chat is archived a replacement is adopted', () => {
+      const m = M()
+      localStorage.setItem('luna.mainThreadId', 'gone')
+      m.State.activeThreadId = 'c'
+      seed()
+      expect(document.getElementById('main-chat-title')!.textContent).toBe('Gamma')
+      expect(localStorage.getItem('luna.mainThreadId')).toBe('c')
     })
 
     // Live subagents nest under their thread's row instead of the server
@@ -5287,6 +5318,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: a subagent-tree frame nests the running agents under that thread only', () => {
+      noMainChat() // list mechanics under test, not the Main chat card
       const m = M()
       m.State.activeThreadId = 'keep'
       m.State.threadDrawerOpen = true // the repaint is gated on a VISIBLE drawer
@@ -5555,6 +5587,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: sidebar rows use pointer pull-out (not HTML5 drag) (#380)', () => {
+      noMainChat() // list mechanics under test, not the Main chat card
       const m = M()
       m.State.threads = [
         { id: 'a', title: 'Alpha', lastMessagePreview: 'hello', lastActiveAt: Date.now() },
@@ -5732,6 +5765,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     // threadDrag.ts's drop path is untouched.
     // ── Agent participation (PR2): the click-an-agent chips ────────────────
     it('Scenario: agent chips render from the roster, click filters to involvement, right-click and re-click clear', () => {
+      noMainChat() // list mechanics under test, not the Main chat card
       const m = M()
       // Server advertises agents + pushes the roster through the REAL handlers.
       m.handleFrame({ type: 'hello', protocolVersion: 2, capabilities: { chat: true, agents: true } })
@@ -5791,6 +5825,7 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
     })
 
     it('Scenario: adoptAtIndex is retired — redock keeps recency order and clears legacy threadOrder', () => {
+      noMainChat() // list mechanics under test, not the Main chat card
       const m = M()
       m.State.threads = [
         { id: 'a', title: 'Alpha', lastMessagePreview: '', lastMessageAt: 30 },
