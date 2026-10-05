@@ -73,7 +73,7 @@
 name: CI
 
 # TRIGGERS + CONCURRENCY (see #556). These two blocks are load-bearing on a
-# single self-hosted runner - `runs-on: [self-hosted, Linux, X64]` below means
+# single self-hosted runner - `runs-on: [self-hosted, Linux, X64, luna-ci]` below means
 # every run here SERIALIZES, so a duplicate run is not a free parallel run,
 # it is queue time taken from the next PR.
 #
@@ -108,13 +108,18 @@ permissions:
 
 jobs:
   ci:
-    # Selected by CAPABILITY labels, not by the box's name. There is exactly one
-    # self-hosted runner and it carries self-hosted + Linux + X64 alongside its
-    # name label, so this triple targets it unambiguously while keeping the
-    # host's name out of a public repository. If a SECOND self-hosted Linux x64
-    # runner is ever added, re-add a distinguishing label here - a ROLE label
-    # such as `luna-ci`, never a hostname.
-    runs-on: [self-hosted, Linux, X64]
+    # Selected by a ROLE label (`luna-ci`), never the box's name, to keep the
+    # host's name out of a public repository. The role label is required now,
+    # not just when a second runner exists: this org has more than one
+    # self-hosted Linux x64 runner, and the bare capability triple
+    # [self-hosted, Linux, X64] would match any of them the moment one is
+    # registered to this repo.
+    #
+    # MEMORY: a `luna-ci` runner needs at least 16 GB available to the job.
+    # The `tsc -p apps/agent-cli/tsconfig.json` step below peaks above 8 GB
+    # (OOM-killed at 8 GB even with `--checkers 2`), so an 8 GB runner fails
+    # typecheck every time. Only put `luna-ci` on a runner that can hold it.
+    runs-on: [self-hosted, Linux, X64, luna-ci]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
