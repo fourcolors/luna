@@ -74,6 +74,8 @@ describe("vncModel", () => {
     const st = mem()
     st.setItem("luna.vnc.recent", JSON.stringify([{ host: "ws://box/secret", port: "5900" }, { host: "10.0.0.1", port: "5900" }]))
     expect(loadRecent(st)).toEqual([{ host: "10.0.0.1", port: "5900" }])
+    // Removed from storage, not just hidden.
+    expect(st.getItem("luna.vnc.recent")).not.toContain("secret")
   })
 
   it("fingerprintOf matches the RealVNC / noVNC format (SHA-1, 8 bytes, hyphens)", async () => {

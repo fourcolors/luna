@@ -49,7 +49,9 @@ const RESERVATION_TTL: Duration = Duration::from_secs(60);
 const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(20);
 /// Handshakes run concurrently so silent or slow local sockets queued ahead
 /// of the panel can't run out the accept deadline; this caps how many are in
-/// flight at once (extra connections are dropped).
+/// flight at once. When full, a new connection evicts the OLDEST pending
+/// handshake, so idle sockets can never hold every slot and lock the real
+/// client out.
 const MAX_PENDING_HANDSHAKES: usize = 8;
 
 /// One map entry per bridge, tagged with the window that opened it so a
@@ -312,10 +314,11 @@ async fn handshake(
 /// the real accept → token-check → pipe path without an AppHandle.
 ///
 /// Keeps accepting until a client presents the token path or the accept
-/// window closes. Handshakes run concurrently (up to MAX_PENDING_HANDSHAKES),
-/// so a wrong-path, silent, or slow connection (another local process
-/// probing the ephemeral port) cannot block or kill the panel's real
-/// session: the first valid handshake wins and the rest are aborted.
+/// window closes. Handshakes run concurrently (up to MAX_PENDING_HANDSHAKES,
+/// oldest evicted first), so a wrong-path, silent, or slow connection
+/// (another local process probing the ephemeral port) cannot block or kill
+/// the panel's real session: the first valid handshake wins and the rest are
+/// aborted.
 async fn accept_and_pipe_within(
     listener: TcpListener,
     vnc: TcpStream,
@@ -326,13 +329,18 @@ async fn accept_and_pipe_within(
     let deadline = tokio::time::Instant::now() + accept_timeout;
     let expected_path = format!("/vnc-{token}");
     let mut pending = tokio::task::JoinSet::new();
+    let mut order: std::collections::VecDeque<tokio::task::AbortHandle> = Default::default();
     loop {
         tokio::select! {
             accepted = tokio::time::timeout_at(deadline, listener.accept()) => {
                 let Ok(Ok((stream, _))) = accepted else { return };
-                if pending.len() < MAX_PENDING_HANDSHAKES {
-                    pending.spawn(handshake(stream, expected_path.clone(), handshake_timeout));
+                order.retain(|h| !h.is_finished());
+                if order.len() >= MAX_PENDING_HANDSHAKES {
+                    if let Some(oldest) = order.pop_front() {
+                        oldest.abort();
+                    }
                 }
+                order.push_back(pending.spawn(handshake(stream, expected_path.clone(), handshake_timeout)));
             }
             Some(done) = pending.join_next(), if !pending.is_empty() => {
                 if let Ok(Some(ws)) = done {
@@ -604,8 +612,9 @@ mod tests {
             Duration::from_secs(30),
             Duration::from_secs(10),
         ));
+        // More silent sockets than there are handshake slots.
         let mut silent = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..(MAX_PENDING_HANDSHAKES + 2) {
             silent.push(TcpStream::connect((Ipv4Addr::LOCALHOST, ws_port)).await.unwrap());
         }
         let res = tokio::time::timeout(

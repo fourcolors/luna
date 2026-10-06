@@ -152,13 +152,19 @@ export interface RecentHost {
 export const RECENT_KEY = "luna.vnc.recent"
 export const RECENT_MAX = 5
 
-/** Host + port only. Never a password; a host with credentials is refused. */
-export function loadRecent(storage: Pick<Storage, "getItem"> | null): RecentHost[] {
+/**
+ * Host + port only. Never a password; a host with credentials is refused.
+ * When storage is writable, anything that fails validation (for example a
+ * ws:// URL saved by an older build) is removed from storage, not just
+ * hidden, so a secret in an old entry does not linger on disk.
+ */
+export function loadRecent(storage: Pick<Storage, "getItem"> & Partial<Pick<Storage, "setItem">> | null): RecentHost[] {
+  let raw: string | null | undefined
+  let clean: RecentHost[] = []
   try {
-    const raw = storage?.getItem(RECENT_KEY)
+    raw = storage?.getItem(RECENT_KEY)
     const arr = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(arr)) return []
-    return arr
+    clean = !Array.isArray(arr) ? [] : arr
       .filter((r) => r && typeof r.host === "string" && typeof r.port === "string")
       // Re-validated on every load, so entries written by an older build
       // (e.g. a ws:// URL) are scrubbed.
@@ -166,8 +172,17 @@ export function loadRecent(storage: Pick<Storage, "getItem"> | null): RecentHost
       .slice(0, RECENT_MAX)
       .map((r) => ({ host: r.host, port: r.port }))
   } catch {
-    return []
+    clean = []
   }
+  const serialized = JSON.stringify(clean)
+  if (raw != null && raw !== serialized && storage?.setItem) {
+    try {
+      storage.setItem(RECENT_KEY, serialized)
+    } catch {
+      /* best effort */
+    }
+  }
+  return clean
 }
 
 export function rememberRecent(
