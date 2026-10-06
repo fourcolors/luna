@@ -35,6 +35,14 @@ interface RegisteredClient {
   readonly send: SendLocalShellFrame
   /** Monotonic registration order: the newest live client wins a label collision. */
   readonly seq: number
+  /**
+   * Per-connection owner id (the connection's `secretConnId`, or a stable id
+   * for the in-process sandbox). Only the connection that holds the CURRENT
+   * registration may remove it — a stale connection closing after a reconnect
+   * (same clientId, newer registration already live) must not wipe the live
+   * one. Mirrors SecretRequestBridge's connId guard.
+   */
+  readonly connId: string
 }
 
 /**
@@ -97,11 +105,24 @@ interface PendingRequest {
 }
 
 export interface LocalShellBridge {
+  /**
+   * Register (or refresh) a client's capability. `connId` is the registering
+   * connection's stable owner id; it is stored with the registration so the
+   * connection finalizer's `removeClient` can prove it still owns the
+   * registration it is tearing down.
+   */
   readonly setCapability: (
     frame: LocalShellCapabilityFrame,
     send: SendLocalShellFrame,
+    connId: string,
   ) => LocalShellStatusFrame
-  readonly removeClient: (clientId: string) => void
+  /**
+   * Drop a client on connection teardown. No-op unless `connId` matches the
+   * CURRENT registration — a stale connection closing after a reconnect (same
+   * clientId, newer connection already active) does not wipe the live
+   * registration or reject the live connection's in-flight requests.
+   */
+  readonly removeClient: (clientId: string, connId: string) => void
   /** Every machine addressable from this thread, newest-per-label, deduped. */
   readonly listTargets: (
     threadTags?: ReadonlyArray<string>,
@@ -175,6 +196,7 @@ export const createLocalShellBridge = (): LocalShellBridge => {
   const setCapability = (
     frame: LocalShellCapabilityFrame,
     send: SendLocalShellFrame,
+    connId: string,
   ): LocalShellStatusFrame => {
     const base = {
       type: "local-shell-status" as const,
@@ -195,15 +217,20 @@ export const createLocalShellBridge = (): LocalShellBridge => {
     // clientId refreshes its scope in place. This is the change that retires
     // the old preempt-and-reattach handoff entirely.
     seq += 1
-    clients.set(frame.clientId, { capability: frame, send, seq })
+    clients.set(frame.clientId, { capability: frame, send, seq, connId })
 
     return { ...base, enabled: true, accepted: true, message: "local shell enabled" }
   }
 
-  const removeClient = (clientId: string): void => {
-    if (clients.delete(clientId)) {
-      rejectPendingForClient(clientId, `local shell client removed: ${clientId}`)
-    }
+  const removeClient = (clientId: string, connId: string): void => {
+    const cur = clients.get(clientId)
+    // Only the CURRENT registration's own connection may remove it. A stale
+    // connection closing after a reconnect (newer conn already active for the
+    // same clientId) is a no-op — it must not wipe the live registration or
+    // reject the live connection's in-flight requests.
+    if (cur === undefined || cur.connId !== connId) return
+    clients.delete(clientId)
+    rejectPendingForClient(clientId, `local shell client removed: ${clientId}`)
   }
 
   const resolve = (input: LocalShellRequestInput): RegisteredClient => {

@@ -33,6 +33,9 @@ const sandboxCap = (extra: Partial<LocalShellCapabilityFrame> = {}) =>
     ...extra,
   })
 
+/** Owner id passed to setCapability in every test below. */
+const CONN = "conn_1"
+
 const result = (
   requestId: string,
   clientId: string,
@@ -59,11 +62,11 @@ describe("local shell bridge", () => {
   describe("coexistence", () => {
     it("lets two clients serve the same thread at once", () => {
       const bridge = createLocalShellBridge()
-      const first = bridge.setCapability(cap(), () => undefined)
+      const first = bridge.setCapability(cap(), () => undefined, CONN)
       const second = bridge.setCapability(
         cap({ clientId: "cli_2", label: "desktop" }),
         () => undefined,
-      )
+      CONN)
 
       // Neither registration displaces the other: this is the whole change.
       expect(first.accepted).toBe(true)
@@ -76,8 +79,8 @@ describe("local shell bridge", () => {
 
     it("refreshes a client in place when it re-registers", () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap({ roots: ["/old"] }), () => undefined)
-      bridge.setCapability(cap({ roots: ["/new"] }), () => undefined)
+      bridge.setCapability(cap({ roots: ["/old"] }), () => undefined, CONN)
+      bridge.setCapability(cap({ roots: ["/new"] }), () => undefined, CONN)
 
       const targets = bridge.listTargets()
       expect(targets).toHaveLength(1)
@@ -86,10 +89,10 @@ describe("local shell bridge", () => {
 
     it("removes only the client that disabled itself", () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap(), () => undefined)
-      bridge.setCapability(sandboxCap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
+      bridge.setCapability(sandboxCap(), () => undefined, CONN)
 
-      bridge.setCapability(cap({ enabled: false }), () => undefined)
+      bridge.setCapability(cap({ enabled: false }), () => undefined, CONN)
 
       expect(bridge.listTargets().map((t) => t.label)).toEqual(["stable"])
     })
@@ -99,7 +102,7 @@ describe("local shell bridge", () => {
       bridge.setCapability(
         cap({ roots: ["/a", "/b"], fullAccess: true }),
         () => undefined,
-      )
+      CONN)
 
       expect(bridge.listTargets()[0]).toEqual({
         label: "laptop",
@@ -118,8 +121,8 @@ describe("local shell bridge", () => {
       const bridge = createLocalShellBridge()
       const toLaptop: unknown[] = []
       const toSandbox: unknown[] = []
-      bridge.setCapability(cap(), (f) => toLaptop.push(f))
-      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
+      bridge.setCapability(cap(), (f) => toLaptop.push(f), CONN)
+      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f), CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -140,8 +143,8 @@ describe("local shell bridge", () => {
     it("refuses to guess when more than one target is attached", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []
-      bridge.setCapability(cap(), (f) => sent.push(f))
-      bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+      bridge.setCapability(cap(), (f) => sent.push(f), CONN)
+      bridge.setCapability(sandboxCap(), (f) => sent.push(f), CONN)
 
       // No implicit default. Picking for the caller is how a destructive
       // command lands on the wrong machine.
@@ -154,7 +157,7 @@ describe("local shell bridge", () => {
     it("refuses a target that is not attached instead of falling back", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []
-      bridge.setCapability(cap(), (f) => sent.push(f))
+      bridge.setCapability(cap(), (f) => sent.push(f), CONN)
 
       await expect(
         bridge.request({
@@ -171,7 +174,7 @@ describe("local shell bridge", () => {
     it("resolves without a target when exactly one is attached", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []
-      bridge.setCapability(cap(), (f) => sent.push(f))
+      bridge.setCapability(cap(), (f) => sent.push(f), CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -193,8 +196,8 @@ describe("local shell bridge", () => {
   describe("unattended threads", () => {
     it("offers only the sandbox to a forked thread", () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap(), () => undefined)
-      bridge.setCapability(sandboxCap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
+      bridge.setCapability(sandboxCap(), () => undefined, CONN)
 
       expect(
         bridge.listTargets(["forked-from-parent"]).map((t) => t.label),
@@ -206,15 +209,15 @@ describe("local shell bridge", () => {
 
     it("treats an agent-created chat (create_thread) as unattended too", () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap(), () => undefined)
-      bridge.setCapability(sandboxCap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
+      bridge.setCapability(sandboxCap(), () => undefined, CONN)
       expect(bridge.listTargets(["agent-created"]).map((t) => t.label)).toEqual(["stable"])
     })
 
     it("refuses a personal machine to an unattended thread even by name", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []
-      bridge.setCapability(cap(), (f) => sent.push(f))
+      bridge.setCapability(cap(), (f) => sent.push(f), CONN)
 
       // Nobody is watching a channel-originated thread, and an inbound message
       // is an injection surface, so the laptop is not reachable at all.
@@ -237,8 +240,8 @@ describe("local shell bridge", () => {
       const older: unknown[] = []
       const newer: unknown[] = []
       // A reconnect while the old socket lingers, or a second window.
-      bridge.setCapability(cap({ clientId: "cli_old" }), (f) => older.push(f))
-      bridge.setCapability(cap({ clientId: "cli_new" }), (f) => newer.push(f))
+      bridge.setCapability(cap({ clientId: "cli_old" }), (f) => older.push(f), CONN)
+      bridge.setCapability(cap({ clientId: "cli_new" }), (f) => newer.push(f), CONN)
 
       expect(bridge.listTargets()).toHaveLength(1)
 
@@ -252,7 +255,7 @@ describe("local shell bridge", () => {
       bridge.acceptResult(result(sentRequestId(newer), "cli_new"), "cli_new")
       expect((await first).dispatchedTo.clientId).toBe("cli_new")
 
-      bridge.removeClient("cli_new")
+      bridge.removeClient("cli_new", CONN)
 
       const second = bridge.request({
         threadId: "thr_1",
@@ -269,8 +272,8 @@ describe("local shell bridge", () => {
     it("ignores a result from a client the request was not dispatched to", async () => {
       const bridge = createLocalShellBridge()
       const toSandbox: unknown[] = []
-      bridge.setCapability(cap(), () => undefined)
-      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
+      bridge.setCapability(cap(), () => undefined, CONN)
+      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f), CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -309,7 +312,7 @@ describe("local shell bridge", () => {
       bridge.setCapability(
         cap({ roots: ["/work", "/tmp"] }),
         (f) => sent.push(f),
-      )
+      CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -332,7 +335,7 @@ describe("local shell bridge", () => {
     it("reports the request's own cwd as the effective cwd", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []
-      bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+      bridge.setCapability(sandboxCap(), (f) => sent.push(f), CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -353,7 +356,7 @@ describe("local shell bridge", () => {
     it("snapshots dispatch identity so a later registration cannot rewrite it", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []
-      bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+      bridge.setCapability(sandboxCap(), (f) => sent.push(f), CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -363,7 +366,7 @@ describe("local shell bridge", () => {
       const requestId = sentRequestId(sent)
 
       // Another machine attaches while the command is still in flight.
-      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
       expect(bridge.listTargets()).toHaveLength(2)
 
       bridge.acceptResult(
@@ -381,33 +384,33 @@ describe("local shell bridge", () => {
   describe("pending request lifecycle", () => {
     it("rejects a pending request when its client is removed", async () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
       const pending = bridge.request({
         threadId: "thr_1",
         command: "sleep 5",
         timeoutMs: 5_000,
       })
-      bridge.removeClient("cli_1")
+      bridge.removeClient("cli_1", CONN)
       await expect(pending).rejects.toThrow("local shell client removed")
     })
 
     it("rejects a pending request when its client disables itself", async () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
       const pending = bridge.request({
         threadId: "thr_1",
         command: "sleep 5",
         timeoutMs: 5_000,
       })
-      bridge.setCapability(cap({ enabled: false }), () => undefined)
+      bridge.setCapability(cap({ enabled: false }), () => undefined, CONN)
       await expect(pending).rejects.toThrow("local shell disabled")
     })
 
     it("leaves another client's pending request alone when one client goes", async () => {
       const bridge = createLocalShellBridge()
       const toSandbox: unknown[] = []
-      bridge.setCapability(cap(), () => undefined)
-      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
+      bridge.setCapability(cap(), () => undefined, CONN)
+      bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f), CONN)
 
       const pending = bridge.request({
         threadId: "thr_1",
@@ -415,7 +418,7 @@ describe("local shell bridge", () => {
         timeoutMs: 5_000,
         target: "stable",
       })
-      bridge.removeClient("cli_1")
+      bridge.removeClient("cli_1", CONN)
 
       bridge.acceptResult(
         result(sentRequestId(toSandbox), "server_sandbox", { stdout: "ok" }),
@@ -426,10 +429,53 @@ describe("local shell bridge", () => {
 
     it("rejects when the request times out", async () => {
       const bridge = createLocalShellBridge()
-      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(cap(), () => undefined, CONN)
       await expect(
         bridge.request({ threadId: "thr_1", command: "sleep 5", timeoutMs: 5 }),
       ).rejects.toThrow("local shell request timed out")
+    })
+  })
+
+  describe("stale teardown after a reconnect", () => {
+    it("does not wipe the live registration when the stale connection closes", async () => {
+      const bridge = createLocalShellBridge()
+      const oldSend: unknown[] = []
+      const newSend: unknown[] = []
+      // The old connection registers cli_1 under its own owner id.
+      bridge.setCapability(cap(), (f) => oldSend.push(f), "conn_old")
+      // Reconnect: the CLI reuses its clientId, registering under a new owner.
+      bridge.setCapability(cap(), (f) => newSend.push(f), "conn_new")
+      // An in-flight request goes out on the live (new) registration.
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "sleep 5",
+        timeoutMs: 5_000,
+      })
+      expect(newSend).toHaveLength(1)
+      // The OLD connection's teardown runs after the new registration: no-op.
+      bridge.removeClient("cli_1", "conn_old")
+      // The live registration survives and the in-flight request resolves.
+      expect(bridge.listTargets().map((t) => t.clientId)).toEqual(["cli_1"])
+      bridge.acceptResult(
+        result(sentRequestId(newSend), "cli_1", { stdout: "ok" }),
+        "cli_1",
+      )
+      expect((await pending).result.stdout).toBe("ok")
+    })
+
+    it("still removes the client when the owning connection tears down", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined, "conn_old")
+      bridge.setCapability(cap(), () => undefined, "conn_new")
+      bridge.removeClient("cli_1", "conn_new")
+      expect(bridge.listTargets()).toEqual([])
+    })
+
+    it("ignores removeClient for a clientId that was never registered", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined, CONN)
+      bridge.removeClient("cli_gone", CONN)
+      expect(bridge.listTargets().map((t) => t.clientId)).toEqual(["cli_1"])
     })
   })
 })
