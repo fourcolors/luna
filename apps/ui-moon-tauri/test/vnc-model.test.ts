@@ -79,7 +79,7 @@ describe("vncModel", () => {
   })
 
   it("fingerprintOf matches the RealVNC / noVNC format (SHA-1, 8 bytes, hyphens)", async () => {
-    // SHA-1("abc") = a9993e364706816aba3e25717850c26c9cd0d89d
+    // SHA-1("abc") starts a9 99 3e 36 47 06 81 6a (FIPS 180 test vector)
     const fp = await fingerprintOf(new TextEncoder().encode("abc"))
     expect(fp).toBe("a9-99-3e-36-47-06-81-6a")
   })
