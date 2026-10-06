@@ -25,6 +25,7 @@
 import {
   Cause,
   Context,
+  Deferred,
   Effect,
   Exit,
   Option,
@@ -71,6 +72,12 @@ import { LUNA_ALLOWED_MCP_TOOLS } from "./chat-service-tools.js"
 import { isObj, formatStreamFailureReason, makeSdkMessageHandling } from "./chat-service-sdk-messages.js"
 import { makeRunOrdinaryQuery } from "./chat-service-account-rotation.js"
 import type { ThreadEntry, TurnPrompt } from "./chat-service.js"
+import {
+  makeTurnQueue,
+  publishQueue,
+  removeWaiting,
+  takeNextTurn,
+} from "./chat-service-turn-queue.js"
 
 /**
  * Return a copy of `SessionOptions` safe to persist in the durable session
@@ -602,6 +609,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         readonly userMessageId: string
         readonly userText: string
       }>()
+      const pendingTurnsLock = yield* Semaphore.make(1)
       const assistantText = yield* Ref.make("")
       // Account-rotation support (ordinary path only - the recall path's
       // per-turn `Stream.make(turn.payload)` prompt is already replayable
@@ -948,6 +956,9 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
       }
 
       const recallMemory = Option.getOrUndefined(binding)?.recallMemory
+      // Queue + Steer exists on the recall path only (see the else branch).
+      const turnQueue =
+        recallMemory === undefined ? undefined : yield* makeTurnQueue
       if (recallMemory === undefined) {
         // Ordinary path: a long-lived query, restarted on-demand by the
         // account-rotation retry loop (chat-service-account-rotation.ts).
@@ -993,29 +1004,185 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         // finite query per turn instead. Each query resumes the same clean
         // transcript and supplies only that turn's memory as system-prompt
         // configuration, so prior context is replaced rather than retained.
-        yield* Stream.fromQueue(inbox).pipe(
-          Stream.runForEach((turn) =>
-            Effect.scoped(
-              adapter
-                .query({
-                  ...queryBase,
-                  prompt: Stream.make(turn.payload),
-                  sessionOptions: withTurnMemoryContext(
-                    sessionOptions,
-                    turn.memoryContext,
+        //
+        // Mid-turn sends (Queue + Steer, chat-service-turn-queue.ts): a send
+        // that lands while a turn runs WAITS in `inbox` and runs next as its
+        // own turn with fresh recall. Only when the operator presses Steer
+        // does `steer()` move it to `turnQueue.steered`, and the per-turn
+        // prompt stream (which does NOT close after its own payload) writes
+        // it into the SAME live query: the CLI folds it into the running
+        // turn between tool rounds, or runs it as a queued turn inside this
+        // query. `turnSettled` fires on a `result` that reports no queued
+        // backlog (`queued_turn_count` > 0 means the CLI already committed to
+        // another queued turn inside this query, so keep feeding it). That
+        // closes the stream so the query can exit. A steer that lands after
+        // the settle stays in `steered` and the loop runs it next.
+        //
+        // The outer loop pulls ONE item per query (Queue.take, not
+        // Stream.fromQueue: that pulls with takeAll and buffers every pending
+        // send as a chunk OUTSIDE `inbox`, where steer() could no longer find
+        // it and the FIFO order the seed drain relies on would break).
+        //
+        // `carryOver` holds sends a FAILED query consumed but never
+        // resolved (steered into a dead CLI): they run again, in order,
+        // before `inbox` is read - like account-rotation's inFlightPrompts.
+        const carryOver: Array<TurnPrompt> = []
+        const tq = turnQueue!
+        // Removes (or, with keepSeeds, only inspects) the pendingTurns seeds
+        // at the HEAD that belong to `consumed` - the seeds and inbox items
+        // are offered in lockstep FIFO, so a query's unresolved sends sit
+        // contiguously at the head. Never blocks: Queue.clear returns [] on
+        // an empty queue (Queue.peek would suspend there). Both send()'s
+        // offer pair and interrupt()'s poll take the same lock, so the
+        // clear -> re-offer is atomic against them.
+        const takeLeadingSeeds = (
+          consumed: ReadonlyMap<string, TurnPrompt>,
+          keepSeeds: boolean,
+        ) =>
+          pendingTurnsLock.withPermits(1)(
+            Effect.gen(function* () {
+              const all = yield* Queue.clear(pendingTurns)
+              let k = 0
+              while (k < all.length && consumed.has(all[k]!.userMessageId)) {
+                k += 1
+              }
+              yield* Queue.offerAll(pendingTurns, keepSeeds ? all : all.slice(k))
+              return all
+                .slice(0, k)
+                .map((seed) => consumed.get(seed.userMessageId)!)
+            }),
+          )
+        const runTurn = (turn: TurnPrompt) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const turnSettled = yield* Deferred.make<void>()
+              // Every send THIS query consumed - its own turn plus each
+              // steered forward - keyed by userMessageId.
+              const consumed = new Map<string, TurnPrompt>([
+                [turn.userMessageId, turn],
+              ])
+              const settle = Effect.gen(function* () {
+                yield* Ref.set(tq.steerOpen, false)
+                yield* Deferred.succeed(turnSettled, undefined)
+              })
+              yield* Ref.set(tq.steerOpen, true)
+              const replies = yield* adapter.query({
+                ...queryBase,
+                prompt: Stream.concat(
+                  Stream.make(turn.payload),
+                  // Steering input: race every take from `steered` (sends the
+                  // operator pressed Steer on) against the turn settling. A
+                  // take that wins is ALWAYS forwarded (the item left the
+                  // queue - never drop it); a settle that wins first ends the
+                  // stream and the loop runs what is left next. Carried-over
+                  // sends go first.
+                  Stream.fromEffectRepeat(
+                    Effect.gen(function* () {
+                      if (yield* Deferred.isDone(turnSettled)) {
+                        return yield* Cause.done()
+                      }
+                      const carried = carryOver.shift()
+                      if (carried !== undefined) {
+                        consumed.set(carried.userMessageId, carried)
+                        return carried.payload
+                      }
+                      const next = yield* Effect.race(
+                        Queue.take(tq.steered).pipe(
+                          Effect.tap((item) =>
+                            Effect.sync(() => {
+                              consumed.set(item.userMessageId, item)
+                            }),
+                          ),
+                          Effect.map((item) => Option.some(item.payload)),
+                        ),
+                        Deferred.await(turnSettled).pipe(
+                          Effect.map(() => Option.none()),
+                        ),
+                      )
+                      return Option.isNone(next)
+                        ? yield* Cause.done()
+                        : next.value
+                    }),
                   ),
-                  ...(activeSdkSessionId !== null
-                    ? { resumeFromSessionId: activeSdkSessionId }
-                    : {}),
-                })
-                .pipe(
-                  Effect.flatMap(consumeReplies),
-                  Effect.catchCause(handleAdapterFailure),
                 ),
-            ),
-          ),
-          Effect.forkIn(threadScope),
-        )
+                sessionOptions: withTurnMemoryContext(
+                  sessionOptions,
+                  turn.memoryContext,
+                ),
+                ...(activeSdkSessionId !== null
+                  ? { resumeFromSessionId: activeSdkSessionId }
+                  : {}),
+              })
+              const repliesTracked = replies.pipe(
+                Stream.tap((msg) =>
+                  Effect.gen(function* () {
+                    if ((msg as { type?: string }).type !== "result") return
+                    // The SDK reports queued sends still pending as
+                    // `queued_turn_count`; absent on CLIs/surfaces with no
+                    // command queue, where a forwarded message can't be
+                    // parked either - settle on 0/absent only.
+                    const queued =
+                      (msg as { queued_turn_count?: number })
+                        .queued_turn_count ?? 0
+                    if (queued <= 0) {
+                      yield* settle
+                    }
+                  }),
+                ),
+              )
+              const exit = yield* runReplies(repliesTracked)
+              // However the query ended, release the steering pull: the
+              // adapter's toAsyncIterable detaches it from the query scope,
+              // so without this it would sit on Deferred.await forever and
+              // could still take (and lose) a later send.
+              yield* settle
+              if (Exit.isFailure(exit)) {
+                yield* handleAdapterFailure(exit.cause)
+                // handleAdapterFailure consumed the failed turn's seed. Any
+                // consumed send whose seed is still queued never resolved -
+                // it was written to a dead CLI. Keep the seeds (the re-run
+                // pairs its result with them) and run those sends again
+                // ahead of the remaining carry-over / inbox.
+                const unresolved = yield* takeLeadingSeeds(consumed, true)
+                if (unresolved.length > 0) {
+                  carryOver.unshift(...unresolved)
+                  yield* inc("luna.chat.steered_turns.carried_over", {
+                    n: String(unresolved.length),
+                  })
+                }
+                return
+              }
+              // Clean end: steered sends this query consumed but never
+              // resolved were folded into a running turn - a folded message
+              // produces no `result` of its own, so its pendingTurns seed is
+              // still queued. Drain those so later observeTurn pairings stay
+              // aligned.
+              const folded = yield* takeLeadingSeeds(consumed, false)
+              if (folded.length > 0) {
+                yield* inc("luna.chat.steered_turns.folded", {
+                  n: String(folded.length),
+                })
+              }
+            }),
+          )
+        yield* Effect.forever(
+          Effect.gen(function* () {
+            const turn = yield* takeNextTurn(carryOver, tq, inbox)
+            // Under pendingTurnsLock, like send()'s listing and steer(): the
+            // waiting list and its frames change in one order.
+            yield* pendingTurnsLock.withPermits(1)(
+              Effect.gen(function* () {
+                yield* Ref.set(tq.busy, true)
+                if (yield* removeWaiting(tq, turn.userMessageId)) {
+                  yield* publishQueue({ pubsub }, tq, id)
+                }
+              }),
+            )
+            yield* runTurn(turn).pipe(
+              Effect.ensuring(Ref.set(tq.busy, false)),
+            )
+          }),
+        ).pipe(Effect.forkIn(threadScope))
         yield* Effect.yieldNow
       }
 
@@ -1029,7 +1196,9 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         inFlightText,
         lastActivity,
         pendingTurns,
+        pendingTurnsLock,
         assistantText,
+        ...(turnQueue !== undefined ? { turnQueue } : {}),
         ...(Option.getOrUndefined(binding)?.recallMemory !== undefined
           ? {
               recallMemory: Option.getOrUndefined(binding)!.recallMemory!,
@@ -1186,6 +1355,20 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
             }
           }
 
+          // Restore the thread's persisted tags on recovery. Tags decide
+          // security posture (an UNATTENDED tag keeps a forked, channel, or
+          // agent-created thread off the operator's personal machines and
+          // blocks create_thread), so a recovered thread must carry them;
+          // without this a restart silently promoted it to "attended".
+          // FAIL CLOSED: if the tags cannot be read, do not recover the
+          // thread at all (the error lands in the tapCause below and the
+          // caller sees "unknown thread"), rather than recovering it with no
+          // tags and silently granting an unattended thread personal shells.
+          const savedTags =
+            persistedSdkId !== undefined || knownButNoSid
+              ? ((yield* store.get(threadId))?.tags ?? [])
+              : []
+
           // Case B: known thread, no sdk_session_id → re-create live
           if (knownButNoSid) {
             yield* Effect.logWarning(
@@ -1197,6 +1380,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 : undefined
             yield* createThread({
               threadIdOverride: threadId,
+              ...(savedTags.length > 0 ? { tags: savedTags } : {}),
               ...(savedModel !== undefined ? { model: savedModel } : {}),
               ...(validEffort !== undefined ? { effort: validEffort } : {}),
               ...(savedCwd !== undefined ? { cwd: savedCwd } : {}),
@@ -1218,6 +1402,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                 : undefined
             yield* createThread({
               threadIdOverride: threadId,
+              ...(savedTags.length > 0 ? { tags: savedTags } : {}),
               resumeFromSessionId: persistedSdkId,
               ...(savedModel !== undefined ? { model: savedModel } : {}),
               ...(validEffort !== undefined ? { effort: validEffort } : {}),

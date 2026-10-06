@@ -555,6 +555,11 @@ export function bootChat() {
       threadDrawerEmpty: document.getElementById("thread-drawer-empty"),
       // PR2: the click-an-agent chips strip (renderAgentChips paints it).
       agentChips: document.getElementById("agent-chips"),
+      // Consumer-friendly sidebar: the pinned Main chat card (renderMainChat
+      // paints it in place; wiring.ts owns its click/⤢ handlers).
+      mainChatCard: document.getElementById("main-chat-card"),
+      mainChatTitle: document.getElementById("main-chat-title"),
+      mainChatPop: document.getElementById("main-chat-pop"),
       threadDivider: document.getElementById("thread-divider"),
       // The title-bar disclosure control for this drawer. _applyWidth keeps
       // its lit/aria-expanded state in lockstep with the panel, so it has to

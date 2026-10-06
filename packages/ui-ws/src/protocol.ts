@@ -283,6 +283,27 @@ export interface UserAcceptedFrame {
   readonly message: ChatMessage
 }
 
+/** One message waiting behind the running turn (see QueueUpdateFrame). */
+export interface QueuedMessage {
+  /** The waiting message's id (the `user-accepted` message id). */
+  readonly userMessageId: string
+  /** Preview of its text. The full text is already in the transcript. */
+  readonly text: string
+}
+
+/**
+ * Messages waiting behind the running turn, oldest first. Sent whenever the
+ * list changes, and after a thread snapshot when anything is waiting. Clear
+ * the view on every `thread-snapshot`, then replace it wholesale on each
+ * frame. An empty list means nothing is waiting. Send a `steer`
+ * frame to push one into the running turn.
+ */
+export interface QueueUpdateFrame {
+  readonly type: "queue-update"
+  readonly threadId: string
+  readonly queued: ReadonlyArray<QueuedMessage>
+}
+
 export interface AssistantDeltaFrame {
   readonly type: "assistant-delta"
   readonly threadId: string
@@ -845,6 +866,9 @@ export interface ForkProposalWire {
   readonly status: ForkProposalStatus
   readonly createdAt: number
   readonly childThreadId?: string
+  /** Agent-created chat (create_thread): the client viewing the parent
+   *  thread switches to `childThreadId` once accepted. */
+  readonly autoOpen?: boolean
 }
 export interface ForkProposalSetFrame {
   readonly type: "fork-proposal-set"
@@ -1571,6 +1595,7 @@ export type ServerFrame =
   | ThreadCreateErrorFrame
   | ThreadSnapshotFrame
   | UserAcceptedFrame
+  | QueueUpdateFrame
   | AssistantDeltaFrame
   | AssistantDoneFrame
   | AssistantErrorFrame
@@ -1767,6 +1792,18 @@ export interface UserMessageFrame {
 export interface InterruptFrame {
   readonly type: "interrupt"
   readonly threadId: string
+}
+
+/**
+ * Push a waiting message into the running turn now, instead of after it.
+ * `userMessageId` comes from a `queue-update` frame. A no-op when the turn
+ * already ended or the message already started; it then runs on its own as
+ * usual. The resulting `queue-update` is the acknowledgement.
+ */
+export interface SteerFrame {
+  readonly type: "steer"
+  readonly threadId: string
+  readonly userMessageId: string
 }
 
 /**
@@ -1994,6 +2031,7 @@ export type ClientFrame =
   | NewThreadFrame
   | UserMessageFrame
   | InterruptFrame
+  | SteerFrame
   | LocalShellCapabilityFrame
   | LocalShellResultFrame
   | MemorySearchRequestFrame

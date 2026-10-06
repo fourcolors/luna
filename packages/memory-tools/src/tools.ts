@@ -63,6 +63,7 @@ import {
 } from "@luna/core"
 import {
   makeRecord,
+  extractMemoryText,
   matchesMemoryScope,
   OPERATOR_MEMORY_SCOPE,
   type MemoryRecord,
@@ -166,16 +167,13 @@ function newId(): string {
   return `mem_${ts}_${rnd}`
 }
 
-function extractText(content: unknown): string {
-  if (
-    content !== null &&
-    typeof content === "object" &&
-    "text" in content &&
-    typeof (content as { text: unknown }).text === "string"
-  ) {
-    return (content as { text: string }).text
-  }
-  return ""
+// Kind-aware: a belief keeps its text in `content.statement`, not
+// `content.text`. Reading only `.text` returned "" for every belief hit, so
+// memory_search surfaced beliefs with a blank body and the reranker scored
+// them on empty strings. `extractMemoryText` is the canonical extractor the
+// write and reembed paths already use.
+function extractText(record: MemoryRecord): string {
+  return extractMemoryText(record.content, record.kind) ?? ""
 }
 
 /**
@@ -188,9 +186,17 @@ function toSearchHitDTO(
   hit: { readonly record: MemoryRecord; readonly score: number },
   llmScore?: number,
 ) {
+  // A belief's lifecycle status ('proposed' | 'active' | 'retired') lives in
+  // its content. Surface it so the agent can tell a retired belief from a
+  // current one now that belief hits carry their statement as text.
+  const status =
+    hit.record.kind === "belief"
+      ? (hit.record.content as { status?: unknown } | null | undefined)?.status
+      : undefined
+  const beliefStatus = typeof status === "string" ? status : undefined
   return {
     id: hit.record.id,
-    text: extractText(hit.record.content),
+    text: extractText(hit.record),
     score: hit.score,
     tags: hit.record.tags,
     kind: hit.record.kind,
@@ -198,6 +204,7 @@ function toSearchHitDTO(
     createdAt: hit.record.createdAt,
     updatedAt: hit.record.updatedAt,
     ...(llmScore !== undefined ? { llmScore } : {}),
+    ...(beliefStatus !== undefined ? { beliefStatus } : {}),
     ...(hit.record.scope !== undefined
       ? {
           scope: {
@@ -342,7 +349,7 @@ export const makeMemoryTools = (
             queryText: args.query,
             candidates: rerankPool.map((h) => ({
               id: h.record.id,
-              text: extractText(h.record.content),
+              text: extractText(h.record),
               retrievalScore: h.score,
             })),
           })

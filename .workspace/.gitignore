@@ -2,3 +2,11 @@
 workspace.db
 workspace.db-shm
 workspace.db-wal
+
+# Images and PDFs saved by the screenshot-intake skill can show private data.
+notes/*.png
+notes/*.jpg
+notes/*.jpeg
+notes/*.gif
+notes/*.webp
+notes/*.pdf

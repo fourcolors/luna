@@ -774,6 +774,8 @@ export interface UIWebSocketServerConfig {
       readonly roleBindings: ReadonlyArray<import("./protocol.js").RoleBindingItem>
       /** Absent = keep the stored memory reranker choice. */
       readonly memoryReranker?: import("./protocol.js").MemoryRerankerSettingsItem
+      /** Absent = keep the stored classifier engine choice. */
+      readonly classifierEngine?: import("./protocol.js").ClassifierEngineSettingsItem
     }) => { readonly ok: boolean; readonly message: string }
     /** Called after a successful save so activation (restart) is scheduled. */
     readonly scheduleRestart?: () => void
@@ -2447,6 +2449,17 @@ export const startUIWebSocketServer = (
                     yield* chat.interrupt(frame.threadId)
                     return
                   }
+                  case "steer": {
+                    if (chat === null) return
+                    if (
+                      typeof frame.threadId !== "string" ||
+                      typeof frame.userMessageId !== "string"
+                    ) return
+                    // The queue-update this publishes is the ack; a false
+                    // result means the message already runs on its own.
+                    yield* chat.steer(frame.threadId, frame.userMessageId)
+                    return
+                  }
                   case "set-thread-config": {
                     // Model + effort switcher. Gated on chat being bound (which
                     // implies effortSelection: true in capabilities). The ack
@@ -3571,6 +3584,7 @@ export const startUIWebSocketServer = (
                       providers: mrFrame.providers ?? [],
                       roleBindings: mrFrame.roleBindings ?? [],
                       ...(mrFrame.memoryReranker !== undefined ? { memoryReranker: mrFrame.memoryReranker } : {}),
+                      ...(mrFrame.classifierEngine !== undefined ? { classifierEngine: mrFrame.classifierEngine } : {}),
                     })
                     send(ws, {
                       type: "model-routing-status",

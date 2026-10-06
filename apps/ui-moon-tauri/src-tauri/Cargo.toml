@@ -1,6 +1,6 @@
 [package]
 name = "luna-moon-ui"
-version = "0.0.89"
+version = "0.0.92"
 description = "Native transparent floating Moon companion for Luna"
 edition = "2021"
 
@@ -70,6 +70,13 @@ version = "0.2"
 optional = true
 
 [dependencies.whisper-rs]
+version = "0.16"
+optional = true
+
+# whisper.cpp's Metal GPU backend only exists on Apple targets; enabling the
+# `metal` feature unconditionally breaks the Linux build (CMake looks for the
+# Foundation library). Gate it to macOS.
+[target.'cfg(target_os = "macos")'.dependencies.whisper-rs]
 version = "0.16"
 features = ["metal"]
 optional = true
