@@ -34,7 +34,7 @@ export interface ConnectCardProps {
 
 export function ConnectCard(p: ConnectCardProps) {
   return (
-    <div className="vnc-connect-card">
+    <div className={"vnc-connect-card" + (p.isError ? " is-error" : "")}>
       <div className="vnc-connect-title">Connect</div>
       {p.prefilled && (
         <div className="vnc-prefill-note" data-testid="vnc-prefill-note">
@@ -61,7 +61,11 @@ export function ConnectCard(p: ConnectCardProps) {
         </div>
       </div>
       {p.status && (
-        <div className={"vnc-status" + (p.isError ? " error" : "")} data-testid="vnc-status">
+        <div
+          className={"vnc-status" + (p.isError ? " error" : "")}
+          role={p.isError ? "alert" : "status"}
+          data-testid="vnc-status"
+        >
           {p.status}
         </div>
       )}
@@ -84,7 +88,7 @@ export function ConnectCard(p: ConnectCardProps) {
       <div className="vnc-connect-hint">
         Passwords stay on this device and are never saved.{" "}
         <button type="button" className="vnc-link" onClick={p.onOpenViewerSource} data-testid="vnc-novnc-link">
-          Viewer: noVNC (MPL-2.0), source
+          noVNC source (MPL-2.0)
         </button>
       </div>
     </div>
@@ -117,7 +121,8 @@ export function CredentialsCard(p: {
   }
   return (
     <div className="vnc-connect-card">
-      <div className="vnc-connect-title">Sign in to this screen</div>
+      <div className="vnc-connect-title">Sign in</div>
+      <div className="vnc-connect-hint">This screen asked for a login.</div>
       <div className="vnc-fields">
         {p.fields.map((f) => (
           <div className="vnc-field" key={f}>
@@ -126,22 +131,21 @@ export function CredentialsCard(p: {
               label={FIELD_LABEL[f]}
               isLabelHidden
               {...(f === "password" ? { type: "password" as const } : {})}
-              placeholder={FIELD_LABEL[f]}
               value={values[f]}
               onChange={(v: string) => setValues((s) => ({ ...s, [f]: v }))}
               data-testid={`vnc-cred-${f}`}
             />
           </div>
         ))}
+        {missing && (
+          <div className="vnc-status error" role="alert" data-testid="vnc-cred-missing">
+            {missing}
+          </div>
+        )}
         <div className="vnc-actions">
           <Button label="Cancel" variant="ghost" size="sm" onClick={p.onCancel} data-testid="vnc-cred-cancel" />
           <Button label="Continue" variant="primary" size="sm" onClick={submit} data-testid="vnc-cred-submit" />
         </div>
-        {missing && (
-          <div className="vnc-status error" data-testid="vnc-cred-missing">
-            {missing}
-          </div>
-        )}
       </div>
     </div>
   )
@@ -151,9 +155,7 @@ export function VerifyCard(p: { fingerprint: string; onApprove: () => void; onCa
   return (
     <div className="vnc-connect-card">
       <div className="vnc-connect-title">Check this server</div>
-      <div className="vnc-connect-hint">
-        First time connecting with an encrypted login. Make sure this fingerprint matches the one shown on the computer you're connecting to.
-      </div>
+      <div className="vnc-connect-hint">Encrypted login. Compare this fingerprint with the one on the remote computer.</div>
       <code className="vnc-fingerprint" data-testid="vnc-fingerprint">
         {p.fingerprint}
       </code>

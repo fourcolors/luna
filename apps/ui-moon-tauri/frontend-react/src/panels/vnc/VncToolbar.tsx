@@ -2,7 +2,7 @@
  * VncToolbar.tsx - the footer while a session is live: who you're looking
  * at, the view controls, and Disconnect. Clipboard moves only on a click:
  * "Paste" sends this Mac's clipboard text to the remote; when the remote
- * copies something, a "Copy remote clipboard" button appears. Nothing ever
+ * copies something, a "Copy remote" button appears. Nothing ever
  * overwrites the local clipboard on its own.
  */
 import { Button } from "../../astryx-kit"
@@ -33,20 +33,32 @@ export function VncToolbar(p: VncToolbarProps) {
       {p.connected && (
         <div className="vnc-tools">
           <Button
-            label={p.viewOnly ? "View only: on" : "View only: off"}
+            label="View only"
             variant="ghost"
             size="sm"
+            aria-pressed={p.viewOnly}
+            className={p.viewOnly ? "is-pressed" : undefined}
             onClick={() => p.onViewOnly(!p.viewOnly)}
             data-testid="vnc-viewonly-btn"
           />
           <Button
-            label={p.scale === "fit" ? "Fit to window" : "Actual size"}
+            label={p.scale === "fit" ? "Fit" : "Actual size"}
             variant="ghost"
             size="sm"
+            aria-pressed={p.scale === "fit"}
+            className={p.scale === "fit" ? "is-pressed" : undefined}
             onClick={() => p.onScale(p.scale === "fit" ? "actual" : "fit")}
             data-testid="vnc-scale-btn"
           />
-          <Button label={p.fullscreen ? "Exit full screen" : "Full screen"} variant="ghost" size="sm" onClick={p.onFullscreen} data-testid="vnc-fullscreen-btn" />
+          <Button
+            label="Full screen"
+            variant="ghost"
+            size="sm"
+            aria-pressed={p.fullscreen}
+            className={p.fullscreen ? "is-pressed" : undefined}
+            onClick={p.onFullscreen}
+            data-testid="vnc-fullscreen-btn"
+          />
           {!p.viewOnly && (
             <>
               <Button label="Ctrl+Alt+Del" variant="ghost" size="sm" onClick={p.onCtrlAltDel} data-testid="vnc-cad-btn" />
@@ -54,7 +66,7 @@ export function VncToolbar(p: VncToolbarProps) {
             </>
           )}
           {p.hasRemoteClipboard && (
-            <Button label="Copy remote clipboard" variant="ghost" size="sm" onClick={p.onCopyRemote} data-testid="vnc-copy-remote-btn" />
+            <Button label="Copy remote" variant="ghost" size="sm" onClick={p.onCopyRemote} data-testid="vnc-copy-remote-btn" />
           )}
         </div>
       )}

@@ -20,6 +20,7 @@
  * goes to the server only inside the RFB handshake, and is never stored.
  */
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { Button } from "../../astryx-kit"
 import type { PanelCtx } from "../panel-ctx"
 import { ConnectCard, CredentialsCard, VerifyCard } from "./VncCards"
 import { VncToolbar } from "./VncToolbar"
@@ -172,8 +173,11 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
         <div className="vnc-viewport" ref={session.viewportRef} data-testid="vnc-viewport" />
 
         {phase === "connecting" && (
-          <div className="vnc-overlay vnc-overlay-status">
-            <div className="vnc-connecting">Connecting</div>
+          <div className="vnc-overlay">
+            <div className="vnc-connect-card vnc-status-card">
+              <div className="vnc-connect-title">Connecting</div>
+              {host ? <div className="vnc-connect-hint">{host}</div> : null}
+            </div>
           </div>
         )}
 
@@ -221,18 +225,21 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
           <div className="vnc-paste" data-testid="vnc-paste-box">
             <textarea
               autoFocus
-              placeholder="Paste text here (Cmd+V), then Send"
+              placeholder="Paste text, then Send"
               value={pasteText}
               onChange={(e) => setPasteText(e.target.value)}
               data-testid="vnc-paste-input"
             />
             <div className="vnc-actions">
-              <button type="button" className="vnc-link" onClick={() => setPasteOpen(false)}>
-                Cancel
-              </button>
-              <button type="button" className="vnc-send" onClick={sendPaste} disabled={!pasteText} data-testid="vnc-paste-send">
-                Send to remote
-              </button>
+              <Button label="Cancel" variant="ghost" size="sm" onClick={() => setPasteOpen(false)} />
+              <Button
+                label="Send"
+                variant="primary"
+                size="sm"
+                isDisabled={!pasteText}
+                onClick={sendPaste}
+                data-testid="vnc-paste-send"
+              />
             </div>
           </div>
         )}
