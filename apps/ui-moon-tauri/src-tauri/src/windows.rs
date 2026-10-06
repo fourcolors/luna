@@ -113,10 +113,12 @@ fn panel_instance_label(kind: &str, params: &serde_json::Value) -> String {
 /// Kind-specific allowlist for widget-open params, applied BEFORE a param set
 /// becomes a URL, an instance label, or a row in ~/.luna/layout.json.
 ///
-/// `vnc` (Screen Share) keeps only a plain `host` and `port`. Anything else
-/// (a password, a username, a ws:// URL carrying `user:pass@`) is dropped, so
-/// a secret passed by mistake or by a prompt-injected agent can never be
-/// written to the layout file in plain text. An empty result means the base
+/// `vnc` (Screen Share) keeps only a plain `host` (a DNS name or IP, never a
+/// URL) and a valid `port`. Anything else (a password, a username, a ws://
+/// endpoint, whose path or query can carry a token) is dropped, so a secret
+/// passed by mistake or by a prompt-injected agent can never be written to
+/// the layout file in plain text. A ws:// endpoint can still be typed into
+/// the panel; it is just never pre-filled or persisted. An empty result means the base
 /// window. Other kinds pass through unchanged.
 pub(crate) fn sanitize_widget_params(kind: &str, params: serde_json::Value) -> serde_json::Value {
     if kind != "vnc" {
@@ -130,7 +132,7 @@ pub(crate) fn sanitize_widget_params(kind: &str, params: serde_json::Value) -> s
         let h = h.trim();
         let plain = !h.is_empty()
             && h.len() <= 255
-            && !h.contains(['@', '?', '#'])
+            && !h.contains(['@', '?', '#', '/'])
             && !h.chars().any(|c| c.is_control() || c.is_whitespace());
         if plain {
             out.insert("host".into(), serde_json::Value::String(h.to_string()));
@@ -3892,7 +3894,7 @@ mod sanitize_widget_params_tests {
             json!({"host": "192.168.1.20", "port": 5901})
         );
         assert_eq!(sanitize_widget_params("vnc", json!({"host": "mac.local", "port": 5900})), json!({"host": "mac.local", "port": 5900}));
-        assert_eq!(sanitize_widget_params("vnc", json!({"host": "ws://box:6080/websockify"})), json!({"host": "ws://box:6080/websockify"}));
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "fe80::1"})), json!({"host": "fe80::1"}));
     }
 
     #[test]
@@ -3905,6 +3907,9 @@ mod sanitize_widget_params_tests {
         assert_eq!(sanitize_widget_params("vnc", json!({"password": "x"})), json!(null));
         // A token in a websockify URL is a secret too.
         assert_eq!(sanitize_widget_params("vnc", json!({"host": "wss://box/websockify?token=abc"})), json!(null));
+        // Any ws:// endpoint is never persisted: a path can be a bearer secret.
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "wss://box/vnc/SECRET"})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "ws://box:6080/websockify"})), json!(null));
         assert_eq!(sanitize_widget_params("vnc", json!("str")), json!(null));
     }
 

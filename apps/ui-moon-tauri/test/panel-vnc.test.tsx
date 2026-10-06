@@ -307,6 +307,14 @@ describe("VncPanel login and server checks", () => {
     expect(rfb.sentCreds).toEqual([{ username: "me", password: "pw", target: "vm1" }])
   })
 
+  it("Continue with an empty required field explains what's missing and sends nothing", async () => {
+    const { rfb } = await startLive()
+    act(() => rfb.fire("credentialsrequired", { types: ["username", "password"] }))
+    click("vnc-cred-submit")
+    expect(q("vnc-cred-missing")?.textContent).toBe("Enter username.")
+    expect(rfb.sentCreds).toEqual([])
+  })
+
   it("an unsupported login type fails visibly and releases the connection", async () => {
     const { rfb, calls } = await startLive()
     act(() => rfb.fire("credentialsrequired", { types: ["smartcard"] }))
@@ -319,7 +327,7 @@ describe("VncPanel login and server checks", () => {
     const { rfb } = await startLive()
     act(() => rfb.fire("serververification", { type: "RSA", publickey: new Uint8Array([1, 2, 3]) }))
     await flush()
-    expect(q("vnc-fingerprint")?.textContent).toMatch(/^([0-9a-f]{2}:){15}[0-9a-f]{2}$/)
+    expect(q("vnc-fingerprint")?.textContent).toMatch(/^([0-9a-f]{2}-){7}[0-9a-f]{2}$/)
     expect(rfb.approved).toBe(0)
     click("vnc-verify-approve")
     expect(rfb.approved).toBe(1)
@@ -356,7 +364,7 @@ describe("VncPanel live tools", () => {
     expect(q("vnc-cad-btn")).toBeNull() // no input tools while view only
     click("vnc-scale-btn")
     expect(rfb.scaleViewport).toBe(false)
-    expect(rfb.clipViewport).toBe(true)
+    expect(rfb.clipViewport).toBe(false) // 1:1 with scrollbars, never clipped
   })
 
   it("Ctrl+Alt+Del and Paste send to the remote only on click", async () => {
@@ -374,11 +382,39 @@ describe("VncPanel live tools", () => {
     expect(rfb.pasted).toEqual(["hello"])
   })
 
+  it("a failed copy keeps the remote clipboard offered for a retry", async () => {
+    const rfb = await live()
+    act(() => rfb.fire("clipboard", { text: "secret" }))
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"))
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } })
+    const exec = vi.fn().mockReturnValue(false)
+    ;(document as any).execCommand = exec
+    click("vnc-copy-remote-btn")
+    await flush()
+    expect(q("vnc-copy-remote-btn")).not.toBeNull()
+    writeText.mockResolvedValue(undefined)
+    click("vnc-copy-remote-btn")
+    await flush()
+    expect(writeText).toHaveBeenLastCalledWith("secret")
+    expect(q("vnc-copy-remote-btn")).toBeNull()
+  })
+
   it("the remote clipboard is offered, never written automatically", async () => {
     const rfb = await live()
     expect(q("vnc-copy-remote-btn")).toBeNull()
     act(() => rfb.fire("clipboard", { text: "secret" }))
     expect(q("vnc-copy-remote-btn")).not.toBeNull()
+  })
+})
+
+describe("VncPanel password never crosses endpoints", () => {
+  it("changing the host clears the password", async () => {
+    const { ctx } = makeCtx([])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    setInput("vnc-host-input", "10.0.0.1")
+    setInput("vnc-password-input", "for-A")
+    setInput("vnc-host-input", "10.0.0.2")
+    expect((q("vnc-password-input") as HTMLInputElement).value).toBe("")
   })
 })
 

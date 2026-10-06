@@ -89,16 +89,25 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
   const [notice, setNotice] = useState<string | null>(null)
 
   const session = useVncSession(ctx)
-  const { state } = session
+  const { state, connect: sessionConnect, disconnect: sessionDisconnect, takeRemoteClipboard, pasteToRemote } = session
+
+  // A password belongs to one endpoint: changing host or port (or picking a
+  // recent host) clears it, so it is never sent to a different computer.
+  const editEndpoint = useCallback((next: Partial<RecentHost>) => {
+    if (next.host !== undefined) setHost(next.host)
+    if (next.port !== undefined) setPort(next.port)
+    setPassword("")
+    setPrefilled(false)
+  }, [])
 
   const connect = useCallback(() => {
     setPrefilled(false)
     setNotice(null)
     setPasteOpen(false)
-    // Remember only what the operator actually connected to (no password).
-    if (host.trim()) setRecent(rememberRecent(storage(), { host: host.trim(), port: port.trim() || "5900" }))
-    void session.connect(host, port, password)
-  }, [host, port, password, session])
+    // Remember only a plain host + valid port the operator connected to.
+    setRecent(rememberRecent(storage(), { host: host.trim(), port: port.trim() || "5900" }))
+    void sessionConnect(host, port, password)
+  }, [host, port, password, sessionConnect])
 
   const win = (ctx?.win ?? null) as FullscreenWindow | null
   const toggleFullscreen = useCallback(async () => {
@@ -113,25 +122,29 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
   }, [win])
 
   const disconnect = useCallback(() => {
-    session.disconnect()
+    sessionDisconnect()
     setPasteOpen(false)
     if (fullscreen) void win?.setFullscreen(false).catch(() => {})
     setFullscreen(false)
-  }, [session, fullscreen, win])
+  }, [sessionDisconnect, fullscreen, win])
 
   const copyRemote = useCallback(async () => {
     const text = state.remoteClipboard
     if (text == null) return
-    setNotice((await copyText(text)) ? "Copied the remote clipboard." : "Couldn't copy.")
-    session.takeRemoteClipboard()
-  }, [state.remoteClipboard, session])
+    if (await copyText(text)) {
+      takeRemoteClipboard(text)
+      setNotice("Copied the remote clipboard.")
+    } else {
+      setNotice("Couldn't copy. Try again.") // stays offered for a retry
+    }
+  }, [state.remoteClipboard, takeRemoteClipboard])
 
   const sendPaste = useCallback(() => {
-    session.pasteToRemote(pasteText)
+    pasteToRemote(pasteText)
     setPasteText("")
     setPasteOpen(false)
     setNotice("Sent to the remote clipboard. Paste it there.")
-  }, [pasteText, session])
+  }, [pasteText, pasteToRemote])
 
   const { phase } = state
   // A session that ends while full screen (remote close, network drop)
@@ -170,22 +183,15 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
               host={host}
               port={port}
               password={password}
-              onHost={(v) => {
-                setHost(v)
-                setPrefilled(false)
-              }}
-              onPort={setPort}
+              onHost={(v) => editEndpoint({ host: v })}
+              onPort={(v) => editEndpoint({ port: v })}
               onPassword={setPassword}
               onConnect={connect}
               prefilled={prefilled}
               isError={phase === "error"}
               status={state.status}
               recent={recent}
-              onPickRecent={(r) => {
-                setHost(r.host)
-                setPort(r.port)
-                setPrefilled(false)
-              }}
+              onPickRecent={(r) => editEndpoint(r)}
               onForgetRecent={(r) => setRecent(forgetRecent(storage(), r))}
               onOpenViewerSource={() => {
                 ctx?.invoke("open_external_url", { url: NOVNC_SOURCE_URL }).catch(() => {})

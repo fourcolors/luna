@@ -127,8 +127,11 @@ export function useVncSession(ctx: PanelCtx | undefined) {
       }
       rfbRef.current = rfb
       rfb.viewOnly = viewOnlyRef.current
+      // Fit scales the screen into the window; Actual size shows it 1:1 with
+      // scrollbars (clipViewport stays off: clipping without drag-to-pan
+      // would leave the off-screen part unreachable).
       rfb.scaleViewport = scaleRef.current === "fit"
-      rfb.clipViewport = scaleRef.current === "actual"
+      rfb.clipViewport = false
       const current = () => rfbRef.current === rfb
 
       rfb.addEventListener("connect", () => {
@@ -159,9 +162,16 @@ export function useVncSession(ctx: PanelCtx | undefined) {
           teardown()
           return dispatch({ type: "fail", message: "The server sent an identity check Luna can't show." })
         }
-        void fingerprintOf(key).then((fp) => {
-          if (current()) dispatch({ type: "verify", fingerprint: fp })
-        })
+        fingerprintOf(key).then(
+          (fp) => {
+            if (current()) dispatch({ type: "verify", fingerprint: fp })
+          },
+          () => {
+            if (!current()) return
+            teardown()
+            dispatch({ type: "fail", message: "Couldn't compute the server's fingerprint." })
+          },
+        )
       })
       rfb.addEventListener("securityfailure", (e) => {
         if (!current()) return
@@ -207,10 +217,7 @@ export function useVncSession(ctx: PanelCtx | undefined) {
     scaleRef.current = mode
     setScaleState(mode)
     const rfb = rfbRef.current
-    if (rfb) {
-      rfb.scaleViewport = mode === "fit"
-      rfb.clipViewport = mode === "actual"
-    }
+    if (rfb) rfb.scaleViewport = mode === "fit"
   }, [])
 
   const sendCtrlAltDel = useCallback(() => rfbRef.current?.sendCtrlAltDel(), [])
@@ -220,7 +227,8 @@ export function useVncSession(ctx: PanelCtx | undefined) {
     if (text) rfbRef.current?.clipboardPasteFrom(text)
   }, [])
 
-  const takeRemoteClipboard = useCallback(() => dispatch({ type: "clipboardTaken" }), [])
+  /** Clear the offered remote clipboard, but only if it is still `text`. */
+  const takeRemoteClipboard = useCallback((text: string) => dispatch({ type: "clipboardTaken", text }), [])
 
   return {
     state,

@@ -97,9 +97,24 @@ export function CredentialsCard(p: {
   onSubmit: (creds: Partial<Record<CredField, string>>) => void
   onCancel: () => void
 }) {
-  const [values, setValues] = useState<Partial<Record<CredField, string>>>(
-    p.fields.includes("password") ? { password: p.initialPassword } : {},
-  )
+  // Every requested field starts defined: noVNC re-asks for any field that
+  // is undefined, which would make Continue look like it did nothing.
+  const [values, setValues] = useState<Record<CredField, string>>(() => ({
+    username: "",
+    target: "",
+    password: p.fields.includes("password") ? p.initialPassword : "",
+  }))
+  const [missing, setMissing] = useState<string | null>(null)
+  const submit = () => {
+    const empty = p.fields.filter((f) => f !== "password" && !values[f].trim())
+    if (empty.length > 0) {
+      setMissing(`Enter ${empty.map((f) => FIELD_LABEL[f].toLowerCase()).join(" and ")}.`)
+      return
+    }
+    const creds: Partial<Record<CredField, string>> = {}
+    for (const f of p.fields) creds[f] = values[f]
+    p.onSubmit(creds)
+  }
   return (
     <div className="vnc-connect-card">
       <div className="vnc-connect-title">Sign in to this screen</div>
@@ -112,7 +127,7 @@ export function CredentialsCard(p: {
               isLabelHidden
               {...(f === "password" ? { type: "password" as const } : {})}
               placeholder={FIELD_LABEL[f]}
-              value={values[f] ?? ""}
+              value={values[f]}
               onChange={(v: string) => setValues((s) => ({ ...s, [f]: v }))}
               data-testid={`vnc-cred-${f}`}
             />
@@ -120,8 +135,13 @@ export function CredentialsCard(p: {
         ))}
         <div className="vnc-actions">
           <Button label="Cancel" variant="ghost" size="sm" onClick={p.onCancel} data-testid="vnc-cred-cancel" />
-          <Button label="Continue" variant="primary" size="sm" onClick={() => p.onSubmit(values)} data-testid="vnc-cred-submit" />
+          <Button label="Continue" variant="primary" size="sm" onClick={submit} data-testid="vnc-cred-submit" />
         </div>
+        {missing && (
+          <div className="vnc-status error" data-testid="vnc-cred-missing">
+            {missing}
+          </div>
+        )}
       </div>
     </div>
   )

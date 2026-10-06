@@ -19,14 +19,15 @@ export function parsePort(portStr: string): number | null {
 }
 
 /**
- * A host that is safe to show, store, or pre-fill: no credentials (`@`), no
- * query or fragment (a websockify `?token=` is a secret too), no whitespace
- * or control characters. Mirrors the Rust-side allowlist in
- * windows.rs `sanitize_widget_params`.
+ * A host that is safe to show, store, or pre-fill: a DNS name or IP only.
+ * No URL (a ws:// path or `?token=` can be a bearer secret), no credentials
+ * (`@`), no whitespace or control characters. A ws:// endpoint can still be
+ * typed into the panel; it is just never pre-filled or remembered. Mirrors
+ * the Rust-side allowlist in windows.rs `sanitize_widget_params`.
  */
 export function isPlainHost(host: string): boolean {
   const h = host.trim()
-  return h.length > 0 && h.length <= 255 && !/[@?#\s\p{Cc}]/u.test(h)
+  return h.length > 0 && h.length <= 255 && !/[@?#/\s\p{Cc}]/u.test(h)
 }
 
 /**
@@ -92,7 +93,7 @@ export type SessionEvent =
   | { type: "disconnected"; clean: boolean }
   | { type: "desktopName"; name: string }
   | { type: "remoteClipboard"; text: string }
-  | { type: "clipboardTaken" }
+  | { type: "clipboardTaken"; text: string }
   | { type: "reset" }
 
 const KNOWN_FIELDS: ReadonlyArray<CredField> = ["username", "password", "target"]
@@ -134,7 +135,8 @@ export function sessionReducer(s: SessionState, e: SessionEvent): SessionState {
     case "remoteClipboard":
       return { ...s, remoteClipboard: e.text }
     case "clipboardTaken":
-      return { ...s, remoteClipboard: null }
+      // A newer remote copy that arrived while we were copying stays offered.
+      return s.remoteClipboard === e.text ? { ...s, remoteClipboard: null } : s
     case "reset":
       return initialSession
   }
@@ -158,7 +160,9 @@ export function loadRecent(storage: Pick<Storage, "getItem"> | null): RecentHost
     if (!Array.isArray(arr)) return []
     return arr
       .filter((r) => r && typeof r.host === "string" && typeof r.port === "string")
-      .filter((r) => isPlainHost(r.host))
+      // Re-validated on every load, so entries written by an older build
+      // (e.g. a ws:// URL) are scrubbed.
+      .filter((r) => isPlainHost(r.host) && parsePort(r.port) != null)
       .slice(0, RECENT_MAX)
       .map((r) => ({ host: r.host, port: r.port }))
   } catch {
@@ -170,7 +174,7 @@ export function rememberRecent(
   storage: Pick<Storage, "getItem" | "setItem"> | null,
   entry: RecentHost,
 ): RecentHost[] {
-  if (!isPlainHost(entry.host)) return loadRecent(storage)
+  if (!isPlainHost(entry.host) || parsePort(entry.port) == null) return loadRecent(storage)
   const next = [entry, ...loadRecent(storage).filter((r) => !(r.host === entry.host && r.port === entry.port))]
     .slice(0, RECENT_MAX)
   try {
@@ -194,11 +198,16 @@ export function forgetRecent(
   return next
 }
 
-/** Short, readable SHA-256 fingerprint ("ab:cd:..." of the first 16 bytes). */
+/**
+ * The server-key fingerprint in the format RealVNC shows on the server and
+ * noVNC's own app uses: SHA-1 of the RA2 public key, first 8 bytes, hex,
+ * hyphen-separated ("1a-2b-..."). Matching formats is what makes the
+ * "compare with the other computer" check possible at all.
+ */
 export async function fingerprintOf(key: Uint8Array): Promise<string> {
   // Copy into a fresh ArrayBuffer: subtle.digest wants a plain BufferSource.
   const bytes = new Uint8Array(key.byteLength)
   bytes.set(key)
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.buffer))
-  return Array.from(digest.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join(":")
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", bytes.buffer))
+  return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("-")
 }

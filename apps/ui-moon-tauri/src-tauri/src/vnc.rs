@@ -47,6 +47,10 @@ const RESERVATION_TTL: Duration = Duration::from_secs(60);
 /// cannot complete in this long means the far side stopped reading. End the
 /// bridge instead of letting it hold both sockets forever.
 const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(20);
+/// Handshakes run concurrently so silent or slow local sockets queued ahead
+/// of the panel can't run out the accept deadline; this caps how many are in
+/// flight at once (extra connections are dropped).
+const MAX_PENDING_HANDSHAKES: usize = 8;
 
 /// One map entry per bridge, tagged with the window that opened it so a
 /// destroyed window can take its bridges down (`abort_for_window`).
@@ -101,6 +105,19 @@ impl VncBridges {
         match m.get_mut(&id) {
             Some(b) => b.slot = Slot::Live(task),
             None => task.abort(),
+        }
+    }
+
+    /// Like `remove`, but only if `window` owns the slot, so one Screen Share
+    /// window can't end another's bridge by guessing its (sequential) id.
+    fn remove_owned(&self, id: u64, window: &str) -> Option<tauri::async_runtime::JoinHandle<()>> {
+        let mut m = self.inner.lock().ok()?;
+        if m.get(&id).map(|b| b.window.as_str()) != Some(window) {
+            return None;
+        }
+        match m.remove(&id) {
+            Some(BridgeSlot { slot: Slot::Live(h), .. }) => Some(h),
+            _ => None,
         }
     }
 
@@ -245,8 +262,8 @@ pub(crate) async fn vnc_connect(
 }
 
 #[tauri::command]
-pub(crate) fn vnc_disconnect(app: AppHandle, id: u64) -> Result<(), String> {
-    if let Some(task) = app.state::<VncBridges>().remove(id) {
+pub(crate) fn vnc_disconnect(app: AppHandle, window: tauri::Window, id: u64) -> Result<(), String> {
+    if let Some(task) = app.state::<VncBridges>().remove_owned(id, window.label()) {
         task.abort();
     }
     Ok(())
@@ -266,14 +283,39 @@ async fn bridge_task(
     let _ = app.state::<VncBridges>().remove(id);
 }
 
+/// One WebSocket handshake on an accepted socket, gated on the token path.
+async fn handshake(
+    stream: TcpStream,
+    expected_path: String,
+    limit: Duration,
+) -> Option<tokio_tungstenite::WebSocketStream<TcpStream>> {
+    let ws = tokio::time::timeout(
+        limit,
+        tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, res: Response| {
+            if req.uri().path() == expected_path {
+                Ok(res)
+            } else {
+                let mut err = ErrorResponse::new(None);
+                *err.status_mut() = StatusCode::NOT_FOUND;
+                Err(err)
+            }
+        }),
+    )
+    .await;
+    match ws {
+        Ok(Ok(ws)) => Some(ws),
+        _ => None,
+    }
+}
+
 /// The bridge lifecycle with the registry coupling removed so tests can run
 /// the real accept → token-check → pipe path without an AppHandle.
 ///
 /// Keeps accepting until a client presents the token path or the accept
-/// window closes: a wrong-path or silent connection (another local process
-/// probing the ephemeral port) is dropped and the listener keeps waiting, so
-/// it cannot kill the panel's real session. Each attempt gets its own
-/// handshake bound, and the overall deadline still caps the whole wait.
+/// window closes. Handshakes run concurrently (up to MAX_PENDING_HANDSHAKES),
+/// so a wrong-path, silent, or slow connection (another local process
+/// probing the ephemeral port) cannot block or kill the panel's real
+/// session: the first valid handshake wins and the rest are aborted.
 async fn accept_and_pipe_within(
     listener: TcpListener,
     vnc: TcpStream,
@@ -283,29 +325,23 @@ async fn accept_and_pipe_within(
 ) {
     let deadline = tokio::time::Instant::now() + accept_timeout;
     let expected_path = format!("/vnc-{token}");
+    let mut pending = tokio::task::JoinSet::new();
     loop {
-        let accepted = tokio::time::timeout_at(deadline, listener.accept()).await;
-        let Ok(Ok((ws_stream, _))) = accepted else { return };
-        let path = expected_path.clone();
-        let bound = std::cmp::min(deadline, tokio::time::Instant::now() + handshake_timeout);
-        let ws = tokio::time::timeout_at(
-            bound,
-            tokio_tungstenite::accept_hdr_async(ws_stream, move |req: &Request, res: Response| {
-                if req.uri().path() == path {
-                    Ok(res)
-                } else {
-                    let mut err = ErrorResponse::new(None);
-                    *err.status_mut() = StatusCode::NOT_FOUND;
-                    Err(err)
+        tokio::select! {
+            accepted = tokio::time::timeout_at(deadline, listener.accept()) => {
+                let Ok(Ok((stream, _))) = accepted else { return };
+                if pending.len() < MAX_PENDING_HANDSHAKES {
+                    pending.spawn(handshake(stream, expected_path.clone(), handshake_timeout));
                 }
-            }),
-        )
-        .await;
-        if let Ok(Ok(ws)) = ws {
-            pipe(vnc, ws).await;
-            return;
+            }
+            Some(done) = pending.join_next(), if !pending.is_empty() => {
+                if let Ok(Some(ws)) = done {
+                    pending.abort_all();
+                    pipe(vnc, ws).await;
+                    return;
+                }
+            }
         }
-        // Wrong token, not a WebSocket, or too slow: drop it, keep waiting.
     }
 }
 
@@ -554,27 +590,30 @@ mod tests {
         assert_eq!(greeting.into_data().as_ref(), b"RFB 003.008\n");
     }
 
-    /// A TCP client that connects but never completes the WS handshake is
-    /// dropped after the handshake bound and cannot block the real client.
+    /// Silent sockets queued AHEAD of the panel cannot run out the clock:
+    /// handshakes are concurrent, so the real client gets in immediately even
+    /// while several silent sockets are still inside their handshake window.
     #[tokio::test]
-    async fn a_silent_socket_cannot_hold_the_bridge() {
+    async fn silent_sockets_cannot_delay_the_real_client() {
         let (ws_listener, vnc) = fake_vnc_and_ws_listener().await;
         let ws_port = ws_listener.local_addr().unwrap().port();
         tokio::spawn(accept_and_pipe_within(
             ws_listener,
             vnc,
             "tok".to_string(),
-            Duration::from_secs(5),
-            Duration::from_millis(100),
+            Duration::from_secs(30),
+            Duration::from_secs(10),
         ));
-        let _silent = TcpStream::connect((Ipv4Addr::LOCALHOST, ws_port)).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut silent = Vec::new();
+        for _ in 0..3 {
+            silent.push(TcpStream::connect((Ipv4Addr::LOCALHOST, ws_port)).await.unwrap());
+        }
         let res = tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(2),
             tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{ws_port}/vnc-tok")),
         )
         .await
-        .expect("real client must not be blocked by a silent socket");
+        .expect("real client must not wait behind silent sockets");
         assert!(res.is_ok(), "real client should handshake");
     }
 
@@ -602,6 +641,17 @@ mod tests {
                 slot: Slot::Reserved(Instant::now() - RESERVATION_TTL),
             });
         assert!(b.try_reserve("panel-vnc").is_ok(), "stale reservations are pruned");
+    }
+
+    /// vnc_disconnect only ends a bridge the calling window owns.
+    #[test]
+    fn remove_owned_checks_the_window() {
+        let b = VncBridges::default();
+        let id = b.try_reserve("panel-vnc-a").unwrap();
+        assert!(b.remove_owned(id, "panel-vnc-b").is_none());
+        assert!(b.inner.lock().unwrap().contains_key(&id), "another window cannot remove it");
+        b.remove_owned(id, "panel-vnc-a");
+        assert!(!b.inner.lock().unwrap().contains_key(&id), "the owner can");
     }
 
     /// A destroyed window takes exactly its own slots with it.
