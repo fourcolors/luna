@@ -6,8 +6,13 @@
  * toolCallId (safe against double-feed), broadcasts fire ONLY on change, and
  * autoOpen fires exactly once per thread.
  */
-import { describe, expect, it } from "vitest"
-import { createSubagentTreeBridge } from "../src/subagent-tree-bridge.js"
+import { describe, expect, it, vi } from "vitest"
+import {
+  MAX_SEEN_CALLS,
+  SUBAGENT_IDLE_TTL_MS,
+  SUBAGENT_SWEEP_INTERVAL_MS,
+  createSubagentTreeBridge,
+} from "../src/subagent-tree-bridge.js"
 import type { SubagentTreeFrame } from "../src/protocol.js"
 
 const sink = () => {
@@ -188,6 +193,190 @@ describe("subagent-tree-bridge", () => {
       b.observe(old, { type: "tool-call", toolCallId: "c1", name: "Agent", input: {} })
         .autoOpen,
     ).toBe(true)
+  })
+
+  describe("background (async) agents", () => {
+    const launch = (b: ReturnType<typeof createSubagentTreeBridge>, id = "a1") => {
+      b.observe("t1", { type: "tool-call", toolCallId: id, name: "Agent", input: { description: "x" } })
+      b.observe("t1", { type: "tool-result", toolCallId: id, status: "ok", async: true })
+    }
+    const lastAgents = (frames: SubagentTreeFrame[]) => frames[frames.length - 1]!.agents
+
+    it("async Agent stays running after launch ack", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b)
+      expect(lastAgents(a.frames)[0]!.status).toBe("running")
+    })
+
+    it("async Agent survives turn-complete and keeps counting", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b)
+      b.observe("t1", { type: "turn-complete" })
+      b.observe("t1", { type: "tool-call", toolCallId: "b1", name: "Read", parentToolUseId: "a1" })
+      expect(lastAgents(a.frames)).toEqual([
+        expect.objectContaining({ id: "a1", status: "running", toolCount: 1, tool: "Read" }),
+      ])
+    })
+
+    it("subagent-settled closes it (done / error)", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b, "a1")
+      b.observe("t1", { type: "subagent-settled", toolCallId: "a1", status: "done" })
+      expect(lastAgents(a.frames).find((n) => n.id === "a1")!.status).toBe("done")
+
+      launch(b, "a2")
+      b.observe("t1", { type: "subagent-settled", toolCallId: "a2", status: "error" })
+      expect(lastAgents(a.frames).find((n) => n.id === "a2")!.status).toBe("error")
+    })
+
+    it("subagent-settled also closes running agents nested under it", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      launch(b, "a1")
+      b.observe("t1", { type: "tool-call", toolCallId: "n1", name: "Agent", parentToolUseId: "a1", input: {} })
+      b.observe("t1", { type: "turn-complete" })
+      // The nested agent belongs to the background run, so the turn's end
+      // does not close it.
+      expect(b.treeFor("t1").find((n) => n.id === "n1")!.status).toBe("running")
+      b.observe("t1", { type: "subagent-settled", toolCallId: "a1", status: "done" })
+      expect(b.treeFor("t1").map((n) => n.status)).toEqual(["done", "done"])
+    })
+
+    it("subagent-progress updates tool and count, never lowering the count", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b)
+      b.observe("t1", { type: "subagent-progress", toolCallId: "a1", tool: "Grep", toolCount: 5 })
+      expect(lastAgents(a.frames)[0]).toMatchObject({ tool: "Grep", toolCount: 5, status: "running" })
+      b.observe("t1", { type: "subagent-progress", toolCallId: "a1", tool: "Grep", toolCount: 3 })
+      expect(b.treeFor("t1")[0]!.toolCount).toBe(5)
+    })
+
+    it("sync Agent is unchanged: a tool-result without async closes it", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      b.observe("t1", { type: "tool-call", toolCallId: "s1", name: "Agent", input: {} })
+      b.observe("t1", { type: "tool-result", toolCallId: "s1", status: "ok" })
+      expect(b.treeFor("t1")[0]!.status).toBe("done")
+    })
+
+    it("turn-complete still closes sync nodes and prunes them; the async node remains", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b, "a1")
+      b.observe("t1", { type: "tool-call", toolCallId: "s1", name: "Agent", input: {} })
+      b.observe("t1", { type: "turn-complete" })
+      // The turn-complete frame itself shows the sync agent done.
+      expect(lastAgents(a.frames).find((n) => n.id === "s1")!.status).toBe("done")
+      b.observe("t1", { type: "subagent-progress", toolCallId: "a1", tool: "Bash", toolCount: 2 })
+      expect(lastAgents(a.frames).map((n) => [n.id, n.status])).toEqual([["a1", "running"]])
+    })
+
+    it("a replayed tool-call after turn-complete does not resurrect a pruned node", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      b.observe("t1", { type: "tool-call", toolCallId: "a1", name: "Agent", input: {} })
+      b.observe("t1", { type: "tool-result", toolCallId: "a1", status: "ok" })
+      b.observe("t1", { type: "turn-complete" })
+      const before = a.frames.length
+      // A slower forwarder (second window) replays the same frames.
+      b.observe("t1", { type: "tool-call", toolCallId: "a1", name: "Agent", input: {} })
+      expect(a.frames.length).toBe(before)
+      expect(b.treeFor("t1")).toEqual([])
+    })
+
+    it("seenCalls stays bounded while still guarding recent ids", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      b.observe("t1", { type: "tool-call", toolCallId: "first", name: "Agent", input: {} })
+      for (let i = 0; i < MAX_SEEN_CALLS + 5; i++) {
+        b.observe("t1", { type: "tool-call", toolCallId: `x${i}`, name: "Bash" })
+      }
+      b.observe("t1", { type: "turn-complete" })
+      // The most recent id is still remembered...
+      b.observe("t1", { type: "tool-call", toolCallId: `x${MAX_SEEN_CALLS + 4}`, name: "Agent", input: {} })
+      expect(b.treeFor("t1")).toEqual([])
+      // ...while the oldest was evicted, so the set did not grow without bound.
+      b.observe("t1", { type: "tool-call", toolCallId: "first", name: "Agent", input: {} })
+      expect(b.treeFor("t1").map((n) => n.id)).toEqual(["first"])
+    })
+
+    it("TTL backstop: an async node idle past the TTL is closed on the next observe", () => {
+      let clock = 1_000_000
+      const b = createSubagentTreeBridge({ now: () => clock, sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b)
+      clock += SUBAGENT_IDLE_TTL_MS - 1
+      b.observe("t1", { type: "tool-call", toolCallId: "top", name: "Bash" })
+      expect(b.treeFor("t1")[0]!.status).toBe("running")
+      clock += 60_000 + 1
+      b.observe("t1", { type: "tool-call", toolCallId: "top2", name: "Bash" })
+      expect(lastAgents(a.frames)[0]).toMatchObject({ id: "a1", status: "done", stale: true })
+    })
+
+    it("TTL backstop: sweep() closes idle async nodes without any new frame", () => {
+      let clock = 0
+      const b = createSubagentTreeBridge({ now: () => clock, sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b)
+      clock += 31 * 60_000
+      b.sweep()
+      expect(lastAgents(a.frames)[0]).toMatchObject({ status: "done", stale: true })
+    })
+
+    it("activity resets the idle clock", () => {
+      let clock = 0
+      const b = createSubagentTreeBridge({ now: () => clock, sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      launch(b)
+      clock += 20 * 60_000
+      b.observe("t1", { type: "subagent-progress", toolCallId: "a1", toolCount: 1 })
+      clock += 20 * 60_000
+      b.sweep()
+      expect(b.treeFor("t1")[0]!.status).toBe("running")
+    })
+
+    it("settled / progress for an unknown id is ignored", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      expect(() =>
+        b.observe("t1", { type: "subagent-settled", toolCallId: "nope", status: "done" }),
+      ).not.toThrow()
+      b.observe("t1", { type: "subagent-progress", toolCallId: "nope", tool: "Read", toolCount: 2 })
+      expect(a.frames).toHaveLength(0)
+    })
+
+    it("the sweep timer only runs while a background node is running", () => {
+      vi.useFakeTimers()
+      try {
+        let clock = 0
+        const b = createSubagentTreeBridge({ now: () => clock })
+        const a = sink()
+        b.registerClient("c1", a.send)
+        expect(vi.getTimerCount()).toBe(0)
+        launch(b)
+        expect(vi.getTimerCount()).toBe(1)
+        clock += 31 * 60_000
+        vi.advanceTimersByTime(SUBAGENT_SWEEP_INTERVAL_MS)
+        expect(lastAgents(a.frames)[0]!.status).toBe("done")
+        expect(vi.getTimerCount()).toBe(0)
+        b.dispose()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
   it("is TRUE LRU: an actively-touched thread survives churn past the cap", () => {

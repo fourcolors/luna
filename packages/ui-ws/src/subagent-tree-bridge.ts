@@ -24,6 +24,11 @@
  *     server can summon the panel without re-opening it on every subagent.
  *   - the tree is metadata only (no tool output / no prompt body beyond a short
  *     description) — wire-safe and context-cheap.
+ *   - a BACKGROUND Agent (SDK >= 0.3.202 default) answers its tool_use at once
+ *     with a launch ack (`async: true` on the tool-result). That node stays
+ *     running across turn-complete until `subagent-settled` (SDK
+ *     task_notification) or the idle TTL closes it. Closing it on the ack was
+ *     the sidebar flicker: the row painted and vanished within milliseconds.
  */
 import type { SubagentNode, SubagentTreeFrame } from "./protocol.js"
 
@@ -37,7 +42,21 @@ export interface ObservableThreadFrame {
   readonly name?: string
   readonly input?: unknown
   readonly parentToolUseId?: string
-  readonly status?: "ok" | "error"
+  /** "ok" | "error" on a tool-result; "done" | "error" on subagent-settled. */
+  readonly status?: string
+  /** tool-result only: a background Agent's launch ack. */
+  readonly async?: boolean
+  /** subagent-progress only. */
+  readonly tool?: string
+  readonly toolCount?: number
+}
+
+export interface SubagentTreeBridgeOptions {
+  /** Injectable clock for the idle TTL. Defaults to Date.now. */
+  readonly now?: () => number
+  /** Period of the background TTL sweep while any background node is
+   *  running. 0 disables the timer (the per-observe check still runs). */
+  readonly sweepIntervalMs?: number
 }
 
 export interface SubagentTreeBridge {
@@ -62,7 +81,22 @@ export interface SubagentTreeBridge {
   readonly markAnnounced: (threadId: string) => void
   /** Snapshot the current tree for a thread (request replies / tests). */
   readonly treeFor: (threadId: string) => ReadonlyArray<SubagentNode>
+  /** Run the idle-TTL check over every thread now (the timer calls this). */
+  readonly sweep: () => void
+  /** Stop the TTL timer. */
+  readonly dispose: () => void
 }
+
+/** A background subagent with no observed activity for this long is closed
+ *  as `done` (and flagged `stale`), so a lost `task_notification` cannot
+ *  leave a row running forever. */
+export const SUBAGENT_IDLE_TTL_MS = 30 * 60_000
+
+export const SUBAGENT_SWEEP_INTERVAL_MS = 60_000
+
+/** Cap on remembered tool-call ids per thread. They are kept across turns so
+ *  a slow forwarder replaying an old call cannot resurrect a pruned node. */
+export const MAX_SEEN_CALLS = 2000
 
 /** The SDK's subagent spawn tool surfaces under these wire names. */
 const AGENT_TOOL_NAMES = new Set(["Agent", "Task"])
@@ -81,6 +115,10 @@ interface MutableNode {
   status: "running" | "done" | "error"
   tool: string | null
   toolCount: number
+  /** Launched in the background: outlives its own tool-result and the turn. */
+  async: boolean
+  lastActivityAt: number
+  stale: boolean
 }
 
 interface ThreadState {
@@ -113,9 +151,14 @@ const agentMeta = (input: unknown): { name: string; description: string } => {
   }
 }
 
-export const createSubagentTreeBridge = (): SubagentTreeBridge => {
+export const createSubagentTreeBridge = (
+  options: SubagentTreeBridgeOptions = {},
+): SubagentTreeBridge => {
+  const now = options.now ?? Date.now
+  const sweepIntervalMs = options.sweepIntervalMs ?? SUBAGENT_SWEEP_INTERVAL_MS
   const clients = new Map<string, SendSubagentFrame>()
   const threads = new Map<string, ThreadState>()
+  let sweepTimer: ReturnType<typeof setInterval> | null = null
 
   const ensureThread = (threadId: string): ThreadState => {
     const existing = threads.get(threadId)
@@ -147,6 +190,14 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
     return t
   }
 
+  const rememberCall = (t: ThreadState, id: string): void => {
+    t.seenCalls.add(id)
+    if (t.seenCalls.size > MAX_SEEN_CALLS) {
+      const oldest = t.seenCalls.values().next().value
+      if (oldest !== undefined) t.seenCalls.delete(oldest)
+    }
+  }
+
   const snapshot = (t: ThreadState): ReadonlyArray<SubagentNode> =>
     t.order.map((id) => {
       const n = t.nodes.get(id)!
@@ -158,6 +209,7 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
         status: n.status,
         tool: n.tool,
         toolCount: n.toolCount,
+        ...(n.stale ? { stale: true } : {}),
       }
     })
 
@@ -176,6 +228,91 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
     }
   }
 
+  /** True when the node, or any ancestor, is a running background agent: its
+   *  work continues past the parent turn's end. */
+  const insideRunningAsync = (t: ThreadState, node: MutableNode): boolean => {
+    let cur: MutableNode | undefined = node
+    for (let hops = 0; cur && hops <= t.nodes.size; hops++) {
+      if (cur.async && cur.status === "running") return true
+      cur = cur.parentId ? t.nodes.get(cur.parentId) : undefined
+    }
+    return false
+  }
+
+  const hasRunningAsync = (t: ThreadState): boolean => {
+    for (const n of t.nodes.values()) {
+      if (n.async && n.status === "running") return true
+    }
+    return false
+  }
+
+  /** Close a settled node's still-running descendants: they cannot outlive
+   *  the agent that spawned them. */
+  const settleDescendants = (
+    t: ThreadState,
+    rootId: string,
+    status: "done" | "error",
+  ): void => {
+    const closed = new Set([rootId])
+    for (const id of t.order) {
+      const n = t.nodes.get(id)
+      if (!n || n.parentId === null || !closed.has(n.parentId)) continue
+      closed.add(n.id)
+      if (n.status === "running") n.status = status
+    }
+  }
+
+  /** Drop every non-running node. Running background nodes (and anything
+   *  still running under them) stay for the next turn. */
+  const pruneSettled = (t: ThreadState): void => {
+    for (let i = t.order.length - 1; i >= 0; i--) {
+      const id = t.order[i]!
+      const n = t.nodes.get(id)
+      if (!n || n.status !== "running") {
+        t.nodes.delete(id)
+        t.order.splice(i, 1)
+      }
+    }
+  }
+
+  /** Close background nodes idle past the TTL. Returns whether any changed. */
+  const expireIdle = (t: ThreadState): boolean => {
+    const cutoff = now() - SUBAGENT_IDLE_TTL_MS
+    let changed = false
+    for (const n of t.nodes.values()) {
+      if (n.async && n.status === "running" && n.lastActivityAt < cutoff) {
+        n.status = "done"
+        n.stale = true
+        settleDescendants(t, n.id, "done")
+        changed = true
+      }
+    }
+    return changed
+  }
+
+  const stopSweep = (): void => {
+    if (sweepTimer !== null) {
+      clearInterval(sweepTimer)
+      sweepTimer = null
+    }
+  }
+
+  const sweep = (): void => {
+    let anyRunningAsync = false
+    for (const [threadId, t] of threads) {
+      if (expireIdle(t)) broadcast(threadId, t)
+      if (hasRunningAsync(t)) anyRunningAsync = true
+    }
+    if (!anyRunningAsync) stopSweep()
+  }
+
+  const ensureSweep = (): void => {
+    if (sweepTimer !== null || sweepIntervalMs <= 0) return
+    sweepTimer = setInterval(sweep, sweepIntervalMs)
+    const timer = sweepTimer as { unref?: () => void }
+    if (typeof timer.unref === "function") timer.unref()
+  }
+
   return {
     registerClient(connId, send) {
       clients.set(connId, send)
@@ -185,12 +322,12 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
     },
     observe(threadId, frame) {
       const t = ensureThread(threadId)
-      let changed = false
+      let changed = expireIdle(t)
       let autoOpen = false
 
       if (frame.type === "tool-call" && typeof frame.toolCallId === "string") {
         if (!t.seenCalls.has(frame.toolCallId)) {
-          t.seenCalls.add(frame.toolCallId)
+          rememberCall(t, frame.toolCallId)
           if (frame.name && AGENT_TOOL_NAMES.has(frame.name)) {
             // A subagent spawn → a new node in the tree. (Involvement
             // recording deliberately does NOT live here: this bridge only
@@ -206,6 +343,9 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
               status: "running",
               tool: null,
               toolCount: 0,
+              async: false,
+              lastActivityAt: now(),
+              stale: false,
             })
             t.order.push(frame.toolCallId)
             changed = true
@@ -219,6 +359,7 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
             if (node) {
               node.tool = frame.name ?? node.tool
               node.toolCount += 1
+              node.lastActivityAt = now()
               changed = true
             }
           }
@@ -229,34 +370,68 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
         frame.type === "tool-result" &&
         typeof frame.toolCallId === "string"
       ) {
-        // The Agent's OWN tool-result closes that subagent.
         const node = t.nodes.get(frame.toolCallId)
         if (node && node.status === "running") {
-          node.status = frame.status === "error" ? "error" : "done"
+          if (frame.async === true && frame.status !== "error") {
+            // A background launch ack, not the end: the subagent keeps
+            // running until its subagent-settled frame.
+            if (!node.async) {
+              node.async = true
+              node.lastActivityAt = now()
+              changed = true
+              ensureSweep()
+            }
+          } else {
+            // A foreground Agent's own tool-result closes that subagent.
+            node.status = frame.status === "error" ? "error" : "done"
+            changed = true
+          }
+        }
+      } else if (
+        frame.type === "subagent-settled" &&
+        typeof frame.toolCallId === "string"
+      ) {
+        const node = t.nodes.get(frame.toolCallId)
+        if (node && node.status === "running") {
+          const status = frame.status === "error" ? "error" : "done"
+          node.status = status
+          settleDescendants(t, node.id, status)
           changed = true
         }
+      } else if (
+        frame.type === "subagent-progress" &&
+        typeof frame.toolCallId === "string"
+      ) {
+        const node = t.nodes.get(frame.toolCallId)
+        if (node && node.status === "running") {
+          node.lastActivityAt = now()
+          if (typeof frame.tool === "string" && frame.tool !== "" && frame.tool !== node.tool) {
+            node.tool = frame.tool
+            changed = true
+          }
+          if (typeof frame.toolCount === "number" && frame.toolCount > node.toolCount) {
+            node.toolCount = frame.toolCount
+            changed = true
+          }
+        }
       } else if (frame.type === "turn-complete") {
-        // Safety net: the turn ended, so nothing is still running.
+        // The turn ended, so every FOREGROUND agent has ended with it. A
+        // background agent (and anything it spawned) keeps running.
         for (const node of t.nodes.values()) {
-          if (node.status === "running") {
+          if (node.status === "running" && !insideRunningAsync(t, node)) {
             node.status = "done"
             changed = true
           }
         }
       }
 
+      // The panel's last view of a finished turn is this done-state frame.
       if (changed) broadcast(threadId, t)
-      // Bound the live tree to ONE turn: after the turn ends, reset the per-
-      // thread node set (memory stays O(current turn), and the panel stops
-      // piling up stale 'done' agents from prior turns). The just-broadcast
-      // done-state is the panel's last view until the next delegation;
-      // `announced` is intentionally KEPT so we never re-pop a panel the user
-      // closed.
-      if (frame.type === "turn-complete") {
-        t.nodes.clear()
-        t.order.length = 0
-        t.seenCalls.clear()
-      }
+      // Bound the tree to what is still in flight. `seenCalls` is kept (and
+      // capped) so a replayed call from a slower forwarder cannot re-add a
+      // pruned node as running; `announced` is kept so we never re-pop a
+      // panel the user closed.
+      if (frame.type === "turn-complete") pruneSettled(t)
       return { autoOpen }
     },
     markAnnounced(threadId) {
@@ -266,5 +441,7 @@ export const createSubagentTreeBridge = (): SubagentTreeBridge => {
       const t = threads.get(threadId)
       return t ? snapshot(t) : []
     },
+    sweep,
+    dispose: stopSweep,
   }
 }
