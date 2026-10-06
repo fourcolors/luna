@@ -252,3 +252,33 @@ then `set position of window X to {20, 120}` on the foreign process or
 `tell application "X" to quit`. Also note: card-panel miniaturize is a NO-OP
 (yellow button and Cmd+M do nothing) — re-show isn't a reachable reset path
 for these windows, so don't burn time trying to test it.
+
+
+## Verifying the Screen Share (VNC) widget live
+
+The `vnc` widget ("Screen Share", `panel.html?type=vnc`) opens via the Cmd+K
+launcher like any panel — typing `screen` filters to it as the unique row-0
+match, so Enter activates it deterministically. A python RFB fixture makes the
+whole path verifiable without a real VNC host:
+
+- Fixture: `python3 .agents/skills/luna-verify-macos-notes/vnc-test-server.py` — raw RFB 3.8 security-None on
+  `127.0.0.1:5900` (the path the Rust `vnc_connect` WS↔TCP bridge exercises)
+  plus a ws front on :5910. Draws an animated 640x480 checkerboard, desktop
+  name `luna-test-vnc`, and a magenta cross at the last pointer position
+  (GREEN while a button is held). Logs `rfb:`/`ws:` lines to
+  `/tmp/vnc-test-server.log`.
+- Which connection proved what: a panel connect through the Rust bridge logs
+  `rfb: connection from …` + `rfb: session init complete` with NO `ws:` line —
+  a `ws:` line means a client used python's own 5910 front instead (i.e. the
+  bridge wasn't exercised).
+- Pointer truth: take the screenshot WHILE `left_mouse_down` is held (cross is
+  green; magenta after release). `left_mouse_down` takes no coordinate — it
+  presses at the current cursor position, so click first, then hold.
+- Server log is the ground truth for input round-trip: `PointerEvent …
+  mask=0x1` during drags, `KeyEvent keysym=0x… down=1/0` for keys. Use a key
+  not already in the log so the new lines are unambiguous.
+- Closed-port negative: `vnc_connect` dials TCP first, so `127.0.0.1:5999`
+  surfaces `can't reach 127.0.0.1:5999 — Connection refused (os error 61)` on
+  the card and flips the button to `Try again`; no server log line appears.
+- `scaleViewport = true`: shrinking the window rescales the whole remote —
+  verify the full checkerboard stays visible rather than clipping.

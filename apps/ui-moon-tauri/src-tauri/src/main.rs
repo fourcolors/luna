@@ -18,6 +18,7 @@ mod notify;
 mod oauth;
 mod shell;
 mod updater;
+mod vnc;
 mod voice_commands;
 mod windows;
 
@@ -93,6 +94,9 @@ fn main() {
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
+                // Screen Share: a destroyed window takes its VNC bridges down
+                // (the webview's own unmount cleanup is not guaranteed to run).
+                vnc::abort_for_window(app, window.label());
                 if window.label() == "main" {
                     for (label, win) in app.webview_windows() {
                         if label != "main" {
@@ -153,6 +157,8 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         // PRD A §09: the client-brokered OAuth loopback state.
         .manage(oauth::OauthLoopback::default())
+        // VNC screen share: live WS↔TCP bridge tasks keyed by bridge id.
+        .manage(vnc::VncBridges::default())
         // Staged-update flow: live phase + the verified, held archive bytes so
         // apply_update installs without a second network round-trip.
         .manage(updater::UpdateManager::default());
@@ -215,6 +221,8 @@ fn main() {
         lifecycle::expand_from_moon,
         windows::begin_native_resize,
         windows::capture_window_screenshot,
+        vnc::vnc_connect,
+        vnc::vnc_disconnect,
         voice_commands::voice_status,
         voice_commands::voice_set_mode,
         voice_commands::voice_ptt_down,
@@ -275,7 +283,9 @@ fn main() {
         lifecycle::collapse_to_moon,
         lifecycle::expand_from_moon,
         windows::begin_native_resize,
-        windows::capture_window_screenshot
+        windows::capture_window_screenshot,
+        vnc::vnc_connect,
+        vnc::vnc_disconnect
     ]);
 
     builder

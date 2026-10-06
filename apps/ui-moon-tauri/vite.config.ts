@@ -37,6 +37,10 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // es2022: @novnc/novnc's H264 decoder uses top-level await, which the
+    // default es2020/safari14 targets reject. Every webview Moon ships on
+    // (WKWebView 15+, WebView2 Chromium) has supported TLA for years.
+    target: "es2022",
     rollupOptions: {
       input: {
         index: resolve(__dirname, "frontend-react/index.html"),
@@ -53,6 +57,10 @@ export default defineConfig({
   // Pin the browser entries so Vite's dep crawler never pulls in anything
   // outside the four page bundles (adapted to Moon's multi-page entries).
   optimizeDeps: {
+    // @novnc/novnc is only ever dynamically imported (see VncPanel) and its
+    // H264 decoder uses top-level await, which the dep optimizer's default
+    // es2020 target rejects. Serving it unbundled sidesteps that entirely.
+    exclude: ["@novnc/novnc"],
     entries: [
       "frontend-react/index.html",
       "frontend-react/chat.html",
