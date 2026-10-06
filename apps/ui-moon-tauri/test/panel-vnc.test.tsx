@@ -13,7 +13,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 class FakeRfb extends EventTarget {
   static instances: FakeRfb[] = []
   scaleViewport = false
+  clipViewport = false
+  viewOnly = false
   disconnected = false
+  sentCreds: Array<Record<string, string>> = []
+  approved = 0
+  pasted: string[] = []
+  cad = 0
   constructor(
     public target: HTMLElement,
     public url: string,
@@ -24,7 +30,19 @@ class FakeRfb extends EventTarget {
   disconnect() {
     this.disconnected = true
   }
-  sendCredentials() {}
+  sendCredentials(c: Record<string, string>) {
+    this.sentCreds.push(c)
+  }
+  approveServer() {
+    this.approved += 1
+  }
+  clipboardPasteFrom(t: string) {
+    this.pasted.push(t)
+  }
+  sendCtrlAltDel() {
+    this.cad += 1
+  }
+  focus() {}
   /** noVNC fires 'disconnect' asynchronously after disconnect(); tests call this when they want it. */
   fire(type: string, detail?: unknown) {
     this.dispatchEvent(new CustomEvent(type, { detail }))
@@ -232,5 +250,148 @@ describe("VncPanel status handling", () => {
     await flush()
     expect(calls.filter((c) => c.cmd === "vnc_connect")).toHaveLength(0)
     expect(q("vnc-status")?.textContent).toBe("Port must be 1-65535.")
+  })
+})
+
+describe("VncPanel consent: widget-open params only pre-fill", () => {
+  afterEach(() => window.history.replaceState({}, "", "/"))
+
+  it("an agent-opened window fills the form but never dials on its own", async () => {
+    window.history.replaceState({}, "", "/panel.html?type=vnc&host=10.0.0.9&port=5901&password=leak")
+    const { ctx, calls } = makeCtx([deferred<unknown>()])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    await flush()
+    await flush()
+    expect(calls.filter((c) => c.cmd === "vnc_connect")).toHaveLength(0)
+    expect((q("vnc-host-input") as HTMLInputElement).value).toBe("10.0.0.9")
+    expect((q("vnc-port-input") as HTMLInputElement).value).toBe("5901")
+    expect((q("vnc-password-input") as HTMLInputElement).value).toBe("") // never read from params
+    expect(q("vnc-prefill-note")).not.toBeNull()
+    click("vnc-connect-btn")
+    await flush()
+    expect(calls.filter((c) => c.cmd === "vnc_connect")).toEqual([
+      { cmd: "vnc_connect", args: { host: "10.0.0.9", port: 5901 } },
+    ])
+  })
+
+  it("a host carrying credentials is not pre-filled", async () => {
+    window.history.replaceState({}, "", "/panel.html?type=vnc&host=" + encodeURIComponent("ws://u:p@box:6080"))
+    const { ctx } = makeCtx([])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    expect((q("vnc-host-input") as HTMLInputElement).value).toBe("")
+    expect(q("vnc-prefill-note")).toBeNull()
+  })
+})
+
+describe("VncPanel login and server checks", () => {
+  async function startLive() {
+    const dial = deferred<unknown>()
+    const { ctx, calls } = makeCtx([dial])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    await connectTo("10.0.0.9")
+    dial.resolve({ id: 1, url: "ws://127.0.0.1:1/vnc-x" })
+    await flush()
+    return { rfb: FakeRfb.instances[FakeRfb.instances.length - 1], calls }
+  }
+
+  it("renders every field the server asks for and sends them", async () => {
+    const { rfb } = await startLive()
+    act(() => rfb.fire("credentialsrequired", { types: ["username", "password", "target"] }))
+    expect(q("vnc-cred-username")).not.toBeNull()
+    expect(q("vnc-cred-password")).not.toBeNull()
+    expect(q("vnc-cred-target")).not.toBeNull()
+    setInput("vnc-cred-username", "me")
+    setInput("vnc-cred-password", "pw")
+    setInput("vnc-cred-target", "vm1")
+    click("vnc-cred-submit")
+    expect(rfb.sentCreds).toEqual([{ username: "me", password: "pw", target: "vm1" }])
+  })
+
+  it("an unsupported login type fails visibly and releases the connection", async () => {
+    const { rfb, calls } = await startLive()
+    act(() => rfb.fire("credentialsrequired", { types: ["smartcard"] }))
+    expect(q("vnc-status")?.textContent).toContain("doesn't support")
+    expect(rfb.disconnected).toBe(true)
+    expect(calls.some((c) => c.cmd === "vnc_disconnect")).toBe(true)
+  })
+
+  it("shows the server fingerprint and approves only on click", async () => {
+    const { rfb } = await startLive()
+    act(() => rfb.fire("serververification", { type: "RSA", publickey: new Uint8Array([1, 2, 3]) }))
+    await flush()
+    expect(q("vnc-fingerprint")?.textContent).toMatch(/^([0-9a-f]{2}:){15}[0-9a-f]{2}$/)
+    expect(rfb.approved).toBe(0)
+    click("vnc-verify-approve")
+    expect(rfb.approved).toBe(1)
+  })
+
+  it("Cancel on the server check disconnects", async () => {
+    const { rfb } = await startLive()
+    act(() => rfb.fire("serververification", { type: "RSA", publickey: new Uint8Array([9]) }))
+    await flush()
+    click("vnc-verify-cancel")
+    expect(rfb.disconnected).toBe(true)
+    expect(q("vnc-connect-btn")).not.toBeNull()
+  })
+})
+
+describe("VncPanel live tools", () => {
+  async function live() {
+    const dial = deferred<unknown>()
+    const { ctx } = makeCtx([dial])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    await connectTo("10.0.0.9")
+    dial.resolve({ id: 1, url: "ws://127.0.0.1:1/vnc-x" })
+    await flush()
+    const rfb = FakeRfb.instances[FakeRfb.instances.length - 1]
+    act(() => rfb.fire("connect"))
+    return rfb
+  }
+
+  it("view only and scale toggle the live RFB", async () => {
+    const rfb = await live()
+    expect(rfb.scaleViewport).toBe(true)
+    click("vnc-viewonly-btn")
+    expect(rfb.viewOnly).toBe(true)
+    expect(q("vnc-cad-btn")).toBeNull() // no input tools while view only
+    click("vnc-scale-btn")
+    expect(rfb.scaleViewport).toBe(false)
+    expect(rfb.clipViewport).toBe(true)
+  })
+
+  it("Ctrl+Alt+Del and Paste send to the remote only on click", async () => {
+    const rfb = await live()
+    click("vnc-cad-btn")
+    expect(rfb.cad).toBe(1)
+    click("vnc-paste-btn")
+    const ta = q("vnc-paste-input") as HTMLTextAreaElement
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!
+    act(() => {
+      setter.call(ta, "hello")
+      ta.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    click("vnc-paste-send")
+    expect(rfb.pasted).toEqual(["hello"])
+  })
+
+  it("the remote clipboard is offered, never written automatically", async () => {
+    const rfb = await live()
+    expect(q("vnc-copy-remote-btn")).toBeNull()
+    act(() => rfb.fire("clipboard", { text: "secret" }))
+    expect(q("vnc-copy-remote-btn")).not.toBeNull()
+  })
+})
+
+describe("VncPanel recent hosts", () => {
+  afterEach(() => localStorage.clear())
+
+  it("remembers host and port on Connect, never the password, and can forget", async () => {
+    const { ctx } = makeCtx([deferred<unknown>()])
+    act(() => root.render(<VncPanel ctx={ctx} />))
+    setInput("vnc-password-input", "pw")
+    await connectTo("10.0.0.9")
+    const saved = JSON.parse(localStorage.getItem("luna.vnc.recent") || "[]")
+    expect(saved).toEqual([{ host: "10.0.0.9", port: "5900" }])
+    expect(localStorage.getItem("luna.vnc.recent")).not.toContain("pw")
   })
 })

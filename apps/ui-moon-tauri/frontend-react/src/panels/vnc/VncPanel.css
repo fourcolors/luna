@@ -164,3 +164,125 @@ html[data-theme="dark"] .vnc-status.error {
 .vnc-footer > *:last-child {
   flex: none;
 }
+
+/* ── Pre-fill note, recent hosts, links (Connect card) ─────────────────── */
+.vnc-prefill-note {
+  margin: -2px 0 8px;
+  padding: 6px 8px;
+  border-radius: 7px;
+  font-size: 0.7rem;
+  color: var(--ink);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in oklab, var(--accent) 28%, transparent);
+}
+.vnc-recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+}
+.vnc-recent-label {
+  font-size: 0.62rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin-right: 2px;
+}
+.vnc-recent-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--ink-faint);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.vnc-recent-pick,
+.vnc-recent-forget {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.vnc-recent-forget {
+  padding: 2px 6px 2px 0;
+  color: var(--ink-soft);
+}
+.vnc-recent-pick:hover,
+.vnc-recent-forget:hover {
+  background: color-mix(in oklab, var(--ink) 7%, transparent);
+}
+.vnc-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--ink-soft);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.vnc-fingerprint {
+  display: block;
+  margin: 8px 0 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  word-break: break-all;
+  background: color-mix(in oklab, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+/* ── Live-session tools ────────────────────────────────────────────────── */
+.vnc-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-left: auto;
+}
+.vnc-notice {
+  padding: 4px 12px;
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--ink-faint);
+}
+.vnc-paste {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: min(320px, calc(100% - 24px));
+  padding: 10px;
+  border-radius: 10px;
+  z-index: 3;
+  background: var(--paper);
+  border: 1px solid var(--ink-faint);
+  box-shadow: 0 6px 24px color-mix(in oklab, #000 25%, transparent);
+}
+.vnc-paste textarea {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--ink);
+  background: color-mix(in oklab, var(--ink) 4%, transparent);
+  border: 1px solid var(--ink-faint);
+  border-radius: 6px;
+  padding: 6px;
+}
+.vnc-send {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--paper);
+  border-radius: 999px;
+  padding: 3px 11px;
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.vnc-send:disabled {
+  opacity: 0.55;
+  cursor: default;
+}

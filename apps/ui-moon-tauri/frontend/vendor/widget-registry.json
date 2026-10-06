@@ -220,7 +220,7 @@
       "singleton": false,
       "width": 960,
       "height": 700,
-      "description": "Remote screen share — view and control a VNC host right inside a Moon window (opens with params {host, port})"
+      "description": "Remote screen share: view and control a VNC host in a Moon window. Optional params {host, port} only PRE-FILL the connect form; the operator must press Connect, and any other param (e.g. a password) is dropped."
     }
   ]
 }

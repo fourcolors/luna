@@ -94,6 +94,9 @@ fn main() {
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let app = window.app_handle();
+                // Screen Share: a destroyed window takes its VNC bridges down
+                // (the webview's own unmount cleanup is not guaranteed to run).
+                vnc::abort_for_window(app, window.label());
                 if window.label() == "main" {
                     for (label, win) in app.webview_windows() {
                         if label != "main" {

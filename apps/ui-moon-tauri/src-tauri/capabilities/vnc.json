@@ -1,12 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "vnc",
-  "description": "ADDITIVE permission set for Screen Share widget windows (registry kind 'vnc'). Both the base `panel-vnc` label and parameterized `panel-vnc-*` instance labels are covered. Scoped to just this kind — not the shared panels.json — because vnc_connect opens a loopback WebSocket-to-raw-TCP bridge to an arbitrary host:port; no other panel kind should hold a raw outbound TCP proxy. The panel-* capability still supplies window movement.",
+  "description": "ADDITIVE permission set for Screen Share widget windows (registry kind 'vnc'). Both the base `panel-vnc` label and parameterized `panel-vnc-*` instance labels are covered. Scoped to just this kind \u2014 not the shared panels.json \u2014 because vnc_connect opens a loopback WebSocket-to-raw-TCP bridge to an arbitrary host:port; no other panel kind should hold a raw outbound TCP proxy. The panel-* capability still supplies window movement. Also grants set/is-fullscreen so the Screen Share toolbar can go full screen; scoped here so no other panel gains it.",
   "windows": [
     "panel-vnc",
     "panel-vnc-*"
   ],
   "permissions": [
-    "allow-vnc"
+    "allow-vnc",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen"
   ]
 }

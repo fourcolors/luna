@@ -25,5 +25,11 @@ declare module "@novnc/novnc" {
     sendCredentials(creds: Record<string, string>): void
     sendCtrlAltDel(): void
     sendKey(keysym: number, code: string, down?: boolean): void
+    /** Accept the server's RA2 public key after `serververification`. */
+    approveServer(): void
+    /** Send text to the remote clipboard. */
+    clipboardPasteFrom(text: string): void
+    focus(options?: FocusOptions): void
+    blur(): void
   }
 }
