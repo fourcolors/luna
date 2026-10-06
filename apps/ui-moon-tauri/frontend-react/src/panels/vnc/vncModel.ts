@@ -20,12 +20,13 @@ export function parsePort(portStr: string): number | null {
 
 /**
  * A host that is safe to show, store, or pre-fill: no credentials (`@`), no
- * whitespace or control characters. Mirrors the Rust-side allowlist in
+ * query or fragment (a websockify `?token=` is a secret too), no whitespace
+ * or control characters. Mirrors the Rust-side allowlist in
  * windows.rs `sanitize_widget_params`.
  */
 export function isPlainHost(host: string): boolean {
   const h = host.trim()
-  return h.length > 0 && h.length <= 255 && !h.includes("@") && !/[\s\p{Cc}]/u.test(h)
+  return h.length > 0 && h.length <= 255 && !/[@?#\s\p{Cc}]/u.test(h)
 }
 
 /**
@@ -157,8 +158,7 @@ export function loadRecent(storage: Pick<Storage, "getItem"> | null): RecentHost
     if (!Array.isArray(arr)) return []
     return arr
       .filter((r) => r && typeof r.host === "string" && typeof r.port === "string")
-      .filter((r) => isPlainHost(r.host) || WS_URL_RE.test(r.host))
-      .filter((r) => !String(r.host).includes("@"))
+      .filter((r) => isPlainHost(r.host))
       .slice(0, RECENT_MAX)
       .map((r) => ({ host: r.host, port: r.port }))
   } catch {
@@ -170,7 +170,7 @@ export function rememberRecent(
   storage: Pick<Storage, "getItem" | "setItem"> | null,
   entry: RecentHost,
 ): RecentHost[] {
-  if (entry.host.includes("@")) return loadRecent(storage)
+  if (!isPlainHost(entry.host)) return loadRecent(storage)
   const next = [entry, ...loadRecent(storage).filter((r) => !(r.host === entry.host && r.port === entry.port))]
     .slice(0, RECENT_MAX)
   try {

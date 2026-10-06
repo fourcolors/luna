@@ -27,7 +27,7 @@ describe("vncModel", () => {
   it("isPlainHost refuses credentials and junk", () => {
     expect(isPlainHost("10.0.0.9")).toBe(true)
     expect(isPlainHost("ws://box:6080/websockify")).toBe(true)
-    for (const bad of ["", "me@box", "ws://u:p@box", "a b", "x\u0000y"]) expect(isPlainHost(bad)).toBe(false)
+    for (const bad of ["", "me@box", "ws://u:p@box", "a b", "x\u0000y", "wss://box/ws?token=t"]) expect(isPlainHost(bad)).toBe(false)
   })
 
   it("readOpenParams pre-fills only a plain host and a valid port", () => {

@@ -19,7 +19,7 @@
  * Secrets: the password lives in component state for the life of the card,
  * goes to the server only inside the RFB handshake, and is never stored.
  */
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import type { PanelCtx } from "../panel-ctx"
 import { ConnectCard, CredentialsCard, VerifyCard } from "./VncCards"
 import { VncToolbar } from "./VncToolbar"
@@ -94,6 +94,7 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
   const connect = useCallback(() => {
     setPrefilled(false)
     setNotice(null)
+    setPasteOpen(false)
     // Remember only what the operator actually connected to (no password).
     if (host.trim()) setRecent(rememberRecent(storage(), { host: host.trim(), port: port.trim() || "5900" }))
     void session.connect(host, port, password)
@@ -133,6 +134,14 @@ export function VncPanel({ ctx: ctxProp }: VncPanelProps) {
   }, [pasteText, session])
 
   const { phase } = state
+  // A session that ends while full screen (remote close, network drop)
+  // returns the window to normal so the Connect card isn't stranded.
+  useEffect(() => {
+    if ((phase === "idle" || phase === "error") && fullscreen) {
+      void win?.setFullscreen(false).catch(() => {})
+      setFullscreen(false)
+    }
+  }, [phase, fullscreen, win])
   const showConnect = phase === "idle" || phase === "error"
   const live = !showConnect
   const title =

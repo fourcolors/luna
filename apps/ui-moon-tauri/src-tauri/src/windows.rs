@@ -130,7 +130,7 @@ pub(crate) fn sanitize_widget_params(kind: &str, params: serde_json::Value) -> s
         let h = h.trim();
         let plain = !h.is_empty()
             && h.len() <= 255
-            && !h.contains('@')
+            && !h.contains(['@', '?', '#'])
             && !h.chars().any(|c| c.is_control() || c.is_whitespace());
         if plain {
             out.insert("host".into(), serde_json::Value::String(h.to_string()));
@@ -3903,6 +3903,8 @@ mod sanitize_widget_params_tests {
         assert_eq!(sanitize_widget_params("vnc", json!({"port": "59a0"})), json!(null));
         assert_eq!(sanitize_widget_params("vnc", json!({"port": 70000})), json!(null));
         assert_eq!(sanitize_widget_params("vnc", json!({"password": "x"})), json!(null));
+        // A token in a websockify URL is a secret too.
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "wss://box/websockify?token=abc"})), json!(null));
         assert_eq!(sanitize_widget_params("vnc", json!("str")), json!(null));
     }
 
