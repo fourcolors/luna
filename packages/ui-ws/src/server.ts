@@ -1748,20 +1748,29 @@ export const startUIWebSocketServer = (
           ),
         )
 
-        // The shell clientIds THIS connection registered. Keyed by client, not
-        // by thread: a client's shell scope is a property of the client, so one
+        // Per-connection owner id, shared by the secret bridge, the widget
+        // summoner, and the local-shell bridge: a stale connection closing
+        // after a reconnect must not wipe the live connection's registrations.
+        const secretConnId = randomUUID()
+
+        // The shell clientIds THIS connection registered, with the owner id
+        // they were registered under. Keyed by client, not by thread: a
+        // client's shell scope is a property of the client, so one
         // registration serves every thread on the connection. On teardown we
-        // drop exactly those clients. Nothing is "released" back to anyone —
-        // registrations coexist now, so there is no handoff to restore.
-        const localShellClientIds = yield* Ref.make<ReadonlySet<string>>(
-          new Set(),
+        // drop exactly those clients — but only while this connection still
+        // owns the registration (the bridge compares `connId`), so a stale
+        // connection closing after a reconnect can't wipe the live one.
+        // Nothing is "released" back to anyone — registrations coexist now,
+        // so there is no handoff to restore.
+        const localShellClientIds = yield* Ref.make<ReadonlyMap<string, string>>(
+          new Map(),
         )
         if (localShellBridge !== null) {
           yield* Effect.addFinalizer(() =>
             Effect.gen(function* () {
               const owned = yield* Ref.get(localShellClientIds)
-              for (const clientId of owned) {
-                localShellBridge.removeClient(clientId)
+              for (const [clientId, connId] of owned) {
+                localShellBridge.removeClient(clientId, connId)
               }
             }),
           )
@@ -1771,7 +1780,6 @@ export const startUIWebSocketServer = (
         // teardown we unregister them — but only if THIS connection is still the
         // active registration (the bridge compares `secretConnId`), so a stale
         // connection closing after a reconnect can't wipe the live one.
-        const secretConnId = randomUUID()
         const secretThreads = new Set<string>()
         const registerSecretClient = (threadId: string): void => {
           if (secretBridge === null) return
@@ -2146,13 +2154,17 @@ export const startUIWebSocketServer = (
                     return
                   case "local-shell-capability": {
                     if (localShellBridge === null) return
-                    const status = localShellBridge.setCapability(frame, (out) => {
-                      send(ws, out)
-                    })
+                    const status = localShellBridge.setCapability(
+                      frame,
+                      (out) => {
+                        send(ws, out)
+                      },
+                      secretConnId,
+                    )
                     send(ws, status)
                     yield* Ref.update(localShellClientIds, (owned) => {
-                      const next = new Set(owned)
-                      if (frame.enabled) next.add(frame.clientId)
+                      const next = new Map(owned)
+                      if (frame.enabled) next.set(frame.clientId, secretConnId)
                       else next.delete(frame.clientId)
                       return next
                     })
