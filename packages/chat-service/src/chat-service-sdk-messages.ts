@@ -210,6 +210,52 @@ export interface SdkMessageHandlingDeps {
  *  ui-ws's subagent-tree bridge AGENT_TOOL_NAMES. */
 const AGENT_SPAWN_TOOLS = new Set(["Agent", "Task"])
 
+/** Fallback for a background Agent launch when `tool_use_result` is absent
+ *  (older CLI, or a message carrying several tool_result blocks). */
+const ASYNC_AGENT_LAUNCH_TEXT = /^\s*Async agent launched/
+
+/** sdk-tools.d.ts AgentOutput: a background launch reports
+ *  `status: "async_launched"` instead of `"completed"`. */
+const isAsyncLaunchStatus = (toolUseResult: unknown): boolean =>
+  isObj(toolUseResult) && toolUseResult["status"] === "async_launched"
+
+/** LUNA_SDK_TRACE=1 logs one line per raw SDK message, for checking how the
+ *  CLI reports subagent lifecycle without a debugger. */
+const sdkTraceEnabled = (): boolean => process.env["LUNA_SDK_TRACE"] === "1"
+
+const traceSdkMessage = (threadId: string, msg: SDKMessage): void => {
+  const m = msg as {
+    type?: string
+    subtype?: string
+    tool_use_id?: string
+    status?: string
+    parent_tool_use_id?: string | null
+    tool_use_result?: unknown
+    message?: { content?: unknown }
+  }
+  let resultText: string | undefined
+  if (m.type === "user" && Array.isArray(m.message?.content)) {
+    const block = (m.message.content as ReadonlyArray<unknown>).find(
+      (b) => isObj(b) && b["type"] === "tool_result",
+    ) as Record<string, unknown> | undefined
+    if (block) resultText = normalizeToolResultContent(block["content"]).slice(0, 80)
+  }
+  const resultStatus = isObj(m.tool_use_result) ? m.tool_use_result["status"] : undefined
+  console.error(
+    "[sdk-trace]",
+    JSON.stringify({
+      threadId,
+      type: m.type,
+      subtype: m.subtype,
+      tool_use_id: m.tool_use_id,
+      status: m.status,
+      parent_tool_use_id: m.parent_tool_use_id ?? undefined,
+      tool_use_result_status: resultStatus,
+      result_text: resultText,
+    }),
+  )
+}
+
 export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
   const { clock, obs, store, inc, onNamedDelegation } = deps
 
@@ -284,6 +330,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
       // its turn and resets the idle-reaper clock the moment a turn ends.
       yield* Ref.set(args.lastActivity, yield* clock.nowMs())
       const t = (args.msg as { type?: string }).type
+      if (sdkTraceEnabled()) traceSdkMessage(args.threadId, args.msg)
       // Subagent linkage: the SDK forwards a subagent's tool_use /
       // tool_result blocks (and its seed prompt) onto the parent stream
       // with `parent_tool_use_id` set to the spawning Agent/Task call.
@@ -576,25 +623,72 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
         // a text block — the loop below ignores text blocks, so the seed
         // never renders. Only tool_result blocks surface, tagged with the
         // parent linkage when they came from inside a subagent.
-        for (const b of content) {
-          if (b.type === "tool_result" && typeof b.tool_use_id === "string") {
-            const { output, truncated } = truncateOutput(
-              normalizeToolResultContent(b.content),
-            )
-            yield* PubSub.publish(args.pubsub, {
-              type: "tool-result",
-              threadId: args.threadId,
-              toolCallId: b.tool_use_id,
-              status: b.is_error === true ? "error" : "ok",
-              output,
-              truncated,
-              ...(parentToolUseId !== null ? { parentToolUseId } : {}),
-            })
-          }
+        // `tool_use_result` is message-level, so it only identifies a block
+        // when the message carries exactly one tool_result.
+        const resultBlocks = content.filter(
+          (b) => b.type === "tool_result" && typeof b.tool_use_id === "string",
+        )
+        const launchedAsync =
+          resultBlocks.length === 1 &&
+          isAsyncLaunchStatus(
+            (args.msg as { tool_use_result?: unknown }).tool_use_result,
+          )
+        for (const b of resultBlocks) {
+          const text = normalizeToolResultContent(b.content)
+          const { output, truncated } = truncateOutput(text)
+          const isAsync =
+            b.is_error !== true &&
+            (launchedAsync || ASYNC_AGENT_LAUNCH_TEXT.test(text))
+          yield* PubSub.publish(args.pubsub, {
+            type: "tool-result",
+            threadId: args.threadId,
+            toolCallId: b.tool_use_id!,
+            status: b.is_error === true ? "error" : "ok",
+            output,
+            truncated,
+            ...(parentToolUseId !== null ? { parentToolUseId } : {}),
+            ...(isAsync ? { async: true } : {}),
+          })
         }
         return
       }
-      // system / hook / status / stream_event-other
+      if (t === "system") {
+        // Background subagents report their lifecycle only through these
+        // system messages: the Agent tool_result is just a launch ack.
+        const sys = args.msg as {
+          subtype?: string
+          tool_use_id?: string
+          status?: string
+          last_tool_name?: string
+          usage?: { tool_uses?: number }
+        }
+        if (typeof sys.tool_use_id !== "string" || sys.tool_use_id === "") return
+        if (sys.subtype === "task_notification") {
+          yield* PubSub.publish(args.pubsub, {
+            type: "subagent-settled",
+            threadId: args.threadId,
+            toolCallId: sys.tool_use_id,
+            status: sys.status === "failed" ? "error" : "done",
+          })
+          return
+        }
+        if (sys.subtype === "task_progress") {
+          const toolCount = sys.usage?.tool_uses
+          yield* PubSub.publish(args.pubsub, {
+            type: "subagent-progress",
+            threadId: args.threadId,
+            toolCallId: sys.tool_use_id,
+            ...(typeof sys.last_tool_name === "string" && sys.last_tool_name !== ""
+              ? { tool: sys.last_tool_name }
+              : {}),
+            ...(typeof toolCount === "number" && Number.isFinite(toolCount)
+              ? { toolCount }
+              : {}),
+          })
+        }
+        return
+      }
+      // hook / status / stream_event-other
       // — not surfaced as chat frames or obs events.
     })
 

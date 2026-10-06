@@ -130,6 +130,35 @@ export interface ChatToolResult {
   /** Mirror of ChatToolCall.parentToolUseId for results produced inside a
    *  subagent. Absent for top-level results. */
   readonly parentToolUseId?: string
+  /** Set when this result is only the launch acknowledgement of a background
+   *  Agent: the subagent keeps running after it, and its real end arrives
+   *  later as a `subagent-settled` frame. Absent for ordinary results. */
+  readonly async?: boolean
+}
+
+/**
+ * A background subagent finished (SDK `system/task_notification`).
+ * `toolCallId` is the spawning Agent call's tool_use id. The SDK's
+ * `completed` and `stopped` both map to `done`; `failed` maps to `error`.
+ */
+export interface ChatSubagentSettled {
+  readonly type: "subagent-settled"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly status: "done" | "error"
+}
+
+/**
+ * Progress from a background subagent (SDK `system/task_progress`). Carries
+ * what the parent stream may no longer forward once the parent turn ended:
+ * the subagent's last tool and its running tool count.
+ */
+export interface ChatSubagentProgress {
+  readonly type: "subagent-progress"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly tool?: string
+  readonly toolCount?: number
 }
 
 /**
@@ -199,6 +228,8 @@ export type ChatFrame =
   | ChatArtifactsExtracted
   | ChatToolCall
   | ChatToolResult
+  | ChatSubagentSettled
+  | ChatSubagentProgress
   | ChatTurnComplete
   | ChatSuggestedActionSet
   | ChatSuggestedActionUpdate
