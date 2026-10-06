@@ -341,6 +341,29 @@ describe("applyOps no-op guard", () => {
   })
 })
 
+describe("applyOps external guard", () => {
+  it("never deletes or rewrites an external-provenance record; logs the op as proposed", async () => {
+    const ext: MemoryRecord = { ...rec("ccj_1"), provenance: { source: "external" } }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          const ops: DreamOp[] = [
+            { kind: "memory_dedup", targetId: "ccj_1", before: ext, after: null, rationale: "dup" },
+          ]
+          yield* applyOps("dream-0-100", ops)
+          return { still: yield* mem.get("ccj_1"), rows: yield* store.list({ dreamId: "dream-0-100" }) }
+        }),
+        FakeMemory([ext]),
+      ),
+    )
+    expect(out.still).not.toBeNull()
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]?.status).toBe("proposed")
+  })
+})
+
 describe("revert", () => {
   it("restores the before snapshot and marks the row reverted", async () => {
     const out = await Effect.runPromise(

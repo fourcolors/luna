@@ -41,12 +41,19 @@ export type MemoryProvenanceSource =
   | "turn-extraction"
   | "dream"
   | "migration"
+  /** Reported by a tool outside Luna (e.g. the Claude Code journal). Untrusted
+   *  data: consolidation (dream, beliefs) must never promote it. */
+  | "external"
 
 export interface MemoryProvenance {
   readonly source: MemoryProvenanceSource
   readonly sessionId?: string
   readonly messageIds?: ReadonlyArray<string>
 }
+
+export const isExternalMemory = (rec: {
+  readonly provenance?: { readonly source: MemoryProvenanceSource } | undefined
+}): boolean => rec.provenance?.source === "external"
 
 /** Compatibility scope for pre-scope records in the operator namespace. */
 export const OPERATOR_MEMORY_SCOPE: MemoryScope = {
