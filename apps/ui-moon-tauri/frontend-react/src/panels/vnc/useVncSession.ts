@@ -165,7 +165,8 @@ export function useVncSession(ctx: PanelCtx | undefined) {
       })
       rfb.addEventListener("securityfailure", (e) => {
         if (!current()) return
-        dispatch({ type: "securityFailure", reason: (e as CustomEvent<{ reason?: string }>).detail?.reason })
+        const reason = (e as CustomEvent<{ reason?: string }>).detail?.reason
+        dispatch(reason ? { type: "securityFailure", reason } : { type: "securityFailure" })
       })
       rfb.addEventListener("desktopname", (e) => {
         if (current()) dispatch({ type: "desktopName", name: (e as CustomEvent<{ name?: string }>).detail?.name ?? "" })

@@ -196,6 +196,9 @@ export function forgetRecent(
 
 /** Short, readable SHA-256 fingerprint ("ab:cd:..." of the first 16 bytes). */
 export async function fingerprintOf(key: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", key))
+  // Copy into a fresh ArrayBuffer: subtle.digest wants a plain BufferSource.
+  const bytes = new Uint8Array(key.byteLength)
+  bytes.set(key)
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.buffer))
   return Array.from(digest.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join(":")
 }

@@ -383,15 +383,29 @@ describe("VncPanel live tools", () => {
 })
 
 describe("VncPanel recent hosts", () => {
-  afterEach(() => localStorage.clear())
+  // Node 25 ships its own global localStorage that shadows jsdom's; give the
+  // panel a deterministic in-memory Storage instead.
+  let store: Map<string, string>
+  beforeEach(() => {
+    store = new Map()
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, String(v)),
+        removeItem: (k: string) => void store.delete(k),
+        clear: () => store.clear(),
+      },
+    })
+  })
 
   it("remembers host and port on Connect, never the password, and can forget", async () => {
     const { ctx } = makeCtx([deferred<unknown>()])
     act(() => root.render(<VncPanel ctx={ctx} />))
     setInput("vnc-password-input", "pw")
     await connectTo("10.0.0.9")
-    const saved = JSON.parse(localStorage.getItem("luna.vnc.recent") || "[]")
+    const saved = JSON.parse(store.get("luna.vnc.recent") || "[]")
     expect(saved).toEqual([{ host: "10.0.0.9", port: "5900" }])
-    expect(localStorage.getItem("luna.vnc.recent")).not.toContain("pw")
+    expect(store.get("luna.vnc.recent")).not.toContain("pw")
   })
 })

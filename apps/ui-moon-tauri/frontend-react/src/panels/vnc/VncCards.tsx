@@ -110,7 +110,7 @@ export function CredentialsCard(p: {
             <TextInput
               label={FIELD_LABEL[f]}
               isLabelHidden
-              type={f === "password" ? "password" : undefined}
+              {...(f === "password" ? { type: "password" as const } : {})}
               placeholder={FIELD_LABEL[f]}
               value={values[f] ?? ""}
               onChange={(v: string) => setValues((s) => ({ ...s, [f]: v }))}
