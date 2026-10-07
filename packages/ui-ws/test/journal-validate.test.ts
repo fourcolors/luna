@@ -160,4 +160,14 @@ describe("JournalRateLimiter", () => {
     t += 86_400_000
     expect(rl.check("c").ok).toBe(true)
   })
+
+  it("logs auth failures at most once a minute and reports the swallowed count", () => {
+    let t = NOW
+    const rl = new JournalRateLimiter({ now: () => t })
+    expect(rl.authFailureLog()).toEqual({ log: true, suppressed: 0 })
+    for (let i = 0; i < 50; i++) expect(rl.authFailureLog().log).toBe(false)
+    t += 60_000
+    expect(rl.authFailureLog()).toEqual({ log: true, suppressed: 50 })
+    expect(rl.authFailureLog().log).toBe(false)
+  })
 })

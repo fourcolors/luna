@@ -108,7 +108,20 @@ export const applyOps = (
         if (op.before !== null && op.before === op.after) continue
         // Never let a dream op rewrite or delete an external record, and never
         // let it mint one: those stay exactly as the external tool reported.
-        if (touchesExternal(op.before) || touchesExternal(op.after)) {
+        // The op's own snapshots come from model output, so the live records
+        // the write would hit are checked too.
+        const afterId =
+          op.after !== null && typeof op.after === "object" && typeof (op.after as { id?: unknown }).id === "string"
+            ? (op.after as { id: string }).id
+            : null
+        const liveTarget = yield* mem.get(op.targetId)
+        const liveAfter = afterId !== null && afterId !== op.targetId ? yield* mem.get(afterId) : null
+        if (
+          touchesExternal(op.before) ||
+          touchesExternal(op.after) ||
+          touchesExternal(liveTarget) ||
+          touchesExternal(liveAfter)
+        ) {
           yield* store.record({
             dreamId, at: now, op: op.kind, targetId: op.targetId,
             before: op.before, after: op.after, rationale: op.rationale,

@@ -19,6 +19,10 @@ type Opts = {
   fetchThrows?: boolean
   model?: 'ok' | 'unanswered' | 'throws'
   now?: number
+  // Where `git rev-parse --show-toplevel` lands, and what session.repo reports.
+  toplevel?: string
+  repoRoot?: string
+  cwd?: string
 }
 
 // Registers every stub the mod needs. Must run before the test's first $ call.
@@ -26,6 +30,7 @@ function rig(on: any, o: Opts = {}) {
   const saved = new Map<string, unknown>(Object.entries(o.store ?? {}))
   const fetches: Array<{ url: string; init: any }> = []
   const modelCalls: unknown[] = []
+  const runs: Array<{ argv: string; cwd: string | undefined }> = []
   const statuses = [...(o.fetchStatus ?? [200])]
   const clock = mock.clock(on, { now: o.now ?? T0 })
   mock.env(on, o.env ?? {})
@@ -40,11 +45,13 @@ function rig(on: any, o: Opts = {}) {
   })
   on('store.keys', () => ({ value: [...saved.keys()] }))
   on('session.id', () => ({ value: 's1-0000-session' }))
-  on('session.cwd', () => ({ value: '/r' }))
-  on('session.repo', () => ({ value: { root: '/r', name: 'r', remote: null, internal: false } }))
+  on('session.cwd', () => ({ value: o.cwd ?? '/r' }))
+  on('session.repo', () => ({ value: { root: o.repoRoot ?? '/r', name: null, remote: null, internal: false } }))
   on('session.version', () => ({ value: { version: '2.1.291' } }))
   on('process.run', ($: any, e: any) => {
     const a = e.argv.join(' ')
+    runs.push({ argv: a, cwd: e.init?.cwd })
+    if (a === 'git rev-parse --show-toplevel') return { value: { exitCode: 0, stdout: (o.toplevel ?? '/r') + '\n', stderr: '' } }
     if (a === 'git branch --show-current') return { value: { exitCode: 0, stdout: 'main\n', stderr: '' } }
     if (a === 'git rev-parse HEAD') return { value: { exitCode: 0, stdout: 'abc1234def5678\n', stderr: '' } }
     if (a === 'hostname -s') return { value: { exitCode: 0, stdout: 'testmac\n', stderr: '' } }
@@ -69,7 +76,7 @@ function rig(on: any, o: Opts = {}) {
   on('turn.complete', () => ({ text: '' }))
   on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }))
   on('tool.call', ($: any, e: any) => (e.tool === 'Write' ? { deny: 'no' } : { result: 'ok' }))
-  return { saved, fetches, modelCalls, clock }
+  return { saved, fetches, modelCalls, clock, runs }
 }
 
 const pendingKeys = (saved: Map<string, unknown>) => [...saved.keys()].filter((k) => k.startsWith('pending:'))
@@ -183,7 +190,7 @@ test('model throwing uses the fallback summary', async ($, on) => {
 })
 
 test('5xx keeps the entry and a retry reuses entry_id and the cached summary', async ($, on) => {
-  const r = rig(on, { fetchStatus: [503, 200], env: { LUNA_JOURNAL_TOKEN: 'tok', LUNA_JOURNAL_URL: 'http://luna.test/v1/journal' }, store: { 'pending:e1': pendingEntry() } })
+  const r = rig(on, { fetchStatus: [500, 200], env: { LUNA_JOURNAL_TOKEN: 'tok', LUNA_JOURNAL_URL: 'http://luna.test/v1/journal' }, store: { 'pending:e1': pendingEntry() } })
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
   await r.clock.advance(15000)
   await r.clock.settle()
@@ -321,3 +328,80 @@ test('lib: buildBody fits the server validator caps', async () => {
   expect(body.started_at).toBe(new Date(T0 - HOUR).toISOString())
   expect(makeEntryId('s1', 1000)).toMatch(/^s1-session-[0-9a-z]+$/)
 })
+
+test('a worktree session runs git in its own toplevel, not the main tree', async ($, on) => {
+  const r = rig(on, { toplevel: '/wt/feat', repoRoot: '/main/luna', cwd: '/wt/feat/sub' })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/wt/feat/sub' })
+  await $.tool.call({ tool: 'Edit', file_path: '/wt/feat/a.ts', old_string: 'x', new_string: 'y' })
+  await $.turn.complete(turn('did it'))
+  const acc = r.saved.get('sess:s1-0000-session') as any
+  expect(acc.cwd).toBe('/wt/feat')
+  expect(acc.repo).toBe('luna')
+  const gitRuns = r.runs.filter((x) => x.argv.startsWith('git '))
+  expect(gitRuns.find((x) => x.argv === 'git rev-parse --show-toplevel')?.cwd).toBe('/wt/feat/sub')
+  for (const x of gitRuns.filter((x) => x.argv !== 'git rev-parse --show-toplevel')) expect(x.cwd).toBe('/wt/feat')
+  expect(gitRuns.some((x) => x.cwd === '/main/luna')).toBe(false)
+  const body = buildBody({ ...acc, entryId: 'e', endedAt: T0, reason: 'other' }, cleanFiles(acc.files, acc.cwd), 'S', 'haiku')
+  expect(body.files_changed).toEqual(['a.ts'])
+  expect(body.repo_path).toBe('/wt/feat')
+  expect(body.repo).toBe('luna')
+})
+
+test('a second session.start (mod reload) keeps the turns and files so far', async ($, on) => {
+  const r = rig(on)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.turn.complete(turn('first'))
+  await $.tool.call({ tool: 'Edit', file_path: '/r/a.ts', old_string: 'x', new_string: 'y' })
+  const before = r.saved.get('sess:s1-0000-session') as any
+  await r.clock.advance(60e3)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const acc = r.saved.get('sess:s1-0000-session') as any
+  expect(acc.turns.map((t: any) => t.a)).toEqual(['first'])
+  expect(acc.files).toEqual(['/r/a.ts'])
+  expect(acc.startedAt).toBe(before.startedAt)
+  expect(acc.startSha).toBe(before.startSha)
+})
+
+test('a reload fills in the client a lazily created accumulator lacked', async ($, on) => {
+  const r = rig(on)
+  await $.turn.complete(turn('before start'))
+  expect((r.saved.get('sess:s1-0000-session') as any).client).toBe('claude-code')
+  await $.session.start({ surface: 'desktop', isInteractive: true, cwd: '/r' })
+  const acc = r.saved.get('sess:s1-0000-session') as any
+  expect(acc.client).toBe('claude-code-desktop')
+  expect(acc.turns.length).toBe(1)
+})
+
+test('parallel edits and a turn all land in the accumulator', async ($, on) => {
+  const r = rig(on)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  const paths = Array.from({ length: 8 }, (_, i) => `/r/f${i}.ts`)
+  await Promise.all([
+    ...paths.map((p) => $.tool.call({ tool: 'Edit', file_path: p, old_string: 'x', new_string: 'y' })),
+    $.turn.complete(turn('t1')),
+    $.turn.complete(turn('t2')),
+  ])
+  const acc = r.saved.get('sess:s1-0000-session') as any
+  expect([...acc.files].sort()).toEqual([...paths].sort())
+  expect(acc.turns.length).toBe(2)
+})
+
+for (const status of [401, 403, 503]) {
+  test(`${status} keeps every entry, counts no attempt and stops the flush`, async ($, on) => {
+    const r = rig(on, {
+      fetchStatus: [status],
+      env: { LUNA_JOURNAL_TOKEN: 'tok', LUNA_JOURNAL_URL: 'http://luna.test/v1/journal' },
+      store: { 'pending:e1': pendingEntry({ attempts: 4 }), 'pending:e2': pendingEntry({ entryId: 'old-session-1-def', attempts: 4 }) },
+    })
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+    await r.clock.advance(15000)
+    await r.clock.settle()
+    expect(r.fetches.length).toBe(1)
+    for (const k of ['pending:e1', 'pending:e2']) {
+      const kept = r.saved.get(k) as any
+      expect(kept.attempts).toBe(4)
+      expect(kept.leaseUntil || 0).toBe(0)
+    }
+    expect((r.saved.get('log') as any[]).some((l) => l.what.startsWith('config ') && l.err.includes(String(status)))).toBe(true)
+  })
+}

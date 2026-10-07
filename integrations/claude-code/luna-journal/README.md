@@ -20,7 +20,9 @@ Claude Code.
 
 Undelivered entries are kept and retried at each session start. An entry is
 dropped after 5 failed attempts or 7 days, or straight away if Luna rejects it
-as malformed (400, 413, 422). A session that never ended cleanly (a crash or
+as malformed (400, 413, 422). A `401`, `403` or `503` means the setup is not
+right yet (wrong token, or the server has no token), so it does not count as an
+attempt: the entry waits, up to 7 days, until the setup is fixed. A session that never ended cleanly (a crash or
 `kill -9`) is picked up after 6 hours of inactivity and sent with the end
 reason `crash-recovered`.
 
@@ -112,8 +114,8 @@ For one session:
 claude --plugin-dir ~/luna/integrations/claude-code/luna-journal
 ```
 
-Saving a file in the folder reloads the mod in the running session (this
-resets the current session's journal so far). On load, Claude Code writes the
+Saving a file in the folder reloads the mod in the running session; the
+journal recorded so far for that session is kept. On load, Claude Code writes the
 type declarations for your exact build into `.claude-plugin/types/`, which is
 git-ignored; check them if a Claude Code update changes an API.
 

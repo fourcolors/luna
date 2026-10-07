@@ -257,6 +257,11 @@ export type RateDecision = { readonly ok: true } | { readonly ok: false; readonl
 /**
  * In-memory fixed-window limiter. Per process and reset on restart, which is
  * fine for a single-operator route; it is a brake, not a security boundary.
+ *
+ * Keyed on the socket address, but behind the incus proxy every client
+ * arrives from 127.0.0.1, so in that deployment the per-key limits are
+ * effectively global. Only token holders reach check(), so the worst case is
+ * the token holder throttling itself; no forwarded header is trusted.
  */
 export class JournalRateLimiter {
   private readonly perMinute: number
@@ -265,6 +270,7 @@ export class JournalRateLimiter {
   private readonly now: () => number
   private readonly byKey = new Map<string, { min: number; minCount: number; day: number; dayCount: number }>()
   private global = { day: -1, count: 0 }
+  private authFail = { min: -1, logged: false, suppressed: 0 }
 
   constructor(opts: JournalRateLimiterOptions = {}) {
     this.perMinute = opts.perMinute ?? 30
@@ -305,6 +311,22 @@ export class JournalRateLimiter {
     s.dayCount++
     this.global.count++
     return { ok: true }
+  }
+
+  /**
+   * Whether to log this auth failure: one line per minute, carrying how many
+   * were swallowed since, so a stream of bad bearers cannot flood the log.
+   */
+  authFailureLog(): { readonly log: boolean; readonly suppressed: number } {
+    const min = Math.floor(this.now() / 60_000)
+    if (this.authFail.min !== min) this.authFail = { min, logged: false, suppressed: this.authFail.suppressed }
+    if (this.authFail.logged) {
+      this.authFail.suppressed++
+      return { log: false, suppressed: 0 }
+    }
+    const suppressed = this.authFail.suppressed
+    this.authFail = { min, logged: true, suppressed: 0 }
+    return { log: true, suppressed }
   }
 }
 
@@ -384,7 +406,11 @@ export async function handleJournalRequest(
   const auth = req.headers["authorization"]
   const presented = typeof auth === "string" && auth.startsWith("Bearer ") ? auth.slice(7) : null
   if (presented === null || !deps.tokenEq(presented, deps.token)) {
-    log(`[ui-ws] journal auth failed: 401 sent to ${req.socket.remoteAddress ?? "unknown"}`)
+    const l = deps.rateLimiter.authFailureLog()
+    if (l.log) {
+      const more = l.suppressed > 0 ? ` (${l.suppressed} more since the last line)` : ""
+      log(`[ui-ws] journal auth failed: 401 sent to ${req.socket.remoteAddress ?? "unknown"}${more}`)
+    }
     sendJson(res, 401, { ok: false, error: "unauthorized" })
     return
   }
