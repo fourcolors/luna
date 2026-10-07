@@ -11,7 +11,9 @@ on). Mods do not run in WSL sessions.
 ## When a journal arrives
 
 **A journal reaches Luna when the next Claude Code session starts, not when
-the session ends.** The mod never slows down a session. When a session ends it
+the session ends.** The mod never slows down a session: no hook waits for a
+process, and git, the host name and the Keychain lookup run in the background
+after the hook has returned. When a session ends it
 only queues the entry on your Mac, because Claude Code gives all `session.end`
 hooks 1.5 seconds in total before it exits. About 15 seconds after the next
 session starts, the mod writes the summary with a small model and posts it.
@@ -22,14 +24,26 @@ Undelivered entries are kept and retried at each session start. An entry is
 dropped after 5 failed attempts or 7 days, or straight away if Luna rejects it
 as malformed (400, 413, 422). A `401`, `403` or `503` means the setup is not
 right yet (wrong token, or the server has no token), so it does not count as an
-attempt: the entry waits, up to 7 days, until the setup is fixed. A session that never ended cleanly (a crash or
-`kill -9`) is picked up after 6 hours of inactivity and sent with the end
-reason `crash-recovered`.
+attempt: the entry waits, up to 7 days, until the setup is fixed. Expiry runs
+at every session start even when no URL or token is configured, and the queue
+keeps at most 50 entries and 1 MiB, dropping the oldest first. A session that
+never ended cleanly (a crash or `kill -9`) is picked up after 6 hours of
+inactivity and sent with the end reason `crash-recovered`.
+
+Each session segment gets its `entry_id` when it starts, and every later step
+(a normal end, crash recovery, a retry, a second Claude Code process) reuses
+it, so Luna stores a segment once.
 
 ## What is sent, and what is not
 
 Sent:
 - the summary (at most 4 lines, secrets redacted);
+- redaction drops the whole value of any `KEY=value` or `key: value` whose key
+  looks like a credential (token, secret, key, password, auth, session, cookie
+  and similar), of `Authorization` headers and `Bearer` values, of URL user
+  info and credential-like query parameters, and every occurrence of the
+  configured Luna token. File paths, repo and branch go through the same
+  redaction before they reach the summary model or the body;
 - repo name, path, branch and commit, start and end times, host name, client
   and version;
 - changed file paths, relative to the repo, with names such as `.env`, `*.pem`
@@ -157,11 +171,14 @@ security add-generic-password -s luna-journal -a "$USER" -U -w
 2. Start a new session and wait about 20 seconds.
 3. In Luna, search memory for `External session journal`, or list recent notes
    of kind `claude_code_journal`.
-4. If nothing arrives, the mod keeps a local log of its last 50 failures (status
-   codes and short messages only) under the `log` key of its store in
-   `~/.claude/plugins/store/`. Common causes: no URL or token configured (`config`),
-   `401` (wrong token), `503` (token not set on the server), or a network
-   policy refusing plugin network access.
+4. If nothing arrives, the mod keeps a local log of its last 50 failures under
+   the `log` key of its store in `~/.claude/plugins/store/`. Each row is a
+   fixed category and, for HTTP replies, the status code; error messages and
+   response bodies are never stored, since they can carry a header or token.
+   Common rows: `config-missing` (no URL or token configured), `config` with
+   `401` (wrong token) or `503` (token not set on the server, or Luna busy),
+   and `network` (refused, timed out, or a policy blocking plugin network
+   access).
 
 ## Develop
 
