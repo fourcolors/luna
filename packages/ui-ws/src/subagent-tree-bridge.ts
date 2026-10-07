@@ -44,7 +44,8 @@ export interface ObservableThreadFrame {
   readonly parentToolUseId?: string
   /** "ok" | "error" on a tool-result; "done" | "error" on subagent-settled. */
   readonly status?: string
-  /** tool-result only: a background Agent's launch ack. */
+  /** tool-result: a background Agent's launch ack. subagent-progress: the
+   *  agent was registered in, or moved to, the background. */
   readonly async?: boolean
   /** subagent-progress only. */
   readonly tool?: string
@@ -95,8 +96,9 @@ export const SUBAGENT_IDLE_TTL_MS = 30 * 60_000
 export const SUBAGENT_SWEEP_INTERVAL_MS = 60_000
 
 /** Cap on remembered tool-call ids per thread. They are kept across turns so
- *  a slow forwarder replaying an old call cannot resurrect a pruned node. */
-export const MAX_SEEN_CALLS = 2000
+ *  a slow forwarder replaying an old call cannot resurrect a pruned node,
+ *  which only needs roughly the current and previous turn's ids. */
+export const MAX_SEEN_CALLS = 256
 
 /** The SDK's subagent spawn tool surfaces under these wire names. */
 const AGENT_TOOL_NAMES = new Set(["Agent", "Task"])
@@ -239,6 +241,26 @@ export const createSubagentTreeBridge = (
     return false
   }
 
+  /** Activity inside a subagent is activity for every agent above it: a
+   *  background agent waiting on a nested foreground one is still working. */
+  const touchWithAncestors = (t: ThreadState, node: MutableNode): void => {
+    const at = now()
+    let cur: MutableNode | undefined = node
+    for (let hops = 0; cur && hops <= t.nodes.size; hops++) {
+      cur.lastActivityAt = at
+      cur = cur.parentId ? t.nodes.get(cur.parentId) : undefined
+    }
+  }
+
+  /** Flag a running node as background. Returns whether it changed. */
+  const markAsync = (node: MutableNode): boolean => {
+    if (node.async) return false
+    node.async = true
+    node.lastActivityAt = now()
+    ensureSweep()
+    return true
+  }
+
   const hasRunningAsync = (t: ThreadState): boolean => {
     for (const n of t.nodes.values()) {
       if (n.async && n.status === "running") return true
@@ -359,7 +381,7 @@ export const createSubagentTreeBridge = (
             if (node) {
               node.tool = frame.name ?? node.tool
               node.toolCount += 1
-              node.lastActivityAt = now()
+              touchWithAncestors(t, node)
               changed = true
             }
           }
@@ -372,15 +394,11 @@ export const createSubagentTreeBridge = (
       ) {
         const node = t.nodes.get(frame.toolCallId)
         if (node && node.status === "running") {
-          if (frame.async === true && frame.status !== "error") {
-            // A background launch ack, not the end: the subagent keeps
+          if ((frame.async === true || node.async) && frame.status !== "error") {
+            // A background launch ack (or the result of an agent already
+            // moved to the background), not the end: the subagent keeps
             // running until its subagent-settled frame.
-            if (!node.async) {
-              node.async = true
-              node.lastActivityAt = now()
-              changed = true
-              ensureSweep()
-            }
+            if (markAsync(node)) changed = true
           } else {
             // A foreground Agent's own tool-result closes that subagent.
             node.status = frame.status === "error" ? "error" : "done"
@@ -404,7 +422,8 @@ export const createSubagentTreeBridge = (
       ) {
         const node = t.nodes.get(frame.toolCallId)
         if (node && node.status === "running") {
-          node.lastActivityAt = now()
+          touchWithAncestors(t, node)
+          if (frame.async === true && markAsync(node)) changed = true
           if (typeof frame.tool === "string" && frame.tool !== "" && frame.tool !== node.tool) {
             node.tool = frame.tool
             changed = true

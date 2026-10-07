@@ -69,7 +69,13 @@ import {
   type EffortOption,
 } from "./effort.js"
 import { LUNA_ALLOWED_MCP_TOOLS } from "./chat-service-tools.js"
-import { isObj, formatStreamFailureReason, makeSdkMessageHandling } from "./chat-service-sdk-messages.js"
+import {
+  isObj,
+  formatStreamFailureReason,
+  makeBackgroundAgents,
+  makeSdkMessageHandling,
+  settleOpenBackgroundAgents,
+} from "./chat-service-sdk-messages.js"
 import { makeRunOrdinaryQuery } from "./chat-service-account-rotation.js"
 import type { ThreadEntry, TurnPrompt } from "./chat-service.js"
 import {
@@ -650,6 +656,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
       // very FIRST turn of a brand-new thread, and in that case there is
       // no real history to lose - the notice would be a false alarm.
       const hasCompletedATurn = yield* Ref.make(false)
+      const backgroundAgents = makeBackgroundAgents()
 
       // Per-thread sub-scope. `Scope.fork` makes a child that we can
       // close independently of the service scope. The service scope
@@ -925,9 +932,21 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
                   }
                 : {}),
               threadScope,
+              backgroundAgents,
             }),
           ),
           Effect.exit,
+          // The replies stream ends only when the CLI subprocess does, and
+          // its background agents end with it, so no task_notification is
+          // coming for them.
+          Effect.tap((exit) =>
+            settleOpenBackgroundAgents({
+              threadId: id,
+              pubsub,
+              agents: backgroundAgents,
+              status: Exit.isFailure(exit) ? "error" : "done",
+            }),
+          ),
         )
 
       const consumeReplies = (
@@ -1198,6 +1217,7 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
         pendingTurns,
         pendingTurnsLock,
         assistantText,
+        backgroundAgents,
         ...(turnQueue !== undefined ? { turnQueue } : {}),
         ...(Option.getOrUndefined(binding)?.recallMemory !== undefined
           ? {
@@ -1221,6 +1241,18 @@ export const makeThreadLifecycle = (deps: ThreadLifecycleDeps) => {
           const next = new Map(m)
           next.delete(id)
           return next
+        }),
+      )
+      // Closing or reaping the thread interrupts the replies fiber before
+      // its own settle runs. The pubsub outlives the scope, so subscribers
+      // still see these frames.
+      yield* Scope.addFinalizer(
+        threadScope,
+        settleOpenBackgroundAgents({
+          threadId: id,
+          pubsub,
+          agents: backgroundAgents,
+          status: "done",
         }),
       )
       // Symmetric teardown for the provider's onBound binding: release any

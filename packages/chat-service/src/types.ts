@@ -159,6 +159,9 @@ export interface ChatSubagentProgress {
   readonly toolCallId: string
   readonly tool?: string
   readonly toolCount?: number
+  /** The subagent runs in the background (SDK task_started or task_updated
+   *  `is_backgrounded`): its tool-result is not its end. */
+  readonly async?: boolean
 }
 
 /**

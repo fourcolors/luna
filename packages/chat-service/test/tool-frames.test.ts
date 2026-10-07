@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest"
-import { Cause, Chunk, Effect, Fiber, Layer, Stream } from "effect"
+import { Cause, Chunk, Context, Effect, Fiber, Layer, Stream } from "effect"
 import { SDKError } from "@luna/core"
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -23,6 +23,7 @@ import {
   normalizeToolResultContent,
   truncateOutput,
 } from "../src/chat-service.js"
+import { sdkTraceRecord } from "../src/chat-service-sdk-messages.js"
 
 describe("normalizeToolResultContent", () => {
   it("returns a string payload unchanged", () => {
@@ -784,4 +785,182 @@ describe("ChatService background Agent frames", () => {
     },
     { timeout: 10_000 },
   )
+})
+
+/** Like collectFrames, but runs `after` once the fake SDK has emitted, and
+ *  lets the fake query end on its own when `endStream` is set. */
+const collectFramesAround = (
+  msgs: ReadonlyArray<SDKMessage>,
+  opts: {
+    readonly endStream?: boolean
+    readonly after?: (
+      chat: Context.Service.Shape<typeof ChatService>,
+      threadId: string,
+    ) => Effect.Effect<unknown>
+  } = {},
+): Promise<ReadonlyArray<ChatFrame>> => {
+  const fakeLayer = SDKClient.fake((p) => {
+    if (!opts.endStream) return queryYielding(p.prompt as AsyncIterable<SDKUserMessage>, msgs)
+    const prompt = p.prompt as AsyncIterable<SDKUserMessage>
+    async function* gen(): AsyncGenerator<SDKMessage, void> {
+      for await (const _u of prompt) {
+        for (const m of msgs) yield m
+        return
+      }
+    }
+    return Object.assign(gen(), {
+      interrupt: async () => {},
+      setPermissionMode: async () => {},
+      setModel: async () => {},
+      applyFlagSettings: async () => {},
+      setMaxThinkingTokens: async () => {},
+      supplyToolPermissionResponse: async () => {},
+      mcpServerStatus: async () => ({}),
+    } as Partial<Query>) as Query
+  })
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chat = yield* ChatService
+        const t = yield* chat.createThread({ model: "claude-test" })
+        const collected: ChatFrame[] = []
+        const fiber = yield* Effect.forkChild(
+          chat.subscribe(t.id).pipe(
+            Stream.tap((f) => Effect.sync(() => collected.push(f))),
+            Stream.runDrain,
+          ),
+        )
+        yield* Effect.sleep("30 millis")
+        yield* chat.send(t.id, "go")
+        yield* Effect.sleep("500 millis")
+        if (opts.after) yield* opts.after(chat, t.id)
+        yield* Effect.sleep("200 millis")
+        yield* Fiber.interrupt(fiber)
+        return collected as ReadonlyArray<ChatFrame>
+      }),
+    ).pipe(Effect.provide(fullLayer(fakeLayer))),
+  )
+}
+
+const settledFrames = (frames: ReadonlyArray<ChatFrame>) =>
+  frames
+    .filter((f) => f.type === "subagent-settled")
+    .map((f) => (f.type === "subagent-settled" ? [f.toolCallId, f.status] : []))
+
+describe("ChatService background Agent teardown", () => {
+  it(
+    "settles a still-open background agent when the thread is closed",
+    async () => {
+      const frames = await collectFramesAround(
+        [
+          userToolResult("u1", "ag_open", "Async agent launched successfully."),
+          userToolResult("u2", "ag_done", "Async agent launched successfully."),
+          systemMsg({ subtype: "task_notification", task_id: "k1", tool_use_id: "ag_done", status: "completed", output_file: "", summary: "" }),
+        ],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      expect(settledFrames(frames)).toEqual([
+        ["ag_done", "done"],
+        ["ag_open", "done"],
+      ])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "settles a still-open background agent when the replies stream ends",
+    async () => {
+      const frames = await collectFramesAround(
+        [userToolResult("u1", "ag_orphan", "Async agent launched successfully.")],
+        { endStream: true },
+      )
+      const settled = settledFrames(frames)
+      expect(settled).toContainEqual(["ag_orphan", "done"])
+      // Settled once: the thread's own close later finds nothing open.
+      expect(settled.filter(([id]) => id === "ag_orphan")).toHaveLength(1)
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "leaves nothing to settle for a foreground agent",
+    async () => {
+      const frames = await collectFramesAround(
+        [userToolResult("u1", "ag_fg", "the agent's final answer")],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      expect(settledFrames(frames)).toEqual([])
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("ChatService agent moved to the background mid-run", () => {
+  it(
+    "marks task_started is_backgrounded and keeps its later tool_result async",
+    async () => {
+      const frames = await collectFramesAround(
+        [
+          systemMsg({ subtype: "task_started", task_id: "k1", tool_use_id: "ag_bg", description: "d", task_type: "local_agent", is_backgrounded: true }),
+          systemMsg({ subtype: "task_started", task_id: "k2", tool_use_id: "bash_bg", description: "d", task_type: "local_bash", is_backgrounded: true }),
+          systemMsg({ subtype: "task_started", task_id: "k3", tool_use_id: "ag_fg", description: "d", task_type: "local_agent", is_backgrounded: false }),
+          userToolResult("u1", "ag_bg", "Agent moved to the background."),
+          userToolResult("u2", "ag_fg", "final answer"),
+        ],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      const progress = frames.filter((f) => f.type === "subagent-progress")
+      expect(progress).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_bg", async: true },
+      ])
+      const result = (id: string) =>
+        frames.find((f) => f.type === "tool-result" && f.toolCallId === id)
+      expect(result("ag_bg")).toMatchObject({ async: true })
+      expect(result("ag_fg")).not.toHaveProperty("async")
+      expect(settledFrames(frames)).toEqual([["ag_bg", "done"]])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "resolves task_updated through its task_started and settles a killed agent",
+    async () => {
+      const frames = await collectFramesAround(
+        [
+          systemMsg({ subtype: "task_started", task_id: "k1", tool_use_id: "ag_mid", description: "d", task_type: "local_agent" }),
+          systemMsg({ subtype: "task_updated", task_id: "k1", patch: { is_backgrounded: true } }),
+          systemMsg({ subtype: "task_updated", task_id: "k1", patch: { is_backgrounded: true } }),
+          systemMsg({ subtype: "task_updated", task_id: "unknown", patch: { is_backgrounded: true } }),
+          userToolResult("u1", "ag_mid", "Agent moved to the background."),
+          systemMsg({ subtype: "task_updated", task_id: "k1", patch: { status: "killed" } }),
+        ],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      const progress = frames.filter((f) => f.type === "subagent-progress")
+      expect(progress).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_mid", async: true },
+      ])
+      expect(frames.find((f) => f.type === "tool-result" && f.toolCallId === "ag_mid")).toMatchObject({ async: true })
+      expect(settledFrames(frames)).toEqual([["ag_mid", "done"]])
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("sdkTraceRecord", () => {
+  const toolResult = (text: string): SDKMessage =>
+    userToolResult("u", "id", text) as SDKMessage
+
+  it("keeps the text of a background launch ack", () => {
+    const r = sdkTraceRecord("thr", toolResult("Async agent launched successfully."))
+    expect(r["result_text"]).toBe("Async agent launched successfully.")
+    expect(r["result_length"]).toBeUndefined()
+  })
+
+  it("logs only the length of any other tool output", () => {
+    const r = sdkTraceRecord("thr", toolResult("API_KEY=placeholder-secret"))
+    expect(r["result_text"]).toBeUndefined()
+    expect(r["result_length"]).toBe("API_KEY=placeholder-secret".length)
+    expect(JSON.stringify(r)).not.toContain("placeholder-secret")
+  })
 })

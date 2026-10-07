@@ -358,6 +358,51 @@ describe("subagent-tree-bridge", () => {
       expect(a.frames).toHaveLength(0)
     })
 
+    it("an agent moved to the background mid-run outlives its tool-result and the turn", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      b.observe("t1", { type: "tool-call", toolCallId: "m1", name: "Agent", input: {} })
+      b.observe("t1", { type: "subagent-progress", toolCallId: "m1", async: true })
+      b.observe("t1", { type: "tool-result", toolCallId: "m1", status: "ok" })
+      b.observe("t1", { type: "turn-complete" })
+      expect(lastAgents(a.frames)).toEqual([expect.objectContaining({ id: "m1", status: "running" })])
+      b.observe("t1", { type: "subagent-settled", toolCallId: "m1", status: "done" })
+      expect(lastAgents(a.frames)[0]!.status).toBe("done")
+    })
+
+    it("an error result still closes an agent marked background", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      b.observe("t1", { type: "tool-call", toolCallId: "m1", name: "Agent", input: {} })
+      b.observe("t1", { type: "subagent-progress", toolCallId: "m1", async: true })
+      b.observe("t1", { type: "tool-result", toolCallId: "m1", status: "error" })
+      expect(b.treeFor("t1")[0]!.status).toBe("error")
+    })
+
+    it("a nested child's activity keeps its background parent out of the TTL", () => {
+      let clock = 0
+      const b = createSubagentTreeBridge({ now: () => clock, sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      launch(b, "a1")
+      b.observe("t1", { type: "tool-call", toolCallId: "n1", name: "Agent", parentToolUseId: "a1", input: {} })
+      for (let i = 0; i < 4; i++) {
+        clock += 20 * 60_000
+        b.observe("t1", { type: "tool-call", toolCallId: `g${i}`, name: "Grep", parentToolUseId: "n1" })
+      }
+      clock += 20 * 60_000
+      b.observe("t1", { type: "subagent-progress", toolCallId: "n1" })
+      clock += 20 * 60_000
+      b.sweep()
+      expect(b.treeFor("t1").map((n) => [n.id, n.status])).toEqual([
+        ["a1", "running"],
+        ["n1", "running"],
+      ])
+      clock += SUBAGENT_IDLE_TTL_MS
+      b.sweep()
+      expect(b.treeFor("t1").map((n) => n.status)).toEqual(["done", "done"])
+    })
+
     it("the sweep timer only runs while a background node is running", () => {
       vi.useFakeTimers()
       try {

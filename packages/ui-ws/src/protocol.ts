@@ -387,6 +387,8 @@ export interface SubagentProgressFrame {
   readonly toolCallId: string
   readonly tool?: string
   readonly toolCount?: number
+  /** The subagent was registered in, or moved to, the background. */
+  readonly async?: boolean
 }
 
 /** Marks the true end of an agentic turn (SDK `result`), after every
