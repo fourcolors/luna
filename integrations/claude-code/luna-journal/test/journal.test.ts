@@ -8,6 +8,7 @@ import {
   porcelainPaths,
   redact,
   redactPath,
+  storedBytes,
 } from '../hooks/lib.js'
 
 const HOUR = 3600e3
@@ -26,6 +27,10 @@ type Opts = {
   slowProcessMs?: number
   model?: 'ok' | 'unanswered' | 'throws'
   now?: number
+  // Session id per call of session.id; a string for a fixed one.
+  sid?: string | (() => string)
+  // Mutable repo state: HEAD, and what `git diff --name-only <args>` prints.
+  git?: { head: string; diff: Record<string, string> }
   // Where `git rev-parse --show-toplevel` lands, and what session.repo reports.
   toplevel?: string
   repoRoot?: string
@@ -56,7 +61,7 @@ function rig(on: any, o: Opts = {}) {
     return { value: undefined }
   })
   on('store.keys', () => ({ value: [...saved.keys()] }))
-  on('session.id', () => ({ value: 's1-0000-session' }))
+  on('session.id', () => ({ value: typeof o.sid === 'function' ? o.sid() : o.sid ?? 's1-0000-session' }))
   on('session.cwd', () => ({ value: o.cwd ?? '/r' }))
   on('session.repo', () => ({ value: { root: o.repoRoot ?? '/r', name: null, remote: null, internal: false } }))
   on('session.version', () => ({ value: { version: '2.1.291' } }))
@@ -66,7 +71,10 @@ function rig(on: any, o: Opts = {}) {
     runs.push({ argv: a, cwd: e.init?.cwd })
     if (a === 'git rev-parse --show-toplevel') return { value: { exitCode: 0, stdout: (o.toplevel ?? '/r') + '\n', stderr: '' } }
     if (a === 'git branch --show-current') return { value: { exitCode: 0, stdout: 'main\n', stderr: '' } }
-    if (a === 'git rev-parse HEAD') return { value: { exitCode: 0, stdout: 'abc1234def5678\n', stderr: '' } }
+    if (a === 'git rev-parse HEAD') return { value: { exitCode: 0, stdout: (o.git?.head ?? 'abc1234def5678') + '\n', stderr: '' } }
+    if (o.git && e.argv[1] === 'diff') {
+      return { value: { exitCode: 0, stdout: o.git.diff[e.argv.slice(3).join(' ')] ?? '', stderr: '' } }
+    }
     if (a === 'hostname -s') return { value: { exitCode: 0, stdout: 'testmac\n', stderr: '' } }
     if (e.argv[0] === 'git') return { value: { exitCode: 0, stdout: '', stderr: '' } }
     return { value: { exitCode: 1, stdout: '', stderr: 'not found' } }
@@ -378,7 +386,9 @@ test('lib: buildBody fits the server validator caps', async () => {
   expect(body.end_reason).toBe('other')
   expect(body.client).toBe('claude-code')
   expect(body.started_at).toBe(new Date(T0 - HOUR).toISOString())
-  expect(makeEntryId('s1', 1000)).toMatch(/^s1-session-[0-9a-z]+$/)
+  expect(makeEntryId('s1', 1000)).toMatch(/^e-[0-9a-z]+-rs$/)
+  expect(makeEntryId('s1', 1000)).toBe(makeEntryId('s1', 1000))
+  expect(makeEntryId('s1', 1000)).not.toBe(makeEntryId('s2', 1000))
 })
 
 test('a worktree session runs git in its own toplevel, not the main tree', async ($, on) => {
@@ -504,7 +514,8 @@ test('lib: redact drops the whole value for credential keys, auth schemes and UR
 test('lib: a credential key in a path keeps the rest of the path', async () => {
   expect(redactPath('/r/TOKEN=x/a.ts')).toBe('/r/TOKEN=[REDACTED]/a.ts')
   expect(redactPath(`/r/api_key=${TOK}/sub/a.ts`)).toBe('/r/api_key=[REDACTED]/sub/a.ts')
-  expect(redactPath('/r/cb?access_token=x/a.ts')).toBe('/r/cb?access_token=[REDACTED]/a.ts')
+  // In a query string the value runs to & or #: a '/' does not end it.
+  expect(redactPath('/r/cb?access_token=x/a.ts')).toBe('/r/cb?access_token=[REDACTED]')
   expect(cleanFiles(['/r/TOKEN=x/a.ts'], '/r')).toEqual(['TOKEN=[REDACTED]/a.ts'])
   // Prose keeps the whole value, slashes included.
   expect(redact(`TOKEN=${TOK}/more`)).toBe('TOKEN=[REDACTED]')
@@ -679,4 +690,197 @@ test('the queue stays under its byte limit', async ($, on) => {
   expect(kept.sort()).toEqual(['pending:b2', 'pending:b3', 'pending:b4'])
   const bytes = kept.reduce((n, k) => n + JSON.stringify(r.saved.get(k)).length, 0)
   expect(bytes).toBeLessThanOrEqual(1024 * 1024)
+})
+
+// Codex probes. The marker must never survive, in prose or in a path.
+const EXPOSED = 'exposedSuffix9876'
+const both = (s: string) => [redact(s), redactPath(s)]
+
+test('lib: an escaped quote does not end a quoted value', async () => {
+  for (const out of both(`{"password":"prefix\\"${EXPOSED}"}`)) {
+    expect(out).not.toContain(EXPOSED)
+    expect(out).toBe('{"password":[REDACTED]}')
+  }
+  // Escaped JSON inside a string, and an unterminated quote.
+  expect(redact(`log: {\\"api_key\\":\\"${EXPOSED}\\"}`)).not.toContain(EXPOSED)
+  expect(redact(`password="abc ${EXPOSED}`)).not.toContain(EXPOSED)
+})
+
+test('lib: adjacent shell quotes are one value', async () => {
+  for (const c of [
+    `TOKEN='abc'"${EXPOSED}"`,
+    `export SECRET="a"'b'${EXPOSED}`,
+    `PASSWORD=abc'${EXPOSED}'`,
+    `api_key="x\\"y"'${EXPOSED}'`,
+  ]) {
+    for (const out of both(c)) {
+      expect(out).not.toContain(EXPOSED)
+      expect(out).toContain('[REDACTED]')
+    }
+  }
+})
+
+test('lib: credential headers lose their whole value to the end of the line', async () => {
+  const cases = [
+    `Cookie: theme=dark; sid=${EXPOSED}; lang=en`,
+    `cookie: a=1; b=2; c=${EXPOSED}`,
+    `Set-Cookie: id=${EXPOSED}; Path=/; HttpOnly`,
+    `Authorization: Digest username="bob", realm="x", nonce="n1", response="${EXPOSED}"`,
+    `Proxy-Authorization: Basic ${EXPOSED}`,
+    `X-Api-Key: two words ${EXPOSED}`,
+    `curl -H 'Cookie: a=1; tok=${EXPOSED}' https://example.com`,
+    `{"Authorization": "Digest u=\\"x\\", response=\\"${EXPOSED}\\""}`,
+  ]
+  for (const c of cases) for (const out of both(c)) expect(out).not.toContain(EXPOSED)
+  expect(redact(`Cookie: a=1; b=${EXPOSED}\nnext line stays`)).toBe('Cookie: [REDACTED]\nnext line stays')
+  expect(redact(`Authorization: Digest username="bob", response="${EXPOSED}"`)).toBe('Authorization: [REDACTED]')
+  expect(redact('the cookies were stale')).toBe('the cookies were stale')
+})
+
+test('lib: a credential query value keeps going past a slash', async () => {
+  for (const out of both(`https://example.com/cb?token=abc/${EXPOSED}`)) {
+    expect(out).not.toContain(EXPOSED)
+    expect(out).toBe('https://example.com/cb?token=[REDACTED]')
+  }
+  expect(redactPath(`/r/cb?x=1&access_token=a/b/${EXPOSED}&page=2`)).toBe('/r/cb?x=1&access_token=[REDACTED]&page=2')
+  // Names the KEY=value rule does not know (sig, code) rely on the query rule alone.
+  for (const c of [`https://x.test/a?sig=abc/${EXPOSED}`, `/r/cb?code=abc/${EXPOSED}&s=1`]) {
+    for (const out of both(c)) expect(out).not.toContain(EXPOSED)
+  }
+  // A KEY=value in a real path segment still stops at '/'.
+  expect(redactPath('/r/TOKEN=x/a.ts')).toBe('/r/TOKEN=[REDACTED]/a.ts')
+  // After the '?', the path stop no longer applies.
+  expect(redactPath(`/r/x?a=1&b=2/secret=v/${EXPOSED}`)).not.toContain(EXPOSED)
+})
+
+// 64 chars, not hex.
+const TOK64 = 'Mq'.repeat(32)
+const carries = (s: string, tok: string) => {
+  for (let i = 0; i + 8 <= tok.length; i++) if (s.includes(tok.slice(i, i + 8))) return true
+  return false
+}
+
+test('lib: a session id or entry id carrying the token is replaced by a hash', async () => {
+  const body = buildBody(
+    { ...pendingEntry(), sid: TOK64, entryId: TOK64.slice(0, 40) + '-abc' } as any,
+    [],
+    'S',
+    'haiku',
+    [TOK64],
+  )
+  expect(carries(JSON.stringify(body), TOK64)).toBe(false)
+  expect(body.session_id).toMatch(/^sid-[0-9a-z]+$/)
+  expect(body.entry_id).toMatch(/^e-[0-9a-z]+$/)
+  // Stable, so a retry sends the same ids.
+  expect(buildBody({ ...pendingEntry(), sid: TOK64 } as any, [], 'S', 'haiku', [TOK64]).session_id).toBe(body.session_id)
+  // A new entry id never carries the session id at all.
+  expect(carries(makeEntryId(TOK64, T0), TOK64)).toBe(false)
+  // Ordinary ids pass through.
+  const plain = buildBody(pendingEntry() as any, [], 'S', 'haiku', [TOK64])
+  expect(plain.session_id).toBe('old-session-1')
+  expect(plain.entry_id).toBe('old-session-1-abc')
+})
+
+test('a 64-char token used as the session id never reaches an id, a key or the body', async ($, on) => {
+  const r = rig(on, { sid: TOK64, env: { LUNA_JOURNAL_TOKEN: TOK64, ...URL_ENV } })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await $.turn.complete(turn('work'))
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: TOK64, resume: { id: TOK64 } })
+  for (const k of pendingKeys(r.saved)) expect(carries(k, TOK64)).toBe(false)
+  expect(carries(JSON.stringify(pendingKeys(r.saved).map((k) => (r.saved.get(k) as any).entryId)), TOK64)).toBe(false)
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await r.clock.advance(15000)
+  await r.clock.settle()
+  expect(r.fetches.length).toBe(1)
+  expect(carries(r.fetches[0]!.init.body, TOK64)).toBe(false)
+})
+
+test('60 short sessions with no config keep at most 50 entries without any flush', async ($, on) => {
+  let sid = ''
+  const r = rig(on, { sid: () => sid })
+  for (let i = 0; i < 60; i++) {
+    sid = `s${i}-0000-session`
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+    await $.turn.complete(turn('short ' + i))
+    await $.session.end({ reason: 'prompt_input_exit', sessionId: sid, resume: { id: sid } })
+    expect(pendingKeys(r.saved).length).toBeLessThanOrEqual(50)
+    await r.clock.advance(100)
+  }
+  // Six seconds in: no flush has run, so the cap held at enqueue time.
+  expect(r.fetches.length).toBe(0)
+  const whats = ((r.saved.get('log') as any[]) ?? []).map((l) => l.what)
+  expect(whats).not.toContain('config-missing')
+  expect(whats.filter((w) => w === 'drop-overflow').length).toBe(10)
+  const keys = pendingKeys(r.saved)
+  expect(keys.length).toBe(50)
+  for (let i = 0; i < 60; i++) {
+    const k = 'pending:' + makeEntryId(`s${i}-0000-session`, T0 + i * 100)
+    expect(r.saved.has(k)).toBe(i >= 10)
+  }
+})
+
+const MIB = 1024 * 1024
+// UTF-8 length measured independently of the mod (the test runtime has no Buffer).
+const utf8 = (s: string) => encodeURIComponent(s).replace(/%[0-9A-F]{2}/g, '.').length
+const totalBytes = (saved: Map<string, unknown>) =>
+  pendingKeys(saved).reduce((n, k) => n + utf8(JSON.stringify(saved.get(k))), 0)
+
+test('a multi-byte queue near the byte limit makes room at enqueue, counting UTF-8 bytes', async ($, on) => {
+  // Four entries of three-byte characters that fill all but 300 bytes of the
+  // limit. By string length they would be a third of it.
+  const shape = (i: number, n: number) =>
+    pendingEntry({ entryId: `old-session-1-m${i}`, endedAt: T0 - (10 - i) * 60e3, turns: [{ a: '€'.repeat(n) }] })
+  const overhead = utf8(JSON.stringify(shape(0, 0)))
+  const n = Math.floor(((MIB - 300) / 4 - overhead) / 3)
+  const store: Record<string, unknown> = {}
+  for (let i = 0; i < 4; i++) store[`pending:m${i}`] = shape(i, n)
+  const r = rig(on, { store })
+  expect(totalBytes(r.saved)).toBeLessThanOrEqual(MIB)
+  expect(totalBytes(r.saved)).toBeGreaterThan(MIB - 400)
+  expect(pendingKeys(r.saved).reduce((c, k) => c + JSON.stringify(r.saved.get(k)).length, 0)).toBeLessThan(MIB / 2)
+  await runSession($, ['a short session'])
+  expect(r.fetches.length).toBe(0)
+  const keys = pendingKeys(r.saved)
+  expect(keys.length).toBe(4)
+  expect(r.saved.has('pending:m0')).toBe(false)
+  expect(keys.some((k) => !k.startsWith('pending:m'))).toBe(true)
+  expect(totalBytes(r.saved)).toBeLessThanOrEqual(MIB)
+  expect(storedBytes('€')).toBe(5)
+})
+
+test('flush-time pruning counts UTF-8 bytes, not string length', async ($, on) => {
+  const store: Record<string, unknown> = {}
+  for (let i = 0; i < 5; i++) {
+    store[`pending:u${i}`] = pendingEntry({ entryId: `old-session-1-u${i}`, endedAt: T0 - (5 - i) * 60e3, turns: [{ a: '€'.repeat(100 * 1024) }] })
+  }
+  const r = rig(on, { env: URL_ENV, store })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await r.clock.advance(15000)
+  await r.clock.settle()
+  expect(pendingKeys(r.saved).sort()).toEqual(['pending:u2', 'pending:u3', 'pending:u4'])
+  expect(totalBytes(r.saved)).toBeLessThanOrEqual(MIB)
+})
+
+test('a session that ends right after a commit reports the commit and its files', async ($, on) => {
+  const g = { head: 'aaa1111', diff: {} as Record<string, string> }
+  const r = rig(on, { git: g, env: { LUNA_JOURNAL_TOKEN: 'tok', ...URL_ENV } })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await r.clock.settle()
+  await $.turn.complete(turn('wrote the change'))
+  await r.clock.settle()
+  expect((r.saved.get('sess:s1-0000-session') as any).startSha).toBe('aaa1111')
+  // The commit lands after the last turn, and the session ends at once.
+  g.head = 'bbb2222'
+  g.diff['aaa1111 HEAD'] = 'committed.ts\nalso.ts\n'
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1-0000-session', resume: { id: 's1-0000-session' } })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  await r.clock.advance(15000)
+  await r.clock.settle()
+  expect(r.fetches.length).toBe(1)
+  const body = JSON.parse(r.fetches[0]!.init.body)
+  expect(body.head_sha).toBe('bbb2222')
+  expect(body.files_changed).toEqual(['committed.ts', 'also.ts'])
+  // Read from the stored repo root, against the stored start commit.
+  const diffRun = r.runs.find((x) => x.argv === 'git diff --name-only aaa1111 HEAD')
+  expect(diffRun?.cwd).toBe('/r')
 })

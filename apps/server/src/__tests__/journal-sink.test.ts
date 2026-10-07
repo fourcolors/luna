@@ -196,22 +196,110 @@ describe("redactSecrets reproduced leaks", () => {
     expect(redactSecrets(`TOKEN=${TOK}/more`, { prose: true })).toBe("TOKEN=[REDACTED]")
   })
 
-  it("the sink scrubs its configured secrets by exact value from every field", async () => {
+  it("the sink refuses an entry carrying a configured secret before claiming a row", async () => {
+    const tok64 = "Mq".repeat(32)
+    const fullwidth = [...TOK].map((c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0)).join("")
+    for (const patch of [
+      { session_id: tok64 },
+      { entry_id: tok64 },
+      { summary: `Saw ${TOK} in output.` },
+      { files_changed: ["a.ts", `notes/${TOK}.md`] },
+      { branch: `feat-${fullwidth}` },
+    ] as ReadonlyArray<Partial<JournalEntry>>) {
+      const f = fakes()
+      const logs: string[] = []
+      const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: (m) => logs.push(m), secrets: [TOK, tok64] })
+      expect(await Effect.runPromise(sink.submit(entry(patch)))).toEqual({ ok: false, reason: "contains_secret" })
+      expect(f.recordCalls()).toBe(0)
+      expect(f.putCalls()).toBe(0)
+      expect(JSON.stringify(logs)).not.toContain(TOK)
+      expect(JSON.stringify(logs)).not.toContain(tok64)
+    }
+    // A short configured value never refuses ordinary text.
     const f = fakes()
-    const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: () => {}, secrets: [TOK] })
-    await Effect.runPromise(
-      sink.submit(
-        entry({
-          summary: `Saw ${TOK} in output. LUNA_JOURNAL_TOKEN=${TOK}`,
-          repo_path: `/Users/op/${TOK}/luna`,
-          branch: `feat-${TOK}`,
-          files_changed: [`notes/${TOK}.md`, `cfg?token=${TOK}`],
-        }),
-      ),
+    const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: () => {}, secrets: ["mac"] })
+    expect((await Effect.runPromise(sink.submit(entry()))).ok).toBe(true)
+  })
+})
+
+const EXPOSED = "exposedSuffix9876"
+
+describe("redactSecrets Codex probes (kept in step with the mod)", () => {
+  const both = (s: string) => [redactSecrets(s, { prose: true }), redactSecrets(s)]
+
+  it("an escaped quote does not end a quoted value", () => {
+    for (const out of both(`{"password":"prefix\\"${EXPOSED}"}`)) {
+      expect(out).not.toContain(EXPOSED)
+      expect(out).toBe('{"password":[REDACTED]}')
+    }
+    expect(redactSecrets(`log: {\\"api_key\\":\\"${EXPOSED}\\"}`, { prose: true })).not.toContain(EXPOSED)
+  })
+
+  it("adjacent shell quotes are one value", () => {
+    for (const c of [`TOKEN='abc'"${EXPOSED}"`, `export SECRET="a"'b'${EXPOSED}`, `PASSWORD=abc'${EXPOSED}'`]) {
+      for (const out of both(c)) expect(out).not.toContain(EXPOSED)
+    }
+  })
+
+  it("credential headers lose their whole value to the end of the line", () => {
+    for (const c of [
+      `Cookie: theme=dark; sid=${EXPOSED}; lang=en`,
+      `Set-Cookie: id=${EXPOSED}; Path=/; HttpOnly`,
+      `Authorization: Digest username="bob", realm="x", nonce="n1", response="${EXPOSED}"`,
+      `Proxy-Authorization: Basic ${EXPOSED}`,
+      `X-Api-Key: two words ${EXPOSED}`,
+    ]) {
+      for (const out of both(c)) expect(out).not.toContain(EXPOSED)
+    }
+    expect(redactSecrets(`Cookie: a=1; b=${EXPOSED}\nnext line stays`, { prose: true })).toBe(
+      "Cookie: [REDACTED]\nnext line stays",
     )
-    const all = JSON.stringify([...f.memory.values(), ...f.notes.values()])
-    expect(all).not.toContain(TOK)
-    expect(all).toContain("notes/[REDACTED].md")
+  })
+
+  it("a credential query value keeps going past a slash, a path KEY=value does not", () => {
+    for (const out of both(`https://example.com/cb?token=abc/${EXPOSED}`)) {
+      expect(out).toBe("https://example.com/cb?token=[REDACTED]")
+    }
+    // Names the KEY=value rule does not know (sig, code) rely on the query rule alone.
+    for (const c of [`https://x.test/a?sig=abc/${EXPOSED}`, `/r/cb?code=abc/${EXPOSED}&s=1`]) {
+      for (const out of both(c)) expect(out).not.toContain(EXPOSED)
+    }
+    const e = sanitizeEntry(entry({ files_changed: [`cb?token=abc/${EXPOSED}`, "/r/TOKEN=x/a.ts"] }))
+    expect(e.files_changed).toEqual(["cb?token=[REDACTED]", "/r/TOKEN=[REDACTED]/a.ts"])
+  })
+})
+
+describe("redaction parity with the luna-journal mod", () => {
+  it("the mod's lib.js and this sink redact every probe identically", async () => {
+    // A computed specifier keeps the untyped .js module out of the typecheck.
+    const libPath: string = new URL(
+      "../../../../integrations/claude-code/luna-journal/hooks/lib.js",
+      import.meta.url,
+    ).href
+    const lib = (await import(libPath)) as {
+      redact: (s: string) => string
+      redactPath: (s: string) => string
+    }
+    const probes = [
+      `{"password":"prefix\\"${EXPOSED}"}`,
+      `TOKEN='abc'"${EXPOSED}"`,
+      `Cookie: theme=dark; sid=${EXPOSED}; lang=en\nnext`,
+      `Set-Cookie: id=${EXPOSED}; Path=/`,
+      `Authorization: Digest username="bob", response="${EXPOSED}"`,
+      `Authorization: Bearer ${TOK}`,
+      `https://example.com/cb?token=abc/${EXPOSED}&page=2`,
+      `https://user:${TOK}@example.com/repo.git`,
+      `/r/TOKEN=x/a.ts`,
+      `/r/x?a=1&b=2/secret=v/${EXPOSED}`,
+      `:api_key => ${TOK},`,
+      `export LUNA_JOURNAL_TOKEN=${TOK}`,
+      "sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA and " + "Q".repeat(50),
+      "plain words stay",
+    ]
+    for (const p of probes) {
+      expect(redactSecrets(p, { prose: true })).toBe(lib.redact(p))
+      expect(redactSecrets(p)).toBe(lib.redactPath(p))
+    }
   })
 })
 

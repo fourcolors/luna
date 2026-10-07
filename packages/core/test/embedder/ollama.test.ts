@@ -99,6 +99,33 @@ describe("OllamaEmbedder", () => {
     )
   })
 
+  it("an interrupted embed aborts its HTTP call", async () => {
+    // The boot probe answers; the real embed hangs until its signal aborts.
+    let embedSignal: AbortSignal | undefined
+    mockFetch
+      .mockResolvedValueOnce(okJson({ embeddings: [[1, 0, 0]] }))
+      .mockImplementationOnce((_url: string, init: RequestInit) => {
+        embedSignal = init.signal ?? undefined
+        return new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () => reject(new Error("aborted")))
+        })
+      })
+    const embedder = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* EmbedderService
+      }).pipe(Effect.provide(makeOllamaEmbedderLayer({ baseUrl: "http://ollama.test:11434" }))),
+    )
+    // The way /v1/journal runs its sink: runPromise with the request's signal.
+    const request = new AbortController()
+    const run = Effect.runPromise(embedder.embed("hello"), { signal: request.signal })
+    for (let i = 0; i < 100 && embedSignal === undefined; i++) await new Promise((r) => setTimeout(r, 5))
+    expect(embedSignal).toBeDefined()
+    expect(embedSignal!.aborted).toBe(false)
+    request.abort()
+    await expect(run).rejects.toBeDefined()
+    expect(embedSignal!.aborted).toBe(true)
+  })
+
   it("falls back to legacy /api/embeddings when /api/embed is unavailable", async () => {
     mockFetch
       .mockResolvedValueOnce(notFound())

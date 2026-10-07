@@ -10,7 +10,7 @@ import { createHash } from "node:crypto"
 import { Effect } from "effect"
 import type { AgentNotesApi } from "@luna/core"
 import { OPERATOR_MEMORY_SCOPE, makeRecord, type MemoryRouter } from "@luna/memory"
-import type { JournalEntry, JournalSink, JournalSubmitResult } from "@luna/ui-ws"
+import { entryHasToken, type JournalEntry, type JournalSink, type JournalSubmitResult } from "@luna/ui-ws"
 
 export const JOURNAL_NOTE_KIND = "claude_code_journal"
 export const JOURNAL_NOTE_SESSION = "claude-code-journal"
@@ -33,24 +33,39 @@ export const journalId = (e: Pick<JournalEntry, "session_id" | "entry_id">): str
 // scheme so the text still reads, and drop the whole value.
 const R = "[REDACTED]"
 const CRED_WORD = "token|secret|key|password|passwd|pwd|auth|credential|private|access|api|session|cookie"
-// `stop` is extra characters an unquoted value ends at: "/" for single-line
-// fields (paths, repo, branch), so /r/TOKEN=x/a.ts keeps the rest of the path.
-const secretRes = (stop: string): ReadonlyArray<readonly [RegExp, string]> => [
+// Headers whose whole value is a credential, whatever its shape (Digest with
+// many parameters, a cookie list): the value is dropped to the end of the line.
+const CRED_HEADER =
+  "(?:proxy-)?authorization|(?:set-)?cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|" +
+  "x-amz-security-token|x-goog-api-key|private-token|x-csrf-token|x-xsrf-token"
+// A double-quoted value with backslash escapes, or a single-quoted one (no
+// escapes, as in a shell). An unterminated quote runs to the end of the line.
+const QUOTED = `"(?:[^"\\\\\\n]|\\\\.)*"?|'[^'\\n]*'?`
+
+type Rule = readonly [RegExp, string]
+const PRE: ReadonlyArray<Rule> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, R],
+  [new RegExp(`(?<![A-Za-z0-9_-])((?:${CRED_HEADER})["']?[ \\t]*:[ \\t]*)[^\\r\\n]+`, "gi"), `$1${R}`],
   // scheme://user:pass@host keeps the scheme and host.
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, `$1${R}@`],
-  // Query parameters whose name looks like a credential.
-  [new RegExp(`([?&#][^=&#\\s]*(?:${CRED_WORD}|sig|signature|code)[^=&#\\s]*=)[^&#\\s"'<>${stop}]+`, "gi"), `$1${R}`],
-  // KEY=value, key: value, "key": "value", key => "value", including
-  // Authorization: <scheme> <value>.
-  [
-    new RegExp(
-      `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*["']?\\s*(?:=>|[:=])\\s*)` +
-        `(?:"[^"\\n]*"|'[^'\\n]*'|(?:(?:bearer|basic|token|digest|negotiate)\\s+)?[^\\s"',;}${stop}]+)`,
-      "gi",
-    ),
-    `$1${R}`,
-  ],
+  // Query parameters whose name looks like a credential. The value runs to
+  // the next & or # (or a space or quote): a '/' inside it does not end it.
+  [new RegExp(`([?&#][^=&#\\s]*(?:${CRED_WORD}|sig|signature|code)[^=&#\\s]*=)[^&#\\s"'<>]+`, "gi"), `$1${R}`],
+]
+// KEY=value, key: value, "key": "value", key => "value", \"key\": \"value\".
+// The value is any run of quoted parts and bare text (shell concatenation
+// such as 'a'"b"c), after an optional auth scheme. `stop` is extra characters
+// a bare part ends at: "/" inside a path segment, so /r/TOKEN=x/a.ts keeps
+// the rest of the path.
+const keyValueRe = (stop: string): RegExp =>
+  new RegExp(
+    `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*\\\\{0,2}["']?\\s*(?:=>|[:=])\\s*)` +
+      `(?:(?:bearer|basic|token|digest|negotiate)\\s+)?(?:${QUOTED}|[^\\s"',;&}${stop}]+)+`,
+    "gi",
+  )
+const KEY_VALUE = keyValueRe("")
+const KEY_VALUE_PATH = keyValueRe("/")
+const POST: ReadonlyArray<Rule> = [
   // A bare scheme and value, e.g. curl -H "Bearer xyz".
   [/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${R}`],
   [/\b(basic)\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2}/gi, `$1 ${R}`],
@@ -62,17 +77,36 @@ const secretRes = (stop: string): ReadonlyArray<readonly [RegExp, string]> => [
   [/AIza[0-9A-Za-z_-]{35}/g, R],
   [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, R],
 ]
-const SECRET_RES = secretRes("")
-const SINGLE_LINE_RES = secretRes("/")
 // The long-base64 catch-all also matches deep slash-only file paths, so it
 // runs on prose (the summary) but not on paths and short identifiers.
 const BASE64_RUN = /\b[A-Za-z0-9+/]{48,}={0,2}/g
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+const applyAll = (s: string, list: ReadonlyArray<Rule>): string =>
+  list.reduce((out, [re, rep]) => out.replace(re, rep), s)
 
 /**
- * Redacts known secret shapes, then every exact value in `exact` (the server's
- * own bearers). Values under 8 chars are ignored so they cannot blank words.
+ * Pattern redaction. Single-line fields (paths, repo, branch) are treated as
+ * paths: the "/" stop applies only before the first "?".
+ */
+const redactPatterns = (s: string, prose: boolean): string => {
+  let out = applyAll(s, PRE)
+  if (!prose) {
+    const q = out.indexOf("?")
+    out =
+      q < 0
+        ? out.replace(KEY_VALUE_PATH, `$1${R}`)
+        : out.slice(0, q).replace(KEY_VALUE_PATH, `$1${R}`) + out.slice(q).replace(KEY_VALUE, `$1${R}`)
+  } else {
+    out = out.replace(KEY_VALUE, `$1${R}`)
+  }
+  out = applyAll(out, POST)
+  return prose ? out.replace(BASE64_RUN, R) : out
+}
+
+/**
+ * Redacts every exact value in `exact` (the server's own bearers), then known
+ * secret shapes. Values under 8 chars are ignored so they cannot blank words.
  */
 export const redactSecrets = (
   s: string,
@@ -83,10 +117,17 @@ export const redactSecrets = (
     const t = v.trim()
     if (t.length >= 8) out = out.replace(new RegExp(escapeRe(t), "g"), R)
   }
-  for (const [re, rep] of opts.prose === true ? SECRET_RES : SINGLE_LINE_RES) out = out.replace(re, rep)
-  if (opts.prose === true) out = out.replace(BASE64_RUN, R)
-  return out
+  return redactPatterns(out, opts.prose === true)
 }
+
+/**
+ * True when any string field of the entry contains one of `secrets` (8+
+ * chars), as sent or after NFKC (fullwidth forms fold to ASCII). Such an
+ * entry is refused outright rather than scrubbed: an id carrying the token
+ * would otherwise key the ledger and memory rows.
+ */
+export const entryContainsSecret = (e: JournalEntry, secrets: ReadonlyArray<string>): boolean =>
+  secrets.some((s) => entryHasToken(e, s))
 
 const C0_C1_NO_NL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F]/g
 // U+2028/U+2029 render as line breaks in some places, so they count as control.
@@ -213,6 +254,12 @@ export const makeJournalSink = (deps: JournalSinkDeps): JournalSink => {
 
   return {
     submit: (raw: JournalEntry): Effect.Effect<JournalSubmitResult> => {
+      // Before anything is derived from the entry: the ledger id hashes the
+      // session and entry ids, and a refused entry must leave no row at all.
+      if (entryContainsSecret(raw, secrets)) {
+        log("[luna/journal] entry refused: it contains a configured secret")
+        return Effect.succeed({ ok: false as const, reason: "contains_secret" as const })
+      }
       const id = journalId(raw)
       return Effect.gen(function* () {
         const e = sanitizeEntry(raw, secrets)

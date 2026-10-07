@@ -20,6 +20,7 @@ import {
   porcelainPaths,
   redact,
   redactPath,
+  storedBytes,
 } from './lib.js'
 
 const FLUSH_DELAY_MS = 15000
@@ -27,6 +28,7 @@ const MAX_ATTEMPTS = 5
 const STALE_SESS_MS = 6 * 3600e3
 const PENDING_TTL_MS = 7 * 86400e3
 // $.store holds at most 4 MiB per mod; the queue stays well inside that.
+// Sizes are UTF-8 bytes of the stored JSON.
 const MAX_PENDING = 50
 const MAX_PENDING_BYTES = 1024 * 1024
 const LEASE_MS = 120e3
@@ -207,6 +209,23 @@ async function snapshotGit($, key) {
   })
 }
 
+// The final file list and HEAD for a queued entry, read when it is sent: the
+// commits made since the session's start commit, from the stored repo root.
+// Uncommitted changes are taken from the per-turn snapshots instead, since by
+// now the tree may hold later work. Answers only what it could read.
+async function finalGit($, p) {
+  if (!p.startSha || !p.cwd) return {}
+  const [head, committed] = await Promise.all([
+    git($, p.cwd, ['rev-parse', 'HEAD']),
+    git($, p.cwd, ['diff', '--name-only', p.startSha, 'HEAD']),
+  ])
+  const out = {}
+  if (head) out.headSha = head
+  const extra = committed.split('\n').filter(Boolean)
+  if (extra.length) out.gitFiles = [...new Set([...(p.gitFiles || []), ...extra])].slice(0, MAX_FILES)
+  return out
+}
+
 // Runs outside any event, so a slow git never holds up the user.
 function inBackground($, options, sid, { snapshot }) {
   const key = 'sess:' + sid
@@ -246,44 +265,75 @@ async function promoteStale($, now) {
   }
 }
 
+// Every change to the set of pending entries (enqueue, expiry, overflow) runs
+// under this one lock, taken before any per-entry lock, so the limits are
+// checked and capacity reserved in the same step that writes.
+const QUEUE_LOCK = 'queue'
+
+// Deletes the oldest entries until `reserve` more entries of `reserveBytes`
+// fit within the count and byte limits. Call under QUEUE_LOCK.
+async function makeRoom($, reserve, reserveBytes) {
+  const live = []
+  for (const k of await $.store.keys()) {
+    if (!k.startsWith('pending:')) continue
+    const p = await $.store.get(k)
+    if (p) live.push({ k, endedAt: p.endedAt || 0, bytes: storedBytes(p) })
+  }
+  live.sort((a, b) => b.endedAt - a.endedAt)
+  let count = reserve
+  let bytes = reserveBytes
+  for (const e of live) {
+    if (count + 1 <= MAX_PENDING && bytes + e.bytes <= MAX_PENDING_BYTES) {
+      count++
+      bytes += e.bytes
+      continue
+    }
+    await withLock(e.k, () => $.store.delete(e.k))
+    await log($, 'drop-overflow')
+  }
+}
+
 // Writes the segment's pending entry unless one is already queued: a retried
 // promotion, or a second process ending the same segment, lands on the same
-// key and keeps the first copy with its attempts and cached summary.
+// key and keeps the first copy with its attempts and cached summary. The
+// count and byte limits hold at this point, not only at the next flush, so a
+// run of sessions with no Luna configured cannot grow the store.
 async function queue($, acc, endedAt, reason) {
   const entryId = segmentId(acc)
   const pk = 'pending:' + entryId
-  await withLock(pk, async () => {
-    if (await $.store.get(pk)) return
-    await $.store.set(pk, { ...acc, entryId, endedAt, reason, attempts: 0 })
-  })
+  await withLock(QUEUE_LOCK, () =>
+    withLock(pk, async () => {
+      if (await $.store.get(pk)) return
+      const entry = { ...acc, entryId, endedAt, reason, attempts: 0 }
+      const size = storedBytes(entry)
+      if (size > MAX_PENDING_BYTES) {
+        await log($, 'drop-overflow')
+        return
+      }
+      await makeRoom($, 1, size)
+      await $.store.set(pk, entry)
+    }),
+  )
 }
 
 // Drops expired and exhausted entries, then the oldest beyond the count and
 // byte limits. Runs on every flush whether or not Luna is configured, so a
 // long outage or a missing token cannot fill the store.
 async function prune($, now) {
-  const live = []
-  for (const k of await $.store.keys()) {
-    if (!k.startsWith('pending:')) continue
-    await withLock(k, async () => {
-      const p = await $.store.get(k)
-      if (!p) return
-      if ((p.attempts || 0) >= MAX_ATTEMPTS || now - (p.endedAt || 0) > PENDING_TTL_MS) {
-        await $.store.delete(k)
-        await log($, 'drop-expired')
-        return
-      }
-      live.push({ k, endedAt: p.endedAt || 0, bytes: JSON.stringify(p).length })
-    })
-  }
-  live.sort((a, b) => b.endedAt - a.endedAt)
-  let bytes = 0
-  for (const [i, e] of live.entries()) {
-    bytes += e.bytes
-    if (i < MAX_PENDING && bytes <= MAX_PENDING_BYTES) continue
-    await withLock(e.k, () => $.store.delete(e.k))
-    await log($, 'drop-overflow')
-  }
+  await withLock(QUEUE_LOCK, async () => {
+    for (const k of await $.store.keys()) {
+      if (!k.startsWith('pending:')) continue
+      await withLock(k, async () => {
+        const p = await $.store.get(k)
+        if (!p) return
+        if ((p.attempts || 0) >= MAX_ATTEMPTS || now - (p.endedAt || 0) > PENDING_TTL_MS) {
+          await $.store.delete(k)
+          await log($, 'drop-expired')
+        }
+      })
+    }
+    await makeRoom($, 0, 0)
+  })
 }
 
 async function summarize($, options, p, files, exact) {
@@ -323,7 +373,15 @@ async function flushOne($, options, k, url, token) {
   const now = await $.clock.now()
   const held = await lease($, k, now)
   if (!held) return
-  const { p, attempts } = held
+  const { attempts } = held
+  let p = held.p
+  if (!p.finalGit) {
+    // The last per-turn snapshot predates anything done after the final turn
+    // (a commit in the last seconds of the session, say), so the files and
+    // HEAD are read once more here, from the timer, never from a hook.
+    p = { ...p, ...(await finalGit($, p)), finalGit: true }
+    await $.store.set(k, { ...p, attempts, leaseUntil: now + LEASE_MS })
+  }
   const exact = [token, ...(await secretsFor($, options))]
   const files = cleanFiles([...(p.files || []), ...(p.gitFiles || [])], p.cwd, exact)
   let summary = p.summary

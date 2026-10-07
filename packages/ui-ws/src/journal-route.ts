@@ -61,7 +61,23 @@ export interface JournalEntry {
 
 export type JournalSubmitResult =
   | { readonly ok: true; readonly id: string; readonly deduped: boolean }
-  | { readonly ok: false }
+  /** `contains_secret`: refused before any write; answered 422, not 500. */
+  | { readonly ok: false; readonly reason?: "contains_secret" }
+
+/**
+ * True when a string field of the entry contains `token`, as sent or after
+ * NFKC. The route refuses such an entry before the sink sees it.
+ */
+export function entryHasToken(e: JournalEntry, token: string): boolean {
+  const t = token.trim()
+  if (t.length < 8) return false
+  const values: string[] = []
+  for (const v of Object.values(e)) {
+    if (typeof v === "string") values.push(v)
+    else if (Array.isArray(v)) for (const x of v) if (typeof x === "string") values.push(x)
+  }
+  return values.some((v) => v.includes(t) || v.normalize("NFKC").includes(t))
+}
 
 export interface JournalSink {
   readonly submit: (entry: JournalEntry) => Effect.Effect<JournalSubmitResult>
@@ -518,6 +534,12 @@ export async function handleJournalRequest(
       sendJson(res, 422, { ok: false, errors: v.errors })
       return
     }
+    // The bearer inside the entry (any field, ids included) means the client
+    // failed to redact: refuse it before the sink can claim a ledger row.
+    if (entryHasToken(v.entry, deps.token)) {
+      sendJson(res, 422, { ok: false, errors: ["entry: contains the journal token"] })
+      return
+    }
     let result: JournalSubmitResult
     try {
       result = await Effect.runPromise(deps.sink.submit(v.entry), { signal: abort.signal })
@@ -530,6 +552,8 @@ export async function handleJournalRequest(
     }
     if (result.ok) {
       sendJson(res, 200, { ok: true, id: result.id, deduped: result.deduped })
+    } else if (result.reason === "contains_secret") {
+      sendJson(res, 422, { ok: false, errors: ["entry: contains a configured secret"] })
     } else {
       sendJson(res, 500, { ok: false, error: "journal_write_failed" })
     }

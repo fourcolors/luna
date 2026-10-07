@@ -25,14 +25,21 @@ dropped after 5 failed attempts or 7 days, or straight away if Luna rejects it
 as malformed (400, 413, 422). A `401`, `403` or `503` means the setup is not
 right yet (wrong token, or the server has no token), so it does not count as an
 attempt: the entry waits, up to 7 days, until the setup is fixed. Expiry runs
-at every session start even when no URL or token is configured, and the queue
-keeps at most 50 entries and 1 MiB, dropping the oldest first. A session that
+at every session start even when no URL or token is configured. The queue
+keeps at most 50 entries and 1 MiB (UTF-8 bytes of the stored JSON), checked
+each time an entry is queued, dropping the oldest first. A session that
 never ended cleanly (a crash or `kill -9`) is picked up after 6 hours of
 inactivity and sent with the end reason `crash-recovered`.
 
 Each session segment gets its `entry_id` when it starts, and every later step
 (a normal end, crash recovery, a retry, a second Claude Code process) reuses
-it, so Luna stores a segment once.
+it, so Luna stores a segment once. The id is built from a hash of the session
+id, never the id itself.
+
+The commit and the committed files are read once more when the entry is sent,
+from the session's repo and start commit, so a commit made after the last
+turn (say, right before you exit) is still reported. If other commits land on
+that branch before the entry is sent, they are reported too.
 
 ## What is sent, and what is not
 
@@ -40,10 +47,15 @@ Sent:
 - the summary (at most 4 lines, secrets redacted);
 - redaction drops the whole value of any `KEY=value` or `key: value` whose key
   looks like a credential (token, secret, key, password, auth, session, cookie
-  and similar), of `Authorization` headers and `Bearer` values, of URL user
-  info and credential-like query parameters, and every occurrence of the
-  configured Luna token. File paths, repo and branch go through the same
-  redaction before they reach the summary model or the body;
+  and similar), quoted values included (escaped quotes and adjacent shell
+  quotes such as `'a'"b"` count as one value); everything after an
+  `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`
+  or similar header up to the end of the line; `Bearer` values; URL user info
+  and credential-like query parameters, up to the next `&` or `#`; and every
+  occurrence of the configured Luna token. File paths, repo and branch go
+  through the same redaction before they reach the summary model or the body.
+  A session id that carries the token is sent as a hash instead, and Luna
+  refuses (`422`) any entry that still contains its token;
 - repo name, path, branch and commit, start and end times, host name, client
   and version;
 - changed file paths, relative to the repo, with names such as `.env`, `*.pem`
@@ -56,6 +68,19 @@ session uses. Luna redacts again and builds the stored text itself.
 
 The token travels only in the `Authorization` header. It is never logged, never
 put in a URL and never written to the mod's store.
+
+## Limits
+
+- Redaction is best-effort pattern matching. It catches the shapes listed
+  above, on one line at a time; a secret with no recognisable key or prefix,
+  or one spread over several lines (a multi-line YAML block, a pasted
+  Kubernetes secret, a JSON value split across lines), can get through. Keep
+  secrets out of Claude's answers where you can.
+- Journals are stored only in your own Luna, the one at `luna_url`. Nothing
+  goes to any other service, apart from the summary model call, which runs on
+  the account the session already uses.
+- A journal arrives at the start of the next Claude Code session, not when the
+  session ends (see above).
 
 ## 1. Set up the token on the Luna server
 

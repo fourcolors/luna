@@ -11,24 +11,38 @@ export const PROMPT_CAP = 12000
 // so the text still reads, and drop the whole value.
 const R = '[REDACTED]'
 const CRED_WORD = 'token|secret|key|password|passwd|pwd|auth|credential|private|access|api|session|cookie'
-// `stop` is extra characters an unquoted value ends at: '/' for file paths,
-// so /r/TOKEN=x/a.ts keeps the rest of the path.
-const secretRes = (stop) => [
+// Headers whose whole value is a credential, whatever its shape (Digest with
+// many parameters, a cookie list): the value is dropped to the end of the line.
+const CRED_HEADER =
+  '(?:proxy-)?authorization|(?:set-)?cookie|x-api-key|api-key|apikey|x-auth-token|x-access-token|' +
+  'x-amz-security-token|x-goog-api-key|private-token|x-csrf-token|x-xsrf-token'
+// A double-quoted value with backslash escapes, or a single-quoted one (no
+// escapes, as in a shell). An unterminated quote runs to the end of the line.
+const QUOTED = `"(?:[^"\\\\\\n]|\\\\.)*"?|'[^'\\n]*'?`
+
+const PRE = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, R],
+  [new RegExp(`(?<![A-Za-z0-9_-])((?:${CRED_HEADER})["']?[ \\t]*:[ \\t]*)[^\\r\\n]+`, 'gi'), `$1${R}`],
   // scheme://user:pass@host keeps the scheme and host.
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, `$1${R}@`],
-  // Query parameters whose name looks like a credential.
-  [new RegExp(`([?&#][^=&#\\s]*(?:${CRED_WORD}|sig|signature|code)[^=&#\\s]*=)[^&#\\s"'<>${stop}]+`, 'gi'), `$1${R}`],
-  // KEY=value, key: value, "key": "value", key => "value", including
-  // Authorization: <scheme> <value>.
-  [
-    new RegExp(
-      `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*["']?\\s*(?:=>|[:=])\\s*)` +
-        `(?:"[^"\\n]*"|'[^'\\n]*'|(?:(?:bearer|basic|token|digest|negotiate)\\s+)?[^\\s"',;}${stop}]+)`,
-      'gi',
-    ),
-    `$1${R}`,
-  ],
+  // Query parameters whose name looks like a credential. The value runs to
+  // the next & or # (or a space or quote): a '/' inside it does not end it.
+  [new RegExp(`([?&#][^=&#\\s]*(?:${CRED_WORD}|sig|signature|code)[^=&#\\s]*=)[^&#\\s"'<>]+`, 'gi'), `$1${R}`],
+]
+// KEY=value, key: value, "key": "value", key => "value", \"key\": \"value\".
+// The value is any run of quoted parts and bare text (shell concatenation
+// such as 'a'"b"c), after an optional auth scheme. `stop` is extra characters
+// a bare part ends at: '/' inside a path segment, so /r/TOKEN=x/a.ts keeps
+// the rest of the path.
+const keyValueRe = (stop) =>
+  new RegExp(
+    `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*\\\\{0,2}["']?\\s*(?:=>|[:=])\\s*)` +
+      `(?:(?:bearer|basic|token|digest|negotiate)\\s+)?(?:${QUOTED}|[^\\s"',;&}${stop}]+)+`,
+    'gi',
+  )
+const KEY_VALUE = keyValueRe('')
+const KEY_VALUE_PATH = keyValueRe('/')
+const POST = [
   // A bare scheme and value, e.g. curl -H "Bearer xyz".
   [/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, `$1 ${R}`],
   [/\b(basic)\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{8,}={0,2}/gi, `$1 ${R}`],
@@ -40,17 +54,32 @@ const secretRes = (stop) => [
   [/AIza[0-9A-Za-z_-]{35}/g, R],
   [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, R],
 ]
-export const SECRET_RES = secretRes('')
-const PATH_RES = secretRes('/')
 // The long-base64 catch-all also matches deep slash-only file paths, so it
 // runs on prose but not on paths.
 const BASE64_RUN = /\b[A-Za-z0-9+/]{48,}={0,2}/g
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const applyAll = (s, list) => list.reduce((out, [re, rep]) => out.replace(re, rep), s)
+
+/** Pattern redaction. In a path the '/' stop applies only before the first '?'. */
+export function redactPatterns(s, path = false) {
+  let out = applyAll(s, PRE)
+  if (path) {
+    const q = out.indexOf('?')
+    out =
+      q < 0
+        ? out.replace(KEY_VALUE_PATH, `$1${R}`)
+        : out.slice(0, q).replace(KEY_VALUE_PATH, `$1${R}`) + out.slice(q).replace(KEY_VALUE, `$1${R}`)
+  } else {
+    out = out.replace(KEY_VALUE, `$1${R}`)
+  }
+  out = applyAll(out, POST)
+  return path ? out : out.replace(BASE64_RUN, R)
+}
 
 /**
- * Redacts known secret shapes, then every exact value in `exact` (the
- * configured Luna token and anything else known to be secret). Values under
+ * Redacts every exact value in `exact` (the configured Luna token and
+ * anything else known to be secret), then known secret shapes. Values under
  * 8 chars are ignored so a short token cannot blank ordinary words.
  */
 export function redact(s, exact = [], opts = {}) {
@@ -59,9 +88,7 @@ export function redact(s, exact = [], opts = {}) {
     const t = String(v ?? '').trim()
     if (t.length >= 8) out = out.replace(new RegExp(escapeRe(t), 'g'), R)
   }
-  for (const [re, rep] of opts.path === true ? PATH_RES : SECRET_RES) out = out.replace(re, rep)
-  if (opts.path !== true) out = out.replace(BASE64_RUN, R)
-  return out
+  return redactPatterns(out, opts.path === true)
 }
 
 export const redactPath = (s, exact = []) => redact(s, exact, { path: true })
@@ -154,8 +181,8 @@ export function buildBody(p, files, summary, model, exact = []) {
   const body = {
     v: 1,
     source: 'claude-code',
-    session_id: safeSessionId(p.sid),
-    entry_id: p.entryId,
+    session_id: bodySessionId(p.sid, exact),
+    entry_id: bodyEntryId(p.entryId, exact),
     repo: cut(redactPath(p.repo, exact), 100, 'unknown'),
     repo_path: cut(redactPath(p.cwd, exact), 300, 'unknown'),
     branch: cut(redactPath(p.branch, exact), 200, 'unknown'),
@@ -180,8 +207,72 @@ export function safeSessionId(sid) {
   return s.length >= 8 ? s : (s + '-session').slice(0, 128)
 }
 
-/** The idempotency key for one session segment; retries reuse it. */
-export function makeEntryId(sid, nowMs, suffix = '') {
-  const safe = safeSessionId(sid).slice(0, 40)
-  return `${safe}-${suffix}${Math.floor(nowMs).toString(36)}`.slice(0, 64)
+// FNV-1a over UTF-16 code units, two seeds, base 36: a stable, opaque tag.
+// Not a security hash; it only keeps an id from carrying its input verbatim.
+function fnv(s, seed) {
+  let h = seed >>> 0
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619) >>> 0
+  }
+  return h.toString(36)
 }
+export const opaqueId = (s) => fnv(String(s), 2166136261) + fnv(String(s), 3735928559)
+
+/**
+ * True when `id` shares 8 or more consecutive characters with a known secret,
+ * so a token used (or truncated) as a session id never travels as an id.
+ */
+export function idCarriesSecret(id, exact = []) {
+  const s = String(id ?? '')
+  for (const v of exact) {
+    const t = String(v ?? '').trim()
+    if (t.length < 8) continue
+    const tc = t.replace(/[^A-Za-z0-9-]/g, '')
+    if (s.includes(t)) return true
+    for (let i = 0; i + 8 <= s.length; i++) if (tc.includes(s.slice(i, i + 8))) return true
+  }
+  return false
+}
+
+/** session_id for the body: the real one, unless it carries a secret. */
+export function bodySessionId(sid, exact = []) {
+  const s = safeSessionId(sid)
+  return idCarriesSecret(s, exact) || idCarriesSecret(sid, exact) ? `sid-${opaqueId(s)}` : s
+}
+
+/**
+ * The idempotency key for one session segment; retries reuse it. Derived from
+ * a hash of the session id, never the id itself, because a session id is
+ * minted before any secret is known and could in principle carry one.
+ */
+export function makeEntryId(sid, nowMs, suffix = '') {
+  return `e-${opaqueId(safeSessionId(sid))}-${suffix}${Math.floor(nowMs).toString(36)}`.slice(0, 64)
+}
+
+/** entry_id for the body: a stored id that carries a secret is replaced by its hash. */
+export function bodyEntryId(entryId, exact = []) {
+  const e = String(entryId ?? '')
+  return idCarriesSecret(e, exact) ? `e-${opaqueId(e)}` : e
+}
+
+/** UTF-8 length of a string, without Buffer or TextEncoder. */
+export function utf8Bytes(s) {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i)
+    if (c < 0x80) n += 1
+    else if (c < 0x800) n += 2
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < s.length) {
+      const d = s.charCodeAt(i + 1)
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        n += 4
+        i++
+      } else n += 3
+    } else n += 3
+  }
+  return n
+}
+
+/** Store size of a value: UTF-8 bytes of its JSON. */
+export const storedBytes = (v) => utf8Bytes(JSON.stringify(v) ?? '')

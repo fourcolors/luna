@@ -226,6 +226,27 @@ describe("POST /v1/journal", () => {
     expect(body.errors.join(" ")).toContain("summary")
   })
 
+  it("the journal token in any field, ids included, gives 422 and never reaches the sink", async () => {
+    const rig = await startRig()
+    for (const patch of [
+      { session_id: JOURNAL_TOKEN },
+      { entry_id: JOURNAL_TOKEN.slice(0, 64) },
+      { summary: `leaked ${JOURNAL_TOKEN}` },
+      { files_changed: [`x/${JOURNAL_TOKEN}.md`] },
+    ]) {
+      const r = await post(rig.port, { ...goodEntry(), ...patch })
+      expect(r.status).toBe(422)
+      expect(r.body).not.toContain(JOURNAL_TOKEN)
+    }
+    expect(rig.received).toHaveLength(0)
+  })
+
+  it("a sink refusing a configured secret answers 422, not 500", async () => {
+    const rig = await startRig({ write: () => Effect.succeed({ ok: false as const, reason: "contains_secret" as const }) })
+    const r = await post(rig.port, goodEntry())
+    expect(r.status).toBe(422)
+  })
+
   it("the 31st request in a minute gives 429 with Retry-After", async () => {
     const rig = await startRig()
     for (let i = 0; i < 30; i++) {
