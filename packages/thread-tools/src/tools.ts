@@ -2,7 +2,7 @@ import { Effect } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
 import { ForkProposalStore } from "./store.js"
-import { FORK_CHILD_TAG } from "./types.js"
+import { FORK_CHILD_TAG, type ForkProposalMode } from "./types.js"
 
 const forkThreadShape = {
   title: z
@@ -49,12 +49,15 @@ const createThreadShape = {
 export const createThreadInputSchema = z.object(createThreadShape)
 
 /**
- * `makeForkThreadTools(store, currentThreadId, isForkChildThread)` —
- * propose-mode only: stages a marker; does NOT create the sibling yet.
- * The operator clicks the marker to accept.
+ * `makeForkThreadTools(store, currentThreadId, isForkChildThread, nowMs?, createGate?)`
+ * returns `[fork_thread, create_thread]`.
  *
- * `isForkChildThread()` implements the fork-loop guard: a thread created by
- * an accepted fork must not propose another fork on early turns.
+ * - `fork_thread` stages a marker and creates nothing until the operator
+ *   clicks it. `isForkChildThread()` is the fork-loop guard: a thread created
+ *   by an accepted fork must not propose another fork on early turns.
+ * - `create_thread` stages a `mode: "create"` proposal that the server accepts
+ *   at once. `createGate` refuses it in unattended threads and enforces the
+ *   per-thread creation budget.
  */
 export const makeForkThreadTools = (
   store: {
@@ -64,7 +67,7 @@ export const makeForkThreadTools = (
       readonly summary: string
       readonly seed: string
       readonly nowMs: number
-      readonly mode?: "propose" | "create"
+      readonly mode?: ForkProposalMode
     }) => Effect.Effect<{ readonly id: string }>
   },
   currentThreadId: () => string | null,

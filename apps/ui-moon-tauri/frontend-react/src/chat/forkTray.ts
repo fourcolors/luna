@@ -276,4 +276,3 @@ export function createForkTray(deps: ForkTrayDeps) {
   }
 }
 
-export type ForkTray = ReturnType<typeof createForkTray>
