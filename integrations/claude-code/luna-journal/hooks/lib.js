@@ -160,8 +160,8 @@ export function clampSummary(s, exact = []) {
     .slice(0, 1200)
 }
 
-const END_REASONS = new Set(['clear', 'resume', 'logout', 'prompt_input_exit', 'other', 'crash-recovered'])
-const CLIENTS = new Set(['claude-code-cli', 'claude-code-desktop', 'claude-code'])
+export const END_REASONS = new Set(['clear', 'resume', 'logout', 'prompt_input_exit', 'other', 'crash-recovered'])
+export const CLIENTS = new Set(['claude-code-cli', 'claude-code-desktop', 'claude-code'])
 
 export function clientFromSurface(surface) {
   if (surface === 'terminal') return 'claude-code-cli'

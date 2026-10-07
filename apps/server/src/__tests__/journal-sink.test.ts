@@ -4,6 +4,7 @@ import type { AgentNote } from "@luna/core"
 import { NoteError } from "@luna/core"
 import type { MemoryRecord } from "@luna/memory"
 import type { JournalEntry } from "@luna/ui-ws"
+import { JOURNAL_CLIENTS, JOURNAL_END_REASONS } from "@luna/ui-ws"
 import {
   FENCE_CLOSE,
   FENCE_OPEN,
@@ -280,6 +281,16 @@ describe("redactSecrets Codex probes (kept in step with the mod)", () => {
 })
 
 describe("redaction parity with the luna-journal mod", () => {
+  it("the mod's end-reason and client lists match the route's", async () => {
+    const libPath: string = new URL(
+      "../../../../integrations/claude-code/luna-journal/hooks/lib.js",
+      import.meta.url,
+    ).href
+    const lib = (await import(libPath)) as { END_REASONS: Set<string>; CLIENTS: Set<string> }
+    expect([...lib.END_REASONS].sort()).toEqual([...JOURNAL_END_REASONS].sort())
+    expect([...lib.CLIENTS].sort()).toEqual([...JOURNAL_CLIENTS].sort())
+  })
+
   it("the mod's lib.js and this sink redact every probe identically", async () => {
     // A computed specifier keeps the untyped .js module out of the typecheck.
     const libPath: string = new URL(
