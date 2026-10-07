@@ -195,6 +195,12 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     ctx.invoke("open_external_url", { url: frame.authUrl })
       .then(() => ctx.invoke("oauth_loopback_wait", { timeoutMs: 300000 }))
       .then((captured) => {
+        // The wait may resolve for a superseded flow (consent landed before
+        // the newer flow cancelled the listener). Like the rejection branch,
+        // drop it: sending the retired flow's code would attribute the
+        // redemption round-trip to the new flow and let a later requestId-less
+        // failure frame tear the new flow down.
+        if (waitEpoch !== oauthEpochRef.current) return
         const c = captured as { code?: string; state?: string }
         clientRef.current?.send({
           type: "connector-oauth-code",
