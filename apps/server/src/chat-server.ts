@@ -190,7 +190,17 @@ const bootShadowedEnvKeys = new Set<string>()
   // thread. Self-heals all start paths (autodeploy, manual restart, rebuild).
   applyClaudeExecutablePreflight()
 }
-import { Context, Effect, Layer, ManagedRuntime, Option, Redacted, Stream } from "effect"
+import {
+  Cause,
+  Context,
+  Effect,
+  Exit,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Stream,
+} from "effect"
 import {
   AccountBroker,
   AccountBrokerLayer,
@@ -2998,8 +3008,28 @@ class ServerHandle extends Context.Service<
 // from them would launder a PRECEDING genuine crash's orphans into an
 // exempted boot - the fail-open the S11a invariant forbids.
 let cleanShutdownMarkerArmed = false
+
+// Set by the SIGINT/SIGTERM handler BEFORE dispose() starts, and read by
+// handleMainExit below. A deliberate shutdown interrupts every fiber in the
+// ManagedRuntime's root scope, so the top-level runPromise settles with an
+// interrupt Cause. Without this flag that is indistinguishable from a crash:
+// the old code logged "chat server crashed" and called process.exit(1),
+// which (a) made systemd mark every deploy `status=1/FAILURE` and fire
+// OnFailure=, and (b) raced ahead of dispose()'s own exit(0), truncating the
+// layer finalizers that close the databases and stop the channel adapters.
+let shuttingDown = false
+
+// Set when a NON-interrupt cause surfaces while shutting down (a real
+// failure during teardown). Turns the final exit code back to 1 so a genuine
+// crash is never laundered into a clean stop by the suppression above.
+let shutdownDirty = false
+
+// Backstop for a dispose() that never settles. Comfortably under systemd's
+// default TimeoutStopSec=90s so the process reports its own failure instead
+// of being SIGKILLed with no diagnostic.
+const SHUTDOWN_HARD_TIMEOUT_MS = 20_000
+
 const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
-  let shuttingDown = false
   const shutdown = (signal: NodeJS.Signals): void => {
     if (shuttingDown) return
     shuttingDown = true
@@ -3034,10 +3064,60 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
     // SIGABRTed by a watchdog window that no beats will ever refill.
     sdWatchdog?.stop()
     notifyStopping()
-    void rt.dispose().then(() => process.exit(0))
+    // .unref() so a dispose that finishes early is never held open by the
+    // timer itself.
+    setTimeout(() => {
+      writeSync(
+        2,
+        `shutdown: dispose() exceeded ${SHUTDOWN_HARD_TIMEOUT_MS}ms - forcing exit\n`,
+      )
+      process.exit(1)
+    }, SHUTDOWN_HARD_TIMEOUT_MS).unref()
+    // A rejected dispose() previously fell into `void` and the .then never
+    // ran: nothing exited, and the process sat until systemd SIGKILLed it.
+    rt.dispose().then(
+      () => process.exit(shutdownDirty ? 1 : 0),
+      (err: unknown) => {
+        writeSync(2, `shutdown: dispose() failed: ${String(err)}\n`)
+        process.exit(1)
+      },
+    )
   }
   process.on("SIGINT", () => shutdown("SIGINT"))
   process.on("SIGTERM", () => shutdown("SIGTERM"))
+}
+
+// Single exit-handling path for the three top-level run call sites.
+// Discriminates on the Cause rather than on `shuttingDown` alone: a Fail or
+// Die that lands DURING teardown is still reported and still turns the exit
+// code non-zero, so suppression can never mask a real crash.
+const handleMainExit = (
+  label: string,
+  exit: Exit.Exit<unknown, unknown>,
+): void => {
+  if (Exit.isSuccess(exit)) return
+  if (shuttingDown) {
+    if (!Cause.hasInterruptsOnly(exit.cause)) {
+      shutdownDirty = true
+      // writeSync, not console.*: buffered console output to a pipe is lost
+      // when process.exit truncates it (same reason the handler above uses it).
+      writeSync(
+        2,
+        `${label}: non-interrupt cause during shutdown:\n${Cause.pretty(exit.cause)}\n`,
+      )
+    }
+    return // dispose() owns the exit from here
+  }
+  const err = Cause.squash(exit.cause)
+  console.error(`❌ ${label}:`, err)
+  const msg = String(err)
+  if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
+    console.error(
+      "   hint: 1Password CLI not authenticated. Add a " +
+        "luna.op.<label> keychain entry or set LUNA_OP_TOKEN_<LABEL>, then restart.",
+    )
+  }
+  process.exit(1)
 }
 
 // ── Setup-mode minimal layer ──────────────────────────────────────────────
@@ -5089,7 +5169,7 @@ export const bootstrap = async (): Promise<void> => {
     // moment. Without this a fresh credential-less install would sit in
     // `activating` until TimeoutStartSec, fail, and restart-loop.
     setupRuntime
-      .runPromise(
+      .runPromiseExit(
         Effect.sync(() => {
           sdWatchdog = startSdWatchdog({
             port: SETUP_WS_PORT,
@@ -5098,10 +5178,7 @@ export const bootstrap = async (): Promise<void> => {
           })
         }).pipe(Effect.andThen(Effect.never)),
       )
-      .catch((err) => {
-        console.error("❌ setup-mode server crashed:", err)
-        process.exit(1)
-      })
+      .then((exit) => handleMainExit("setup-mode server crashed", exit))
     return
   }
 
@@ -5186,8 +5263,8 @@ export const bootstrap = async (): Promise<void> => {
     `[luna/tool-acl] egress allow-list active (${egressAllowedHosts.length === 1 && egressAllowedHosts[0] === "*" ? "ALLOW-ALL (*)" : `${egressAllowedHosts.length} host suffix(es)`}); override via LUNA_EGRESS_ALLOWED_HOSTS\n`,
   )
 
-  await runtime
-    .runPromise(
+  const bootExit = await runtime
+    .runPromiseExit(
       Effect.gen(function* () {
         const adapter = yield* SDKAdapter
         yield* adapter.setPermissionCallback(
@@ -5221,20 +5298,14 @@ export const bootstrap = async (): Promise<void> => {
         )
       }),
     )
-    .catch((err) => {
-      console.error(
-        "❌ chat server failed to boot (permission policy install):",
-        err,
-      )
-      const msg = String(err)
-      if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
-        console.error(
-          "   hint: 1Password CLI not authenticated. Add a " +
-            "luna.op.<label> keychain entry or set LUNA_OP_TOKEN_<LABEL>, then restart.",
-        )
-      }
-      process.exit(1)
-    })
+  handleMainExit("chat server failed to boot (permission policy install)", bootExit)
+
+  // A SIGTERM during the layer build settles the await above with an
+  // interrupt, which handleMainExit deliberately does not exit on. Without
+  // this guard execution would fall through and start buildMain on a runtime
+  // that dispose() has already closed, which Dies with "ManagedRuntime
+  // disposed" - a non-interrupt cause that would re-trigger exit(1).
+  if (shuttingDown) return
 
   // runPromise keeps the event loop alive until the effect resolves (which
   // it never does because of Effect.never). runFork returns immediately,
@@ -5247,18 +5318,9 @@ export const bootstrap = async (): Promise<void> => {
   // error rather than a boot crash. Hint to add a `luna.op.<label>`
   // keychain entry or set `LUNA_OP_TOKEN_<LABEL>` if chat queries fail
   // with a ConfigError tagged `OnePasswordSecretProvider`.
-  runtime.runPromise(buildMain(resolveEnvSecret, opLabelsRegistered)).catch((err) => {
-    const msg = String(err)
-    console.error("❌ chat server crashed:", err)
-    if (msg.includes("OnePasswordSecretProvider") || msg.includes("'op'")) {
-      console.error(
-        "   hint: 1Password CLI not authenticated. Add a " +
-          "luna.op.<label> keychain entry or set LUNA_OP_TOKEN_<LABEL> " +
-          "(see header comment), then restart.",
-      )
-    }
-    process.exit(1)
-  })
+  void runtime
+    .runPromiseExit(buildMain(resolveEnvSecret, opLabelsRegistered))
+    .then((exit) => handleMainExit("chat server crashed", exit))
 }
 
 // Guard against running bootstrap when imported (e.g. from tests that
