@@ -44,8 +44,15 @@ export type MemoryProvenanceSource =
 
 export interface MemoryProvenance {
   readonly source: MemoryProvenanceSource
+  /** The chat thread / session the fact was learned in, when known. */
   readonly sessionId?: string
   readonly messageIds?: ReadonlyArray<string>
+  /**
+   * Where the fact came from outside the conversation: a URL, a file path,
+   * a PR/issue reference, or a short citation. Lets a later reader (or the
+   * dream cycle) go back to the evidence when two memories disagree.
+   */
+  readonly ref?: string
 }
 
 /** Compatibility scope for pre-scope records in the operator namespace. */

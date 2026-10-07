@@ -37,7 +37,7 @@ import {
   makeRecord,
   type MemoryRouter,
 } from "@luna/memory"
-import { makeMemoryTools } from "../src/tools.js"
+import { buildSaveProvenance, makeMemoryTools } from "../src/tools.js"
 import { selectEmbedderLayer } from "../src/layer.js"
 
 const hasBunSqlite = (() => {
@@ -68,7 +68,14 @@ const saveArgs = (a: {
   kind?: string
   tags?: Array<string>
   namespace?: string
-}) => ({ text: a.text, kind: a.kind, tags: a.tags, namespace: a.namespace })
+  source?: string
+}) => ({
+  text: a.text,
+  kind: a.kind,
+  tags: a.tags,
+  namespace: a.namespace,
+  source: a.source,
+})
 
 const searchArgs = (a: {
   query: string
@@ -888,5 +895,119 @@ describe.skipIf(!hasBunSqlite)("memory_search reranking", () => {
     )
     expect(hits.length).toBeGreaterThan(0)
     expect(hits.every((h) => h.llmScore === undefined)).toBe(true)
+  })
+})
+
+
+describe("memory_save provenance", () => {
+  it("buildSaveProvenance stamps the bound thread and a trimmed citation", () => {
+    expect(buildSaveProvenance("thr_abc", "  https://example.com/doc  ")).toEqual({
+      source: "manual",
+      sessionId: "thr_abc",
+      ref: "https://example.com/doc",
+    })
+  })
+
+  it("buildSaveProvenance omits sessionId and ref when neither is known", () => {
+    expect(buildSaveProvenance(null, undefined)).toEqual({ source: "manual" })
+    expect(buildSaveProvenance("", "   ")).toEqual({ source: "manual" })
+  })
+})
+
+describe.skipIf(!hasBunSqlite)("memory provenance round-trip", () => {
+  const baseLayer = Layer.unwrap(
+    Effect.gen(function* () {
+      const backend = yield* SqliteVectorBackend
+      return MemoryLayer({ rules: [{ pattern: "*", backend }] })
+    }),
+  ).pipe(
+    Layer.provideMerge(SqliteVectorBackend.fromPath(":memory:")),
+    Layer.provideMerge(StubEmbedderLayer),
+    Layer.provideMerge(LunaSqliteBootstrapLive),
+    Layer.provideMerge(ObservabilityService.Default),
+    Layer.provideMerge(Clock.Default),
+  )
+
+  let runtime: ManagedRuntime.ManagedRuntime<typeof MemoryRouterTag.Service, never>
+  let router: MemoryRouter
+
+  beforeEach(async () => {
+    runtime = ManagedRuntime.make(baseLayer) as never
+    router = await runtime.runPromise(
+      Effect.gen(function* () {
+        return yield* MemoryRouterTag
+      }),
+    )
+  })
+
+  afterEach(async () => {
+    await runtime.dispose()
+  })
+
+  type Hit = {
+    id: string
+    provenance?: { source: string; sessionId?: string; ref?: string }
+  }
+
+  it("save records the bound thread and source; search returns them", async () => {
+    let bound: string | null = "thr_bound_1"
+    const [saveTool, searchTool] = makeMemoryTools(router, undefined, {
+      currentSessionId: () => bound,
+    })
+
+    const saved = parseTextResult<{ id: string }>(
+      await saveTool.handler(
+        saveArgs({
+          text: "Payments launch deadline is 2026-10-15",
+          source: "https://example.com/launch-plan",
+        }),
+        undefined,
+      ),
+    )
+
+    const stored = await runtime.runPromise(router.get(saved.id))
+    expect(stored?.provenance).toEqual({
+      source: "manual",
+      sessionId: "thr_bound_1",
+      ref: "https://example.com/launch-plan",
+    })
+
+    const hits = parseTextResult<ReadonlyArray<Hit>>(
+      await searchTool.handler(searchArgs({ query: "payments launch deadline" }), undefined),
+    )
+    const hit = hits.find((h) => h.id === saved.id)
+    expect(hit?.provenance).toEqual({
+      source: "manual",
+      sessionId: "thr_bound_1",
+      ref: "https://example.com/launch-plan",
+    })
+
+    // An unbound instance still saves, just without a thread.
+    bound = null
+    const saved2 = parseTextResult<{ id: string }>(
+      await saveTool.handler(saveArgs({ text: "Unbound fact" }), undefined),
+    )
+    const stored2 = await runtime.runPromise(router.get(saved2.id))
+    expect(stored2?.provenance).toEqual({ source: "manual" })
+  })
+
+  it("a record with no provenance is returned without a provenance key", async () => {
+    await runtime.runPromise(
+      router.put(
+        makeRecord({
+          id: "mem_legacy",
+          namespace: "notes",
+          kind: "semantic",
+          content: { text: "Legacy fact saved before provenance existed" },
+        }),
+      ),
+    )
+    const [, searchTool] = makeMemoryTools(router)
+    const hits = parseTextResult<ReadonlyArray<Hit & Record<string, unknown>>>(
+      await searchTool.handler(searchArgs({ query: "legacy fact provenance" }), undefined),
+    )
+    const hit = hits.find((h) => h.id === "mem_legacy")
+    expect(hit).toBeDefined()
+    expect("provenance" in hit!).toBe(false)
   })
 })

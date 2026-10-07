@@ -1185,6 +1185,8 @@ const ThreadToolsProviderLayer = (
               : {}),
             onBound: (sessionId: string) => {
               obsThreadTools.bindSession(sessionId)
+              // memory_save stamps this thread onto provenance.sessionId.
+              memoryThreadTools.bindSession(sessionId)
               // Thread tags ride along so the bridge can refuse a personal
               // machine for an unattended thread (forked child, or one created
               // from an inbound channel message).
@@ -1203,6 +1205,7 @@ const ThreadToolsProviderLayer = (
               )
             },
             onUnbound: (sessionId: string) => {
+              memoryThreadTools.clearSession(sessionId)
               localShellThreadTools.clearSession(sessionId)
               forkThreadTools.clearSession(sessionId)
             },

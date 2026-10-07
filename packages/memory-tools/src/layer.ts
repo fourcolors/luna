@@ -195,6 +195,13 @@ export interface MemoryToolsSessionConfig {
   readonly server: McpSdkServerConfigWithInstance
   /** The system-prompt addendum the agent needs to know the tools exist. */
   readonly systemPromptAddendum: string
+  /**
+   * Bind this instance to a chat thread. memory_save then stamps the thread
+   * id onto every record's `provenance.sessionId`.
+   */
+  readonly bindSession: (sessionId: string) => void
+  /** Unbind, if still bound to `sessionId`. */
+  readonly clearSession: (sessionId: string) => void
 }
 
 export interface MemoryToolsConfig extends MemoryToolsSessionConfig {
@@ -206,7 +213,7 @@ export class MemoryToolsService extends Context.Service<MemoryToolsService, Memo
 export const MEMORY_SYSTEM_PROMPT_ADDENDUM =
   "You have three memory tools on MCP server `memory`. Use their fully " +
   "qualified MCP tool names exactly: " +
-  "`mcp__memory__memory_save(text, kind?, tags?, namespace?)` to remember a durable fact, " +
+  "`mcp__memory__memory_save(text, kind?, tags?, namespace?, source?)` to remember a durable fact, " +
   "`mcp__memory__memory_search(query, kind?, limit?, namespace?)` to recall prior context " +
   "before answering, and `mcp__memory__memory_delete(id)` only when the user asks to " +
   "forget. Do not call bare tool names such as `memory_search`; use the `mcp__memory__...` " +
@@ -215,7 +222,10 @@ export const MEMORY_SYSTEM_PROMPT_ADDENDUM =
   "conventional values are \"semantic\" (durable facts, the default), \"episodic\" " +
   "(time-stamped events), \"procedural\" (how-to / skills), and \"prospective\" " +
   "(future intentions). Search hits include `kind`, `namespace`, `createdAt`, and " +
-  "`updatedAt` (epoch ms) so you can reason about recency."
+  "`updatedAt` (epoch ms) so you can reason about recency. Every save records the current " +
+  "thread automatically; when a fact came from a document, web page, PR, or command output, " +
+  "pass its URL or path as `source`. Hits carry `provenance` (source, sessionId, ref) when " +
+  "known: when two memories disagree, check their provenance before trusting either."
 
 export interface MemoryToolsLayerOptions {
   /** Override the sqlite-vector db path. Default: `resolveDbPath()`. */
@@ -268,14 +278,26 @@ export const MemoryToolsLayer = (
     router: Parameters<typeof buildMemoryMcpServer>[0],
     reranker: MemoryRerankerApi | undefined,
     observability: ObservabilityApi,
-  ): MemoryToolsSessionConfig => ({
-    serverName: "memory" as const,
-    server: buildMemoryMcpServer(router, {
-      ...(reranker !== undefined ? { reranker } : {}),
-      observability,
-    }),
-    systemPromptAddendum: MEMORY_SYSTEM_PROMPT_ADDENDUM,
-  })
+  ): MemoryToolsSessionConfig => {
+    // One cell per instance: chat-server builds an instance per thread via
+    // createSessionBinding(), so this never mixes two threads' ids.
+    const sessionCell: { value: string | null } = { value: null }
+    return {
+      serverName: "memory" as const,
+      server: buildMemoryMcpServer(router, {
+        ...(reranker !== undefined ? { reranker } : {}),
+        observability,
+        currentSessionId: () => sessionCell.value,
+      }),
+      systemPromptAddendum: MEMORY_SYSTEM_PROMPT_ADDENDUM,
+      bindSession: (sessionId: string) => {
+        sessionCell.value = sessionId
+      },
+      clearSession: (sessionId: string) => {
+        if (sessionCell.value === sessionId) sessionCell.value = null
+      },
+    }
+  }
   const base = Layer.effect(
     MemoryToolsService,
     Effect.gen(function* () {

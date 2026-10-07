@@ -66,6 +66,7 @@ import {
   extractMemoryText,
   matchesMemoryScope,
   OPERATOR_MEMORY_SCOPE,
+  type MemoryProvenance,
   type MemoryRecord,
   type MemoryRouter,
   type MemoryScope,
@@ -86,7 +87,17 @@ const RERANK_OVERFETCH_TOP_K = 20
 export interface MakeMemoryToolsOptions {
   readonly reranker?: MemoryRerankerApi
   readonly observability?: ObservabilityApi
+  /**
+   * Returns the chat thread this tool instance is bound to, or null when it
+   * is not bound (tests, background callers). memory_save stamps it onto
+   * `provenance.sessionId` so every saved fact links back to the
+   * conversation it was learned in.
+   */
+  readonly currentSessionId?: () => string | null
 }
+
+/** Cap on the free-form `source` citation a caller can attach. */
+const MAX_SOURCE_REF_LENGTH = 500
 
 const DEFAULT_NAMESPACE = "notes"
 const DEFAULT_KIND = "semantic"
@@ -124,6 +135,17 @@ const saveShape = {
     .describe(
       `Optional namespace bucket. Defaults to "${DEFAULT_NAMESPACE}".`,
     ),
+  source: z
+    .string()
+    .min(1)
+    .max(MAX_SOURCE_REF_LENGTH)
+    .optional()
+    .describe(
+      "Optional citation for where this fact came from outside the " +
+        "conversation: a URL, file path, PR/issue reference, or short note. " +
+        "The current chat thread is recorded automatically; pass this when " +
+        "the fact came from a document, web page, tool result, or command output.",
+    ),
 }
 
 const searchShape = {
@@ -157,6 +179,24 @@ const supersedeShape = {
     .string()
     .min(1)
     .describe("ID of the record that replaces it (the current one)."),
+}
+
+/**
+ * Provenance for a record written by memory_save: always `manual`, plus the
+ * bound thread and the caller's citation when either is available.
+ */
+export function buildSaveProvenance(
+  sessionId: string | null,
+  ref: string | undefined,
+): MemoryProvenance {
+  const trimmedRef = ref?.trim()
+  return {
+    source: "manual",
+    ...(sessionId !== null && sessionId.length > 0 ? { sessionId } : {}),
+    ...(trimmedRef !== undefined && trimmedRef.length > 0
+      ? { ref: trimmedRef.slice(0, MAX_SOURCE_REF_LENGTH) }
+      : {}),
+  }
 }
 
 function newId(): string {
@@ -205,6 +245,9 @@ function toSearchHitDTO(
     updatedAt: hit.record.updatedAt,
     ...(llmScore !== undefined ? { llmScore } : {}),
     ...(beliefStatus !== undefined ? { beliefStatus } : {}),
+    ...(hit.record.provenance !== undefined
+      ? { provenance: toProvenanceDTO(hit.record.provenance) }
+      : {}),
     ...(hit.record.scope !== undefined
       ? {
           scope: {
@@ -214,6 +257,21 @@ function toSearchHitDTO(
           },
         }
       : {}),
+  }
+}
+
+/**
+ * Wire shape of a hit's provenance. Only the fields that are present are
+ * emitted, so a record saved before provenance existed adds nothing.
+ */
+function toProvenanceDTO(p: MemoryProvenance) {
+  return {
+    source: p.source,
+    ...(p.sessionId !== undefined ? { sessionId: p.sessionId } : {}),
+    ...(p.messageIds !== undefined && p.messageIds.length > 0
+      ? { messageIds: p.messageIds }
+      : {}),
+    ...(p.ref !== undefined ? { ref: p.ref } : {}),
   }
 }
 
@@ -230,7 +288,7 @@ export const makeMemoryTools = (
   scope: MemoryScope = OPERATOR_MEMORY_SCOPE,
   options: MakeMemoryToolsOptions = {},
 ) => {
-  const { reranker, observability } = options
+  const { reranker, observability, currentSessionId } = options
   const save = defineTool({
     name: "memory_save",
     description:
@@ -253,7 +311,7 @@ export const makeMemoryTools = (
           content: { text: args.text },
           tags: args.tags ?? [],
           scope,
-          provenance: { source: "manual" },
+          provenance: buildSaveProvenance(currentSessionId?.() ?? null, args.source),
         })
         yield* router.put(rec).pipe(
           Effect.mapError(
@@ -270,8 +328,8 @@ export const makeMemoryTools = (
     description:
       "Search long-term memory for records relevant to a query. Returns up " +
       "to `limit` hits ranked by hybrid BM25+vector score. Each hit includes " +
-      "`id`, `text`, `score`, `tags`, `kind`, `namespace`, `createdAt`, and " +
-      "`updatedAt` (epoch ms). Use this BEFORE answering questions about the " +
+      "`id`, `text`, `score`, `tags`, `kind`, `namespace`, `createdAt`, " +
+      "`updatedAt` (epoch ms), and `provenance` (source, sessionId, ref) when known. Use this BEFORE answering questions about the " +
       "user's prior context, preferences, or anything you might have stored " +
       "earlier with memory_save. Pass `kind` to restrict to a single memory " +
       'kind (e.g. "semantic", "episodic", "procedural", "prospective").',
