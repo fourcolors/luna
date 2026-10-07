@@ -1,0 +1,12 @@
+{
+  "name": "luna-local",
+  "description": "Claude Code mods that connect a workstation to a Luna server",
+  "owner": { "name": "Jax" },
+  "plugins": [
+    {
+      "name": "luna-journal",
+      "source": "./luna-journal",
+      "description": "Posts a short end-of-session journal to Luna as untrusted episodic memory"
+    }
+  ]
+}
