@@ -163,6 +163,16 @@ describe("redactSecrets", () => {
 const TOK = "Lj7" + "qZ".repeat(14) + "x9"
 
 describe("redactSecrets reproduced leaks", () => {
+  it("a dict value under a credential key is redacted by its inner pair", () => {
+    for (const v of [
+      'cookies={"sessionid": "LEAKME1"}',
+      'auth = {"password": "LEAKME2"}',
+      'config(credentials={"api_key": "LEAKME3"})',
+    ]) {
+      expect(redactSecrets(v)).not.toContain("LEAKME")
+    }
+  })
+
   it("drops the whole value for credential keys, auth schemes and URLs", () => {
     const cases = [
       `export LUNA_JOURNAL_TOKEN=${TOK}`,

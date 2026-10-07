@@ -884,3 +884,15 @@ test('a session that ends right after a commit reports the commit and its files'
   const diffRun = r.runs.find((x) => x.argv === 'git diff --name-only aaa1111 HEAD')
   expect(diffRun?.cwd).toBe('/r')
 })
+
+test('lib: a dict value under a credential key is redacted by its inner pair', async () => {
+  // A '{' ends a bare value, so the inner "key": "value" pair is matched itself.
+  for (const s of [
+    'cookies={"sessionid": "LEAKME1"}',
+    'auth = {"password": "LEAKME2"}',
+    'config(credentials={"api_key": "LEAKME3"})',
+  ]) {
+    expect(redact(s).includes('LEAKME')).toBe(false)
+  }
+})
+

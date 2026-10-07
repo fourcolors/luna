@@ -60,7 +60,7 @@ const PRE: ReadonlyArray<Rule> = [
 const keyValueRe = (stop: string): RegExp =>
   new RegExp(
     `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*\\\\{0,2}["']?\\s*(?:=>|[:=])\\s*)` +
-      `(?:(?:bearer|basic|token|digest|negotiate)\\s+)?(?:${QUOTED}|[^\\s"',;&}${stop}]+)+`,
+      `(?:(?:bearer|basic|token|digest|negotiate)\\s+)?(?:${QUOTED}|[^\\s"',;&{}${stop}]+)+`,
     "gi",
   )
 const KEY_VALUE = keyValueRe("")
