@@ -100,6 +100,12 @@ export const SUBAGENT_SWEEP_INTERVAL_MS = 60_000
  *  which only needs roughly the current and previous turn's ids. */
 export const MAX_SEEN_CALLS = 256
 
+/** Finished nodes kept between turns, newest first, beyond what running
+ *  nodes need as ancestors. A background run can spawn agents for hours
+ *  before the parent's next turn-complete prunes them; without this cap every
+ *  broadcast would carry the whole history. */
+export const MAX_SETTLED_NODES = 32
+
 /** The SDK's subagent spawn tool surfaces under these wire names. */
 const AGENT_TOOL_NAMES = new Set(["Agent", "Task"])
 
@@ -121,6 +127,8 @@ interface MutableNode {
   async: boolean
   lastActivityAt: number
   stale: boolean
+  /** Order in which the node reached a terminal status (0 while running). */
+  settledSeq: number
 }
 
 interface ThreadState {
@@ -161,6 +169,13 @@ export const createSubagentTreeBridge = (
   const clients = new Map<string, SendSubagentFrame>()
   const threads = new Map<string, ThreadState>()
   let sweepTimer: ReturnType<typeof setInterval> | null = null
+  let settleCounter = 0
+
+  /** Move a running node to a terminal status. */
+  const finish = (node: MutableNode, status: "done" | "error"): void => {
+    node.status = status
+    node.settledSeq = ++settleCounter
+  }
 
   const ensureThread = (threadId: string): ThreadState => {
     const existing = threads.get(threadId)
@@ -280,7 +295,7 @@ export const createSubagentTreeBridge = (
       const n = t.nodes.get(id)
       if (!n || n.parentId === null || !closed.has(n.parentId)) continue
       closed.add(n.id)
-      if (n.status === "running") n.status = status
+      if (n.status === "running") finish(n, status)
     }
   }
 
@@ -297,13 +312,41 @@ export const createSubagentTreeBridge = (
     }
   }
 
+  /** Bound finished history between turns: keep every running node, the
+   *  MAX_SETTLED_NODES most recently finished, and the ancestors of all of
+   *  those so no kept row loses its parent. Drops the rest. */
+  const boundSettled = (t: ThreadState): void => {
+    const settled: MutableNode[] = []
+    for (const n of t.nodes.values()) if (n.status !== "running") settled.push(n)
+    if (settled.length <= MAX_SETTLED_NODES) return
+    settled.sort((a, b) => b.settledSeq - a.settledSeq)
+    const keep = new Set<string>()
+    const keepWithAncestors = (node: MutableNode): void => {
+      let cur: MutableNode | undefined = node
+      for (let hops = 0; cur && hops <= t.nodes.size; hops++) {
+        if (keep.has(cur.id)) return
+        keep.add(cur.id)
+        cur = cur.parentId ? t.nodes.get(cur.parentId) : undefined
+      }
+    }
+    for (const n of t.nodes.values()) if (n.status === "running") keepWithAncestors(n)
+    for (const n of settled.slice(0, MAX_SETTLED_NODES)) keepWithAncestors(n)
+    for (let i = t.order.length - 1; i >= 0; i--) {
+      const id = t.order[i]!
+      if (!keep.has(id)) {
+        t.nodes.delete(id)
+        t.order.splice(i, 1)
+      }
+    }
+  }
+
   /** Close background nodes idle past the TTL. Returns whether any changed. */
   const expireIdle = (t: ThreadState): boolean => {
     const cutoff = now() - SUBAGENT_IDLE_TTL_MS
     let changed = false
     for (const n of t.nodes.values()) {
       if (n.async && n.status === "running" && n.lastActivityAt < cutoff) {
-        n.status = "done"
+        finish(n, "done")
         n.stale = true
         settleDescendants(t, n.id, "done")
         changed = true
@@ -322,7 +365,10 @@ export const createSubagentTreeBridge = (
   const sweep = (): void => {
     let anyRunningAsync = false
     for (const [threadId, t] of threads) {
-      if (expireIdle(t)) broadcast(threadId, t)
+      if (expireIdle(t)) {
+        boundSettled(t)
+        broadcast(threadId, t)
+      }
       if (hasRunningAsync(t)) anyRunningAsync = true
     }
     if (!anyRunningAsync) stopSweep()
@@ -348,7 +394,11 @@ export const createSubagentTreeBridge = (
       let autoOpen = false
 
       if (frame.type === "tool-call" && typeof frame.toolCallId === "string") {
-        if (!t.seenCalls.has(frame.toolCallId)) {
+        // nodes.has guards independently of seenCalls: once later calls
+        // evict an id from the capped seenCalls, a delayed replay of a live
+        // Agent call must not reset it (losing its async flag and count) or
+        // add a duplicate row.
+        if (!t.seenCalls.has(frame.toolCallId) && !t.nodes.has(frame.toolCallId)) {
           rememberCall(t, frame.toolCallId)
           if (frame.name && AGENT_TOOL_NAMES.has(frame.name)) {
             // A subagent spawn → a new node in the tree. (Involvement
@@ -368,6 +418,7 @@ export const createSubagentTreeBridge = (
               async: false,
               lastActivityAt: now(),
               stale: false,
+              settledSeq: 0,
             })
             t.order.push(frame.toolCallId)
             changed = true
@@ -401,7 +452,7 @@ export const createSubagentTreeBridge = (
             if (markAsync(node)) changed = true
           } else {
             // A foreground Agent's own tool-result closes that subagent.
-            node.status = frame.status === "error" ? "error" : "done"
+            finish(node, frame.status === "error" ? "error" : "done")
             changed = true
           }
         }
@@ -412,7 +463,7 @@ export const createSubagentTreeBridge = (
         const node = t.nodes.get(frame.toolCallId)
         if (node && node.status === "running") {
           const status = frame.status === "error" ? "error" : "done"
-          node.status = status
+          finish(node, status)
           settleDescendants(t, node.id, status)
           changed = true
         }
@@ -438,14 +489,17 @@ export const createSubagentTreeBridge = (
         // background agent (and anything it spawned) keeps running.
         for (const node of t.nodes.values()) {
           if (node.status === "running" && !insideRunningAsync(t, node)) {
-            node.status = "done"
+            finish(node, "done")
             changed = true
           }
         }
       }
 
       // The panel's last view of a finished turn is this done-state frame.
-      if (changed) broadcast(threadId, t)
+      if (changed) {
+        boundSettled(t)
+        broadcast(threadId, t)
+      }
       // Bound the tree to what is still in flight. `seenCalls` is kept (and
       // capped) so a replayed call from a slower forwarder cannot re-add a
       // pruned node as running; `announced` is kept so we never re-pop a

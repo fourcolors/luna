@@ -947,6 +947,50 @@ describe("ChatService agent moved to the background mid-run", () => {
   )
 })
 
+describe("ChatService task messages without tool_use_id", () => {
+  it(
+    "resolves progress and completion through task_started's task_id",
+    async () => {
+      const frames = await collectFramesAround([
+        systemMsg({ subtype: "task_started", task_id: "k1", tool_use_id: "ag_s", description: "d", task_type: "local_agent" }),
+        userToolResult("u1", "ag_s", "Async agent launched successfully."),
+        systemMsg({ subtype: "task_progress", task_id: "k1", description: "d", last_tool_name: "Read", usage: { tool_uses: 2 } }),
+        systemMsg({ subtype: "task_notification", task_id: "k1", status: "completed", output_file: "", summary: "" }),
+        // Unknown task, no tool_use_id: nothing to resolve.
+        systemMsg({ subtype: "task_notification", task_id: "k9", status: "completed", output_file: "", summary: "" }),
+      ])
+      expect(frames.filter((f) => f.type === "subagent-progress")).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_s", tool: "Read", toolCount: 2 },
+      ])
+      expect(settledFrames(frames)).toEqual([["ag_s", "done"]])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "resolves them through the async launch ack's agent id",
+    async () => {
+      const frames = await collectFramesAround([
+        userToolResult("u1", "ag_r", "Agent is working in the background.", {
+          tool_use_result: { status: "async_launched", agentId: "agt1", description: "d", prompt: "p" },
+        }),
+        userToolResult("u2", "ag_t", "Async agent launched successfully.\nagentId: agt2 (internal)"),
+        systemMsg({ subtype: "task_progress", task_id: "agt1", description: "d", usage: { tool_uses: 3 } }),
+        systemMsg({ subtype: "task_notification", task_id: "agt1", status: "failed", output_file: "", summary: "" }),
+        systemMsg({ subtype: "task_notification", task_id: "agt2", status: "completed", output_file: "", summary: "" }),
+      ])
+      expect(frames.filter((f) => f.type === "subagent-progress")).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_r", toolCount: 3 },
+      ])
+      expect(settledFrames(frames)).toEqual([
+        ["ag_r", "error"],
+        ["ag_t", "done"],
+      ])
+    },
+    { timeout: 10_000 },
+  )
+})
+
 describe("sdkTraceRecord", () => {
   const toolResult = (text: string): SDKMessage =>
     userToolResult("u", "id", text) as SDKMessage

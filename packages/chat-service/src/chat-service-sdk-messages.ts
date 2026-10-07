@@ -219,6 +219,20 @@ const ASYNC_AGENT_LAUNCH_TEXT = /^\s*Async agent launched/
 const isAsyncLaunchStatus = (toolUseResult: unknown): boolean =>
   isObj(toolUseResult) && toolUseResult["status"] === "async_launched"
 
+/** The launch ack text names the agent: "agentId: <id>". */
+const ACK_AGENT_ID_TEXT = /\bagentId:\s*([A-Za-z0-9_-]+)/
+
+/** The background agent's id from its launch ack (sdk-tools AgentOutput
+ *  `agentId`, else the ack text). It is the task_id later task_progress /
+ *  task_notification messages carry, sometimes without a tool_use_id. */
+const launchAgentId = (toolUseResult: unknown, text: string): string | undefined => {
+  if (isObj(toolUseResult)) {
+    const id = toolUseResult["agentId"]
+    if (typeof id === "string" && id !== "") return id
+  }
+  return ACK_AGENT_ID_TEXT.exec(text)?.[1]
+}
+
 /** LUNA_SDK_TRACE=1 logs one line per raw SDK message, for checking how the
  *  CLI reports subagent lifecycle without a debugger. */
 const sdkTraceEnabled = (): boolean => process.env["LUNA_SDK_TRACE"] === "1"
@@ -715,11 +729,11 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
         const resultBlocks = content.filter(
           (b) => b.type === "tool_result" && typeof b.tool_use_id === "string",
         )
-        const launchedAsync =
-          resultBlocks.length === 1 &&
-          isAsyncLaunchStatus(
-            (args.msg as { tool_use_result?: unknown }).tool_use_result,
-          )
+        const toolUseResult =
+          resultBlocks.length === 1
+            ? (args.msg as { tool_use_result?: unknown }).tool_use_result
+            : undefined
+        const launchedAsync = isAsyncLaunchStatus(toolUseResult)
         const bg = args.backgroundAgents
         for (const b of resultBlocks) {
           const text = normalizeToolResultContent(b.content)
@@ -728,11 +742,16 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
           // An agent moved to the background mid-run (task_started /
           // task_updated is_backgrounded) is already open; its tool_result
           // is not the launch-ack text but still is not its end.
+          const ackText = ASYNC_AGENT_LAUNCH_TEXT.test(text)
           const isAsync =
-            b.is_error !== true &&
-            (launchedAsync || ASYNC_AGENT_LAUNCH_TEXT.test(text) || bg.open.has(id))
-          if (isAsync) boundedSetAdd(bg.open, id)
-          else bg.open.delete(id)
+            b.is_error !== true && (launchedAsync || ackText || bg.open.has(id))
+          if (isAsync) {
+            boundedSetAdd(bg.open, id)
+            if (launchedAsync || ackText) {
+              const agentId = launchAgentId(toolUseResult, text)
+              if (agentId !== undefined) boundedMapSet(bg.taskToolUse, agentId, id)
+            }
+          } else bg.open.delete(id)
           yield* PubSub.publish(args.pubsub, {
             type: "tool-result",
             threadId: args.threadId,
@@ -791,22 +810,30 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
           }
           return
         }
-        if (typeof sys.tool_use_id !== "string" || sys.tool_use_id === "") return
+        // tool_use_id is optional on these messages; fall back to the
+        // task_id recorded from task_started or the async launch ack.
+        const taskId =
+          typeof sys.task_id === "string" && sys.task_id !== "" ? sys.task_id : undefined
+        const toolUseId =
+          typeof sys.tool_use_id === "string" && sys.tool_use_id !== ""
+            ? sys.tool_use_id
+            : taskId !== undefined
+              ? bg.taskToolUse.get(taskId)
+              : undefined
+        if (toolUseId === undefined) return
         if (sys.subtype === "task_started") {
           if (!isAgentTask(sys.task_type)) return
-          if (typeof sys.task_id === "string" && sys.task_id !== "") {
-            boundedMapSet(bg.taskToolUse, sys.task_id, sys.tool_use_id)
-          }
-          if (sys.is_backgrounded === true) yield* markBackgrounded(sys.tool_use_id)
+          if (taskId !== undefined) boundedMapSet(bg.taskToolUse, taskId, toolUseId)
+          if (sys.is_backgrounded === true) yield* markBackgrounded(toolUseId)
           return
         }
         if (sys.subtype === "task_notification") {
-          bg.open.delete(sys.tool_use_id)
-          if (typeof sys.task_id === "string") bg.taskToolUse.delete(sys.task_id)
+          bg.open.delete(toolUseId)
+          if (taskId !== undefined) bg.taskToolUse.delete(taskId)
           yield* PubSub.publish(args.pubsub, {
             type: "subagent-settled",
             threadId: args.threadId,
-            toolCallId: sys.tool_use_id,
+            toolCallId: toolUseId,
             status: sys.status === "failed" ? "error" : "done",
           })
           return
@@ -816,7 +843,7 @@ export const makeSdkMessageHandling = (deps: SdkMessageHandlingDeps) => {
           yield* PubSub.publish(args.pubsub, {
             type: "subagent-progress",
             threadId: args.threadId,
-            toolCallId: sys.tool_use_id,
+            toolCallId: toolUseId,
             ...(typeof sys.last_tool_name === "string" && sys.last_tool_name !== ""
               ? { tool: sys.last_tool_name }
               : {}),

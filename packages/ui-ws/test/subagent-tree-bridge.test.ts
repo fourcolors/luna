@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from "vitest"
 import {
   MAX_SEEN_CALLS,
+  MAX_SETTLED_NODES,
   SUBAGENT_IDLE_TTL_MS,
   SUBAGENT_SWEEP_INTERVAL_MS,
   createSubagentTreeBridge,
@@ -308,6 +309,68 @@ describe("subagent-tree-bridge", () => {
       // ...while the oldest was evicted, so the set did not grow without bound.
       b.observe("t1", { type: "tool-call", toolCallId: "first", name: "Agent", input: {} })
       expect(b.treeFor("t1").map((n) => n.id)).toEqual(["first"])
+    })
+
+    it("a replayed Agent call after seenCalls eviction never resets a live node", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      launch(b, "a1")
+      b.observe("t1", { type: "subagent-progress", toolCallId: "a1", tool: "Grep", toolCount: 7 })
+      // Later calls push "a1" out of the capped seenCalls.
+      for (let i = 0; i < MAX_SEEN_CALLS + 5; i++) {
+        b.observe("t1", { type: "tool-call", toolCallId: `x${i}`, name: "Bash" })
+      }
+      // A delayed forwarder replays the original spawn.
+      b.observe("t1", { type: "tool-call", toolCallId: "a1", name: "Agent", input: {} })
+      expect(b.treeFor("t1")).toEqual([
+        expect.objectContaining({ id: "a1", status: "running", tool: "Grep", toolCount: 7 }),
+      ])
+      // Still background: the turn's end does not close it.
+      b.observe("t1", { type: "turn-complete" })
+      expect(b.treeFor("t1").map((n) => [n.id, n.status])).toEqual([["a1", "running"]])
+    })
+
+    it("sustained background activity between turns keeps the tree bounded", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      const a = sink()
+      b.registerClient("c1", a.send)
+      launch(b, "root")
+      b.observe("t1", { type: "turn-complete" })
+      for (let i = 0; i < 1000; i++) {
+        const id = `c${i}`
+        b.observe("t1", { type: "tool-call", toolCallId: id, name: "Agent", parentToolUseId: "root", input: {} })
+        b.observe("t1", { type: "tool-result", toolCallId: id, status: "ok" })
+      }
+      const tree = b.treeFor("t1")
+      expect(tree.length).toBeLessThanOrEqual(MAX_SETTLED_NODES + 1)
+      expect(tree[0]).toMatchObject({ id: "root", status: "running" })
+      // The newest finished children are the ones kept.
+      expect(tree.some((n) => n.id === "c999")).toBe(true)
+      expect(tree.some((n) => n.id === "c0")).toBe(false)
+      expect(lastAgents(a.frames).length).toBeLessThanOrEqual(MAX_SETTLED_NODES + 1)
+
+      // Once the root settles its history stays bounded too.
+      b.observe("t1", { type: "subagent-settled", toolCallId: "root", status: "done" })
+      expect(b.treeFor("t1").length).toBeLessThanOrEqual(MAX_SETTLED_NODES + 1)
+    })
+
+    it("bounding keeps the ancestry of running nodes", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      // A foreground parent finished long ago with a background child still
+      // running under it.
+      b.observe("t1", { type: "tool-call", toolCallId: "p", name: "Agent", input: {} })
+      b.observe("t1", { type: "tool-call", toolCallId: "kid", name: "Agent", parentToolUseId: "p", input: {} })
+      b.observe("t1", { type: "tool-result", toolCallId: "kid", status: "ok", async: true })
+      b.observe("t1", { type: "tool-result", toolCallId: "p", status: "ok" })
+      for (let i = 0; i < MAX_SETTLED_NODES * 3; i++) {
+        b.observe("t1", { type: "tool-call", toolCallId: `s${i}`, name: "Agent", input: {} })
+        b.observe("t1", { type: "tool-result", toolCallId: `s${i}`, status: "ok" })
+      }
+      const ids = b.treeFor("t1").map((n) => n.id)
+      expect(ids).toContain("kid")
+      expect(ids).toContain("p")
+      expect(ids.length).toBeLessThanOrEqual(MAX_SETTLED_NODES + 2)
     })
 
     it("TTL backstop: an async node idle past the TTL is closed on the next observe", () => {
