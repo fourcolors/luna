@@ -4,9 +4,11 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest"
 import * as http from "node:http"
+import { EventEmitter } from "node:events"
 import { Context, Effect, Layer, ManagedRuntime } from "effect"
 import { Clock, ObservabilityService, UIService } from "@luna/core"
 import { startUIWebSocketServer } from "../src/server.js"
+import { JournalInFlight, JournalRateLimiter, handleJournalRequest } from "../src/journal-route.js"
 import type { JournalEntry, JournalSink } from "../src/journal-route.js"
 
 const WS_TOKEN = "test-token-1234567890"
@@ -36,12 +38,22 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-const startRig = async (opts: { sink?: boolean; journalToken?: string | null } = {}): Promise<Rig> => {
+type SubmitResult = Effect.Success<ReturnType<JournalSink["submit"]>>
+
+const startRig = async (
+  opts: {
+    sink?: boolean
+    journalToken?: string | null
+    deadlineMs?: number
+    // Replaces the immediate success, e.g. with a write that never finishes.
+    write?: () => Effect.Effect<SubmitResult>
+  } = {},
+): Promise<Rig> => {
   const received: JournalEntry[] = []
   const sink: JournalSink = {
     submit: (entry) => {
       received.push(entry)
-      return Effect.succeed({ ok: true as const, id: "ccj_test", deduped: false })
+      return opts.write?.() ?? Effect.succeed({ ok: true as const, id: "ccj_test", deduped: false })
     },
   }
   const serverLayer = Layer.effect(
@@ -53,6 +65,7 @@ const startRig = async (opts: { sink?: boolean; journalToken?: string | null } =
         pingIntervalMs: 0,
         journalSink: opts.sink === false ? null : sink,
         journalToken: opts.journalToken === undefined ? JOURNAL_TOKEN : opts.journalToken,
+        ...(opts.deadlineMs !== undefined ? { journalDeadlineMs: opts.deadlineMs } : {}),
       })
       return { port: handle.port }
     }),
@@ -238,5 +251,128 @@ describe("POST /v1/journal", () => {
     const rig = await startRig()
     expect((await request(rig.port, { method: "GET", path: "/v1/other" })).status).toBe(404)
     expect((await request(rig.port, { method: "GET", path: "/healthz" })).status).toBe(200)
+  })
+})
+
+const until = async (cond: () => boolean, ms = 3000): Promise<void> => {
+  const end = Date.now() + ms
+  while (!cond()) {
+    if (Date.now() > end) throw new Error("condition not met in time")
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
+// A never-finishing write that records when it is interrupted.
+const hanging = () => {
+  const state = { interrupted: false }
+  const write = () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => void (state.interrupted = true))))
+  return { state, write }
+}
+
+describe("POST /v1/journal deadlines and in-flight cap", () => {
+  it("a drip-fed body that keeps the socket busy is cut off at the absolute deadline", async () => {
+    const rig = await startRig({ deadlineMs: 300 })
+    const body = Buffer.from(JSON.stringify(goodEntry()))
+    const started = Date.now()
+    const res = await new Promise<number | "reset">((resolve) => {
+      const req = http.request(
+        {
+          host: "127.0.0.1",
+          port: rig.port,
+          method: "POST",
+          path: "/v1/journal",
+          headers: { ...authed(), "content-length": String(body.length) },
+          agent: false,
+        },
+        (r) => {
+          clearInterval(drip)
+          r.resume()
+          resolve(r.statusCode ?? 0)
+        },
+      )
+      req.on("error", () => {
+        clearInterval(drip)
+        resolve("reset")
+      })
+      // One byte every 20 ms: about 4 s for the whole body, never idle.
+      let i = 0
+      const drip = setInterval(() => {
+        if (i < body.length - 1) req.write(body.subarray(i, i + 1))
+        i++
+      }, 20)
+    })
+    expect(res).toBe(408)
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(rig.received).toHaveLength(0)
+  })
+
+  it("a hanging sink is interrupted at the deadline and the client gets 504", async () => {
+    const h = hanging()
+    const rig = await startRig({ deadlineMs: 300, write: h.write })
+    const r = await post(rig.port, goodEntry())
+    expect(r.status).toBe(504)
+    expect(JSON.parse(r.body)).toEqual({ ok: false, error: "timeout" })
+    await until(() => h.state.interrupted)
+  })
+
+  // Bun's node:http (the server runtime) does not report a client that drops
+  // while the response is pending, so this drives the handler directly with
+  // emitters standing in for Node's request, response and socket. Under Bun
+  // the absolute deadline above is what bounds such a request.
+  for (const target of ["response", "socket"] as const) {
+    it(`a client disconnect (${target} close) interrupts its sink write and frees the slot`, async () => {
+      const h = hanging()
+      const received: JournalEntry[] = []
+      const socket = Object.assign(new EventEmitter(), { remoteAddress: "127.0.0.1" })
+      const req = Object.assign(new EventEmitter(), {
+        method: "POST",
+        headers: { ...authed(), "content-length": "10" } as Record<string, string>,
+        socket,
+        setTimeout: () => {},
+        destroy: () => {},
+      })
+      const res = Object.assign(new EventEmitter(), {
+        headersSent: false,
+        writableFinished: false,
+        writeHead: () => {},
+        end: () => {},
+      })
+      const inFlight = new JournalInFlight(1)
+      const done = handleJournalRequest(req as never, res as never, {
+        token: JOURNAL_TOKEN,
+        sink: { submit: (e) => (received.push(e), h.write()) },
+        tokenEq: (a, b) => a === b,
+        rateLimiter: new JournalRateLimiter(),
+        inFlight,
+        deadlineMs: 60_000,
+        log: () => {},
+      })
+      req.emit("data", Buffer.from(JSON.stringify(goodEntry())))
+      req.emit("end")
+      await until(() => received.length === 1)
+      expect(inFlight.count).toBe(1)
+      ;(target === "response" ? res : socket).emit("close")
+      await done
+      expect(h.state.interrupted).toBe(true)
+      expect(inFlight.count).toBe(0)
+    })
+  }
+
+  it("a fifth concurrent request gets 503 busy, and slots free up afterwards", async () => {
+    let release!: () => void
+    const gate = new Promise<void>((r) => (release = r))
+    const rig = await startRig({
+      write: () =>
+        Effect.promise(() => gate).pipe(Effect.as({ ok: true as const, id: "ccj_test", deduped: false })),
+    })
+    const first = Array.from({ length: 4 }, () => post(rig.port, goodEntry()))
+    await until(() => rig.received.length === 4)
+    const fifth = await post(rig.port, goodEntry())
+    expect(fifth.status).toBe(503)
+    expect(JSON.parse(fifth.body)).toEqual({ ok: false, error: "busy" })
+    expect(rig.received).toHaveLength(4)
+    release()
+    for (const r of await Promise.all(first)) expect(r.status).toBe(200)
+    expect((await post(rig.port, goodEntry())).status).toBe(200)
   })
 })

@@ -60,6 +60,7 @@ import type {
 import type { LocalShellBridge } from "./local-shell-bridge.js"
 import {
   JOURNAL_PATH,
+  JournalInFlight,
   JournalRateLimiter,
   handleJournalRequest,
   resolveJournalToken,
@@ -630,6 +631,8 @@ export interface UIWebSocketServerConfig {
    * chars; shorter values disable the route. Never the main ui-ws token.
    */
   readonly journalToken?: string | null
+  /** Test hook: overrides the 15 s absolute deadline per journal request. */
+  readonly journalDeadlineMs?: number
   /**
    * Optional setup-mode pty factory. When provided:
    *   - The server registers an inbound message handler even when chat /
@@ -978,6 +981,7 @@ export const startUIWebSocketServer = (
     const journalSink = config.journalSink ?? null
     const journalToken = resolveJournalToken(config.journalToken)
     const journalRateLimiter = new JournalRateLimiter()
+    const journalInFlight = new JournalInFlight()
 
     const httpServer = http.createServer((req, res) => {
       // Match on the pathname only — req.url includes the query string, so an
@@ -1040,6 +1044,8 @@ export const startUIWebSocketServer = (
           sink: journalSink,
           tokenEq,
           rateLimiter: journalRateLimiter,
+          inFlight: journalInFlight,
+          ...(config.journalDeadlineMs !== undefined ? { deadlineMs: config.journalDeadlineMs } : {}),
         }).catch(() => {
           if (!res.headersSent) res.writeHead(500)
           res.end()

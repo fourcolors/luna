@@ -13,7 +13,12 @@ import { Effect } from "effect"
 export const JOURNAL_PATH = "/v1/journal"
 export const JOURNAL_MAX_BODY_BYTES = 64 * 1024
 export const JOURNAL_MIN_TOKEN_LENGTH = 32
+/** Socket inactivity timeout. */
 export const JOURNAL_REQUEST_TIMEOUT_MS = 10_000
+/** Absolute deadline for one request, body and sink write included. */
+export const JOURNAL_REQUEST_DEADLINE_MS = 15_000
+/** Journal requests past auth that may be reading or writing at once. */
+export const JOURNAL_MAX_IN_FLIGHT = 4
 
 export const JOURNAL_END_REASONS = [
   "clear",
@@ -330,11 +335,31 @@ export class JournalRateLimiter {
   }
 }
 
+/** Counts authenticated journal requests in progress; one per server. */
+export class JournalInFlight {
+  private n = 0
+  constructor(readonly max: number = JOURNAL_MAX_IN_FLIGHT) {}
+  get count(): number {
+    return this.n
+  }
+  tryAcquire(): boolean {
+    if (this.n >= this.max) return false
+    this.n++
+    return true
+  }
+  release(): void {
+    this.n = Math.max(0, this.n - 1)
+  }
+}
+
 export interface JournalRouteDeps {
   readonly token: string | null
   readonly sink: JournalSink | null
   readonly tokenEq: (a: string, b: string) => boolean
   readonly rateLimiter: JournalRateLimiter
+  readonly inFlight: JournalInFlight
+  /** Overrides JOURNAL_REQUEST_DEADLINE_MS; tests use a short one. */
+  readonly deadlineMs?: number
   readonly log?: (msg: string) => void
 }
 
@@ -353,16 +378,27 @@ const sendJson = (
   res.end(JSON.stringify(body))
 }
 
-const readBody = (req: http.IncomingMessage, cap: number): Promise<Buffer | "too_large" | "aborted"> =>
+const readBody = (
+  req: http.IncomingMessage,
+  cap: number,
+  signal: AbortSignal,
+): Promise<Buffer | "too_large" | "aborted"> =>
   new Promise((resolve) => {
     const chunks: Buffer[] = []
     let size = 0
     let done = false
+    const onAbort = () => finish("aborted")
     const finish = (v: Buffer | "too_large" | "aborted") => {
       if (done) return
       done = true
+      signal.removeEventListener("abort", onAbort)
       resolve(v)
     }
+    if (signal.aborted) {
+      finish("aborted")
+      return
+    }
+    signal.addEventListener("abort", onAbort)
     req.on("data", (chunk: Buffer) => {
       if (done) return
       size += chunk.length
@@ -430,34 +466,77 @@ export async function handleJournalRequest(
     sendJson(res, 429, { ok: false, error: "rate_limited" }, { "retry-after": String(rate.retryAfterSec) })
     return
   }
-  const body = await readBody(req, JOURNAL_MAX_BODY_BYTES)
-  if (body === "too_large") {
-    tooLarge(req, res)
+  if (!deps.inFlight.tryAcquire()) {
+    sendJson(res, 503, { ok: false, error: "busy" }, { "retry-after": "5" })
     return
   }
-  if (body === "aborted") return
 
-  let parsed: unknown
+  // One absolute deadline covers a trickled body and a hanging sink alike;
+  // the socket timeout above only catches total silence. A client that goes
+  // away aborts the same way, so its sink write is interrupted too.
+  const abort = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    abort.abort()
+  }, deps.deadlineMs ?? JOURNAL_REQUEST_DEADLINE_MS)
+  const onClose = () => {
+    if (!res.writableFinished) abort.abort()
+  }
+  // Both: Node signals a dropped client on the response, Bun on the socket.
+  res.on("close", onClose)
+  const socket = req.socket
+  socket.on("close", onClose)
+  const giveUp = (status: number, error: string): void => {
+    if (!timedOut || res.headersSent) {
+      req.destroy()
+      return
+    }
+    res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", connection: "close" })
+    res.end(JSON.stringify({ ok: false, error }), () => req.destroy())
+  }
   try {
-    parsed = JSON.parse(body.toString("utf8"))
-  } catch {
-    sendJson(res, 400, { ok: false, error: "bad_json" })
-    return
-  }
-  const v = validateJournalEntry(parsed)
-  if (!v.ok) {
-    sendJson(res, 422, { ok: false, errors: v.errors })
-    return
-  }
-  let result: JournalSubmitResult
-  try {
-    result = await Effect.runPromise(deps.sink.submit(v.entry))
-  } catch {
-    result = { ok: false }
-  }
-  if (result.ok) {
-    sendJson(res, 200, { ok: true, id: result.id, deduped: result.deduped })
-  } else {
-    sendJson(res, 500, { ok: false, error: "journal_write_failed" })
+    const body = await readBody(req, JOURNAL_MAX_BODY_BYTES, abort.signal)
+    if (body === "too_large") {
+      tooLarge(req, res)
+      return
+    }
+    if (body === "aborted") {
+      giveUp(408, "timeout")
+      return
+    }
+
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body.toString("utf8"))
+    } catch {
+      sendJson(res, 400, { ok: false, error: "bad_json" })
+      return
+    }
+    const v = validateJournalEntry(parsed)
+    if (!v.ok) {
+      sendJson(res, 422, { ok: false, errors: v.errors })
+      return
+    }
+    let result: JournalSubmitResult
+    try {
+      result = await Effect.runPromise(deps.sink.submit(v.entry), { signal: abort.signal })
+    } catch {
+      if (abort.signal.aborted) {
+        giveUp(504, "timeout")
+        return
+      }
+      result = { ok: false }
+    }
+    if (result.ok) {
+      sendJson(res, 200, { ok: true, id: result.id, deduped: result.deduped })
+    } else {
+      sendJson(res, 500, { ok: false, error: "journal_write_failed" })
+    }
+  } finally {
+    clearTimeout(timer)
+    res.off("close", onClose)
+    socket.off("close", onClose)
+    deps.inFlight.release()
   }
 }
