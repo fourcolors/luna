@@ -8,6 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest"
 import {
+  MAX_REMOVED_NODES,
   MAX_SEEN_CALLS,
   MAX_SETTLED_NODES,
   SUBAGENT_IDLE_TTL_MS,
@@ -298,7 +299,7 @@ describe("subagent-tree-bridge", () => {
     it("seenCalls stays bounded while still guarding recent ids", () => {
       const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
       b.registerClient("c1", () => {})
-      b.observe("t1", { type: "tool-call", toolCallId: "first", name: "Agent", input: {} })
+      b.observe("t1", { type: "tool-call", toolCallId: "first", name: "Bash" })
       for (let i = 0; i < MAX_SEEN_CALLS + 5; i++) {
         b.observe("t1", { type: "tool-call", toolCallId: `x${i}`, name: "Bash" })
       }
@@ -328,6 +329,39 @@ describe("subagent-tree-bridge", () => {
       // Still background: the turn's end does not close it.
       b.observe("t1", { type: "turn-complete" })
       expect(b.treeFor("t1").map((n) => [n.id, n.status])).toEqual([["a1", "running"]])
+    })
+
+    it("a replayed call for a node dropped by bounding after seenCalls eviction stays gone", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      launch(b, "root")
+      b.observe("t1", { type: "turn-complete" })
+      for (let i = 0; i < 400; i++) {
+        const id = `c${i}`
+        b.observe("t1", { type: "tool-call", toolCallId: id, name: "Agent", parentToolUseId: "root", input: {} })
+        b.observe("t1", { type: "tool-result", toolCallId: id, status: "ok" })
+      }
+      expect(b.treeFor("t1").some((n) => n.id === "c0")).toBe(false)
+      // A delayed forwarder replays c0's spawn; c0 is out of seenCalls and the tree.
+      b.observe("t1", { type: "tool-call", toolCallId: "c0", name: "Agent", parentToolUseId: "root", input: {} })
+      expect(b.treeFor("t1").some((n) => n.id === "c0")).toBe(false)
+      b.observe("t1", { type: "turn-complete" })
+      expect(b.treeFor("t1").map((n) => n.id)).toEqual(["root"])
+    })
+
+    it("the removed-node memory stays bounded", () => {
+      const b = createSubagentTreeBridge({ sweepIntervalMs: 0 })
+      b.registerClient("c1", () => {})
+      b.observe("t1", { type: "tool-call", toolCallId: "old", name: "Agent", input: {} })
+      b.observe("t1", { type: "turn-complete" })
+      for (let i = 0; i < MAX_REMOVED_NODES + MAX_SEEN_CALLS; i++) {
+        b.observe("t1", { type: "tool-call", toolCallId: `r${i}`, name: "Agent", input: {} })
+        b.observe("t1", { type: "tool-result", toolCallId: `r${i}`, status: "ok" })
+      }
+      b.observe("t1", { type: "turn-complete" })
+      // "old" left both capped sets, so it is accepted again.
+      b.observe("t1", { type: "tool-call", toolCallId: "old", name: "Agent", input: {} })
+      expect(b.treeFor("t1").map((n) => n.id)).toEqual(["old"])
     })
 
     it("sustained background activity between turns keeps the tree bounded", () => {

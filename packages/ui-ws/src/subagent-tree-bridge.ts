@@ -106,6 +106,11 @@ export const MAX_SEEN_CALLS = 256
  *  broadcast would carry the whole history. */
 export const MAX_SETTLED_NODES = 32
 
+/** Cap on remembered ids of nodes dropped by bounding or pruning. A delayed
+ *  replay of such a call may arrive after its id left the capped seenCalls;
+ *  this set stops it from being re-created as a running node. */
+export const MAX_REMOVED_NODES = 512
+
 /** The SDK's subagent spawn tool surfaces under these wire names. */
 const AGENT_TOOL_NAMES = new Set(["Agent", "Task"])
 
@@ -135,6 +140,8 @@ interface ThreadState {
   readonly nodes: Map<string, MutableNode>
   readonly order: string[]
   readonly seenCalls: Set<string>
+  /** Ids of nodes removed by boundSettled / pruneSettled, oldest first. */
+  readonly removed: Set<string>
   announced: boolean
 }
 
@@ -193,6 +200,7 @@ export const createSubagentTreeBridge = (
       nodes: new Map(),
       order: [],
       seenCalls: new Set(),
+      removed: new Set(),
       announced: false,
     }
     threads.set(threadId, t)
@@ -212,6 +220,19 @@ export const createSubagentTreeBridge = (
     if (t.seenCalls.size > MAX_SEEN_CALLS) {
       const oldest = t.seenCalls.values().next().value
       if (oldest !== undefined) t.seenCalls.delete(oldest)
+    }
+  }
+
+  /** Drop a node from the tree, remembering its id (capped, oldest out). */
+  const removeNode = (t: ThreadState, index: number): void => {
+    const id = t.order[index]!
+    t.nodes.delete(id)
+    t.order.splice(index, 1)
+    t.removed.delete(id)
+    t.removed.add(id)
+    if (t.removed.size > MAX_REMOVED_NODES) {
+      const oldest = t.removed.values().next().value
+      if (oldest !== undefined) t.removed.delete(oldest)
     }
   }
 
@@ -305,10 +326,7 @@ export const createSubagentTreeBridge = (
     for (let i = t.order.length - 1; i >= 0; i--) {
       const id = t.order[i]!
       const n = t.nodes.get(id)
-      if (!n || n.status !== "running") {
-        t.nodes.delete(id)
-        t.order.splice(i, 1)
-      }
+      if (!n || n.status !== "running") removeNode(t, i)
     }
   }
 
@@ -333,10 +351,7 @@ export const createSubagentTreeBridge = (
     for (const n of settled.slice(0, MAX_SETTLED_NODES)) keepWithAncestors(n)
     for (let i = t.order.length - 1; i >= 0; i--) {
       const id = t.order[i]!
-      if (!keep.has(id)) {
-        t.nodes.delete(id)
-        t.order.splice(i, 1)
-      }
+      if (!keep.has(id)) removeNode(t, i)
     }
   }
 
@@ -397,8 +412,13 @@ export const createSubagentTreeBridge = (
         // nodes.has guards independently of seenCalls: once later calls
         // evict an id from the capped seenCalls, a delayed replay of a live
         // Agent call must not reset it (losing its async flag and count) or
-        // add a duplicate row.
-        if (!t.seenCalls.has(frame.toolCallId) && !t.nodes.has(frame.toolCallId)) {
+        // add a duplicate row. `removed` covers a node that was also
+        // dropped by bounding, which must not come back as running.
+        if (
+          !t.seenCalls.has(frame.toolCallId) &&
+          !t.nodes.has(frame.toolCallId) &&
+          !t.removed.has(frame.toolCallId)
+        ) {
           rememberCall(t, frame.toolCallId)
           if (frame.name && AGENT_TOOL_NAMES.has(frame.name)) {
             // A subagent spawn → a new node in the tree. (Involvement
