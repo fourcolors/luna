@@ -53,6 +53,7 @@ export function createDom() {
       mainChatCard:        document.getElementById('main-chat-card'),
       mainChatTitle:       document.getElementById('main-chat-title'),
       mainChatPop:         document.getElementById('main-chat-pop'),
+      mainChatAgents:      document.getElementById('main-chat-agents'),
       toggleThreads:       document.getElementById('toggle-threads'),
       threadDivider:       document.getElementById('thread-divider'),
       // Phase 3 D3: UserAsk / survey panel handles.

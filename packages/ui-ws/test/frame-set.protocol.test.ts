@@ -81,6 +81,11 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "artifacts-extracted",
   "tool-call",
   "tool-result",
+  // Background Agent lifecycle (SDK task_notification / task_progress).
+  // Additive: older clients ignore unknown types, and the subagent-tree
+  // bridge reads them server-side before the wire.
+  "subagent-settled",
+  "subagent-progress",
   "turn-complete",
   "result-delivered",
   "account-list",
@@ -333,8 +338,10 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // Base 61/44 -> 63 server / 46 client. Queue + Steer adds queue-update
     // (server) and steer (client) -> 64 server / 47 client. Additive and
     // self-gating: a client only sends steer for an id it got in a
-    // queue-update, which an older server never sends.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(64)
+    // queue-update, which an older server never sends. Background Agent
+    // lifecycle adds subagent-settled + subagent-progress (server) -> 66
+    // server / 47 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(66)
     expect(literalsForUnion(src, "ClientFrame")).toHaveLength(47)
   })
 

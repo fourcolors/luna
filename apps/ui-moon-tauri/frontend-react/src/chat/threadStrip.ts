@@ -213,6 +213,9 @@ const AGENT_ROW_SKELETON =
  *  drawer cannot leak its ids. */
 const paintedAgentIds = new WeakMap<HTMLElement, Set<string>>()
 
+/** Must match the `thread-agent-pulse` duration in chat.html. */
+export const AGENT_PULSE_MS = 1250
+
 /** One live subagent, rendered as a sibling row under its thread.
  *
  *  NOT focusable and NOT wired for drag: a subagent is a live readout, not a
@@ -249,9 +252,37 @@ export function buildAgentRow(entry: LiveAgentRow, isNew = true): HTMLElement {
       running && node.toolCount > 1 ? `${label} · ${node.toolCount} tools` : label
   }
 
+  if (node.status === "running") {
+    // The strip is rebuilt on every subagent frame. Anchoring the pulse to
+    // the wall clock keeps its phase continuous across rebuilds instead of
+    // restarting it each time.
+    const dot = el.querySelector(".thread-agent-dot") as HTMLElement | null
+    if (dot) dot.style.animationDelay = `${-(Date.now() % AGENT_PULSE_MS)}ms`
+  }
+
   if (node.description) el.title = String(node.description)
   el.setAttribute("aria-label", `${node.name || "Agent"} — ${node.status}`)
   return el
+}
+
+/** Paint live subagent rows into a standalone container: the Main chat's
+ *  agent list, which sits under its card rather than in the thread strip.
+ *  Hidden when there is nothing in flight. */
+export function renderAgentRowsInto(
+  host: HTMLElement | null | undefined,
+  entries: readonly LiveAgentRow[],
+): void {
+  if (!host) return
+  const seen = paintedAgentIds.get(host) || new Set<string>()
+  const painted = new Set<string>()
+  host.textContent = ""
+  for (const entry of entries) {
+    if (!entry || !entry.node) continue
+    painted.add(entry.node.id)
+    host.appendChild(buildAgentRow(entry, !seen.has(entry.node.id)))
+  }
+  paintedAgentIds.set(host, painted)
+  host.hidden = painted.size === 0
 }
 
 /** Append a thread's live subagents directly after its row. No-op when the

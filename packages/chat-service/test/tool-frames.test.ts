@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from "vitest"
-import { Cause, Chunk, Effect, Fiber, Layer, Stream } from "effect"
+import { Cause, Chunk, Context, Effect, Fiber, Layer, Stream } from "effect"
 import { SDKError } from "@luna/core"
 import { unlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -23,6 +23,7 @@ import {
   normalizeToolResultContent,
   truncateOutput,
 } from "../src/chat-service.js"
+import { sdkTraceRecord } from "../src/chat-service-sdk-messages.js"
 
 describe("normalizeToolResultContent", () => {
   it("returns a string payload unchanged", () => {
@@ -679,5 +680,331 @@ describe("attachHistoryToolResults", () => {
       [msg("a1", [{ id: "c1", name: "Read", input: {} }])],
     )
     expect(out[0]?.toolUses[0]?.result?.output).toBe("first")
+  })
+})
+
+/* -------------------------------------------------------------------------- */
+/* Background Agent lifecycle (SDK >= 0.3.202 runs Agent in the background). */
+/* The Agent tool_result is only a launch ack; the real end arrives as a      */
+/* system/task_notification, progress as system/task_progress.                */
+/* -------------------------------------------------------------------------- */
+
+const userToolResult = (
+  uuid: string,
+  toolUseId: string,
+  text: string,
+  extra: Record<string, unknown> = {},
+): SDKMessage =>
+  ({
+    type: "user",
+    session_id: "thr-bg",
+    uuid,
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: toolUseId, is_error: false, content: [{ type: "text", text }] },
+      ],
+    },
+    ...extra,
+  }) as unknown as SDKMessage
+
+const systemMsg = (fields: Record<string, unknown>): SDKMessage =>
+  ({ type: "system", session_id: "thr-bg", uuid: `sys_${Math.random()}`, ...fields }) as unknown as SDKMessage
+
+describe("ChatService background Agent frames", () => {
+  it(
+    "flags async launches, and maps task_notification / task_progress to subagent frames",
+    async () => {
+      const frames = await collectFrames([
+        userToolResult("u1", "ag_status", "Agent is working in the background.", {
+          tool_use_result: { status: "async_launched", isAsync: true, agentId: "x", description: "d", prompt: "p", outputFile: "/tmp/o" },
+        }),
+        userToolResult("u2", "ag_text", "Async agent launched successfully.\nagentId: x"),
+        userToolResult("u3", "plain", "3 hits found"),
+        systemMsg({ subtype: "task_notification", task_id: "k1", tool_use_id: "ag_status", status: "completed", output_file: "", summary: "" }),
+        systemMsg({ subtype: "task_notification", task_id: "k2", tool_use_id: "ag_text", status: "failed", output_file: "", summary: "" }),
+        systemMsg({ subtype: "task_notification", task_id: "k3", tool_use_id: "ag_stop", status: "stopped", output_file: "", summary: "" }),
+        systemMsg({
+          subtype: "task_progress",
+          task_id: "k1",
+          tool_use_id: "ag_status",
+          description: "d",
+          last_tool_name: "Grep",
+          usage: { total_tokens: 10, tool_uses: 4, duration_ms: 5 },
+        }),
+        systemMsg({ subtype: "task_progress", task_id: "k4", tool_use_id: "ag_bare", description: "d", usage: {} }),
+        systemMsg({ subtype: "task_notification", task_id: "k5", status: "completed", output_file: "", summary: "" }),
+        systemMsg({ subtype: "init" }),
+      ])
+      const results = frames.filter((f) => f.type === "tool-result")
+      const byId = (id: string) => results.find((f) => f.type === "tool-result" && f.toolCallId === id)
+      expect(byId("ag_status")).toMatchObject({ async: true, status: "ok" })
+      expect(byId("ag_text")).toMatchObject({ async: true })
+      expect(byId("plain")).toBeDefined()
+      expect(byId("plain")).not.toHaveProperty("async")
+
+      const settled = frames.filter((f) => f.type === "subagent-settled")
+      expect(settled).toEqual([
+        { type: "subagent-settled", threadId: expect.any(String), toolCallId: "ag_status", status: "done" },
+        { type: "subagent-settled", threadId: expect.any(String), toolCallId: "ag_text", status: "error" },
+        { type: "subagent-settled", threadId: expect.any(String), toolCallId: "ag_stop", status: "done" },
+      ])
+
+      const progress = frames.filter((f) => f.type === "subagent-progress")
+      expect(progress).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_status", tool: "Grep", toolCount: 4 },
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_bare" },
+      ])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "does not flag a tool_use_result status on a message carrying several results",
+    async () => {
+      const frames = await collectFrames([
+        ({
+          type: "user",
+          session_id: "thr-bg",
+          uuid: "multi",
+          parent_tool_use_id: null,
+          tool_use_result: { status: "async_launched" },
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "m1", content: "one" },
+              { type: "tool_result", tool_use_id: "m2", content: "two" },
+            ],
+          },
+        }) as unknown as SDKMessage,
+      ])
+      const results = frames.filter((f) => f.type === "tool-result")
+      expect(results).toHaveLength(2)
+      for (const r of results) expect(r).not.toHaveProperty("async")
+    },
+    { timeout: 10_000 },
+  )
+})
+
+/** Like collectFrames, but runs `after` once the fake SDK has emitted, and
+ *  lets the fake query end on its own when `endStream` is set. */
+const collectFramesAround = (
+  msgs: ReadonlyArray<SDKMessage>,
+  opts: {
+    readonly endStream?: boolean
+    readonly after?: (
+      chat: Context.Service.Shape<typeof ChatService>,
+      threadId: string,
+    ) => Effect.Effect<unknown>
+  } = {},
+): Promise<ReadonlyArray<ChatFrame>> => {
+  const fakeLayer = SDKClient.fake((p) => {
+    if (!opts.endStream) return queryYielding(p.prompt as AsyncIterable<SDKUserMessage>, msgs)
+    const prompt = p.prompt as AsyncIterable<SDKUserMessage>
+    async function* gen(): AsyncGenerator<SDKMessage, void> {
+      for await (const _u of prompt) {
+        for (const m of msgs) yield m
+        return
+      }
+    }
+    return Object.assign(gen(), {
+      interrupt: async () => {},
+      setPermissionMode: async () => {},
+      setModel: async () => {},
+      applyFlagSettings: async () => {},
+      setMaxThinkingTokens: async () => {},
+      supplyToolPermissionResponse: async () => {},
+      mcpServerStatus: async () => ({}),
+    } as Partial<Query>) as Query
+  })
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const chat = yield* ChatService
+        const t = yield* chat.createThread({ model: "claude-test" })
+        const collected: ChatFrame[] = []
+        const fiber = yield* Effect.forkChild(
+          chat.subscribe(t.id).pipe(
+            Stream.tap((f) => Effect.sync(() => collected.push(f))),
+            Stream.runDrain,
+          ),
+        )
+        yield* Effect.sleep("30 millis")
+        yield* chat.send(t.id, "go")
+        yield* Effect.sleep("500 millis")
+        if (opts.after) yield* opts.after(chat, t.id)
+        yield* Effect.sleep("200 millis")
+        yield* Fiber.interrupt(fiber)
+        return collected as ReadonlyArray<ChatFrame>
+      }),
+    ).pipe(Effect.provide(fullLayer(fakeLayer))),
+  )
+}
+
+const settledFrames = (frames: ReadonlyArray<ChatFrame>) =>
+  frames
+    .filter((f) => f.type === "subagent-settled")
+    .map((f) => (f.type === "subagent-settled" ? [f.toolCallId, f.status] : []))
+
+describe("ChatService background Agent teardown", () => {
+  it(
+    "settles a still-open background agent when the thread is closed",
+    async () => {
+      const frames = await collectFramesAround(
+        [
+          userToolResult("u1", "ag_open", "Async agent launched successfully."),
+          userToolResult("u2", "ag_done", "Async agent launched successfully."),
+          systemMsg({ subtype: "task_notification", task_id: "k1", tool_use_id: "ag_done", status: "completed", output_file: "", summary: "" }),
+        ],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      expect(settledFrames(frames)).toEqual([
+        ["ag_done", "done"],
+        ["ag_open", "done"],
+      ])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "settles a still-open background agent when the replies stream ends",
+    async () => {
+      const frames = await collectFramesAround(
+        [userToolResult("u1", "ag_orphan", "Async agent launched successfully.")],
+        { endStream: true },
+      )
+      const settled = settledFrames(frames)
+      expect(settled).toContainEqual(["ag_orphan", "done"])
+      // Settled once: the thread's own close later finds nothing open.
+      expect(settled.filter(([id]) => id === "ag_orphan")).toHaveLength(1)
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "leaves nothing to settle for a foreground agent",
+    async () => {
+      const frames = await collectFramesAround(
+        [userToolResult("u1", "ag_fg", "the agent's final answer")],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      expect(settledFrames(frames)).toEqual([])
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("ChatService agent moved to the background mid-run", () => {
+  it(
+    "marks task_started is_backgrounded and keeps its later tool_result async",
+    async () => {
+      const frames = await collectFramesAround(
+        [
+          systemMsg({ subtype: "task_started", task_id: "k1", tool_use_id: "ag_bg", description: "d", task_type: "local_agent", is_backgrounded: true }),
+          systemMsg({ subtype: "task_started", task_id: "k2", tool_use_id: "bash_bg", description: "d", task_type: "local_bash", is_backgrounded: true }),
+          systemMsg({ subtype: "task_started", task_id: "k3", tool_use_id: "ag_fg", description: "d", task_type: "local_agent", is_backgrounded: false }),
+          userToolResult("u1", "ag_bg", "Agent moved to the background."),
+          userToolResult("u2", "ag_fg", "final answer"),
+        ],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      const progress = frames.filter((f) => f.type === "subagent-progress")
+      expect(progress).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_bg", async: true },
+      ])
+      const result = (id: string) =>
+        frames.find((f) => f.type === "tool-result" && f.toolCallId === id)
+      expect(result("ag_bg")).toMatchObject({ async: true })
+      expect(result("ag_fg")).not.toHaveProperty("async")
+      expect(settledFrames(frames)).toEqual([["ag_bg", "done"]])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "resolves task_updated through its task_started and settles a killed agent",
+    async () => {
+      const frames = await collectFramesAround(
+        [
+          systemMsg({ subtype: "task_started", task_id: "k1", tool_use_id: "ag_mid", description: "d", task_type: "local_agent" }),
+          systemMsg({ subtype: "task_updated", task_id: "k1", patch: { is_backgrounded: true } }),
+          systemMsg({ subtype: "task_updated", task_id: "k1", patch: { is_backgrounded: true } }),
+          systemMsg({ subtype: "task_updated", task_id: "unknown", patch: { is_backgrounded: true } }),
+          userToolResult("u1", "ag_mid", "Agent moved to the background."),
+          systemMsg({ subtype: "task_updated", task_id: "k1", patch: { status: "killed" } }),
+        ],
+        { after: (chat, id) => chat.closeThread(id) },
+      )
+      const progress = frames.filter((f) => f.type === "subagent-progress")
+      expect(progress).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_mid", async: true },
+      ])
+      expect(frames.find((f) => f.type === "tool-result" && f.toolCallId === "ag_mid")).toMatchObject({ async: true })
+      expect(settledFrames(frames)).toEqual([["ag_mid", "done"]])
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("ChatService task messages without tool_use_id", () => {
+  it(
+    "resolves progress and completion through task_started's task_id",
+    async () => {
+      const frames = await collectFramesAround([
+        systemMsg({ subtype: "task_started", task_id: "k1", tool_use_id: "ag_s", description: "d", task_type: "local_agent" }),
+        userToolResult("u1", "ag_s", "Async agent launched successfully."),
+        systemMsg({ subtype: "task_progress", task_id: "k1", description: "d", last_tool_name: "Read", usage: { tool_uses: 2 } }),
+        systemMsg({ subtype: "task_notification", task_id: "k1", status: "completed", output_file: "", summary: "" }),
+        // Unknown task, no tool_use_id: nothing to resolve.
+        systemMsg({ subtype: "task_notification", task_id: "k9", status: "completed", output_file: "", summary: "" }),
+      ])
+      expect(frames.filter((f) => f.type === "subagent-progress")).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_s", tool: "Read", toolCount: 2 },
+      ])
+      expect(settledFrames(frames)).toEqual([["ag_s", "done"]])
+    },
+    { timeout: 10_000 },
+  )
+
+  it(
+    "resolves them through the async launch ack's agent id",
+    async () => {
+      const frames = await collectFramesAround([
+        userToolResult("u1", "ag_r", "Agent is working in the background.", {
+          tool_use_result: { status: "async_launched", agentId: "agt1", description: "d", prompt: "p" },
+        }),
+        userToolResult("u2", "ag_t", "Async agent launched successfully.\nagentId: agt2 (internal)"),
+        systemMsg({ subtype: "task_progress", task_id: "agt1", description: "d", usage: { tool_uses: 3 } }),
+        systemMsg({ subtype: "task_notification", task_id: "agt1", status: "failed", output_file: "", summary: "" }),
+        systemMsg({ subtype: "task_notification", task_id: "agt2", status: "completed", output_file: "", summary: "" }),
+      ])
+      expect(frames.filter((f) => f.type === "subagent-progress")).toEqual([
+        { type: "subagent-progress", threadId: expect.any(String), toolCallId: "ag_r", toolCount: 3 },
+      ])
+      expect(settledFrames(frames)).toEqual([
+        ["ag_r", "error"],
+        ["ag_t", "done"],
+      ])
+    },
+    { timeout: 10_000 },
+  )
+})
+
+describe("sdkTraceRecord", () => {
+  const toolResult = (text: string): SDKMessage =>
+    userToolResult("u", "id", text) as SDKMessage
+
+  it("keeps the text of a background launch ack", () => {
+    const r = sdkTraceRecord("thr", toolResult("Async agent launched successfully."))
+    expect(r["result_text"]).toBe("Async agent launched successfully.")
+    expect(r["result_length"]).toBeUndefined()
+  })
+
+  it("logs only the length of any other tool output", () => {
+    const r = sdkTraceRecord("thr", toolResult("API_KEY=placeholder-secret"))
+    expect(r["result_text"]).toBeUndefined()
+    expect(r["result_length"]).toBe("API_KEY=placeholder-secret".length)
+    expect(JSON.stringify(r)).not.toContain("placeholder-secret")
   })
 })

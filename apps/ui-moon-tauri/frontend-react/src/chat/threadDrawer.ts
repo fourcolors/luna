@@ -683,6 +683,14 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
       const t = (Array.isArray(State.threads) ? State.threads : [])
         .find((x) => x && x.id === mainId) || null;
       card.hidden = !t;
+      // The Main chat is filtered out of the strip, so its live subagents
+      // need their own home under the card or they never show anywhere.
+      try {
+        ThreadStrip.renderAgentRowsInto(
+          DOM.mainChatAgents,
+          t ? ThreadListLogic.liveAgentsForThread(State.subagentsByThread, t.id) : [],
+        );
+      } catch (_) { /* a live readout must never take the card down */ }
       if (!t) return;
       const title = (t.title && String(t.title).trim()) || 'Untitled thread';
       if (DOM.mainChatTitle) DOM.mainChatTitle.textContent = title;

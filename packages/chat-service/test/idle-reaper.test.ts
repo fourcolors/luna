@@ -12,6 +12,7 @@
  */
 import { describe, expect, it } from "vitest"
 import {
+  BACKGROUND_AGENT_REAP_GRACE_MS,
   DEFAULT_IDLE_REAP_MS,
   isThreadIdleReapable,
   parseIdleReapMs,
@@ -91,6 +92,21 @@ describe("isThreadIdleReapable", () => {
         inFlightTurnId: null,
         idleReapMs,
       }),
+    ).toBe(true)
+  })
+
+  it("holds off on a thread with an open background agent until the grace", () => {
+    const now = 10 * BACKGROUND_AGENT_REAP_GRACE_MS
+    const open = { now, inFlightTurnId: null, idleReapMs, openBackgroundAgents: 1 }
+    expect(isThreadIdleReapable({ ...open, lastActivity: now - idleReapMs })).toBe(false)
+    expect(
+      isThreadIdleReapable({ ...open, lastActivity: now - BACKGROUND_AGENT_REAP_GRACE_MS + 1 }),
+    ).toBe(false)
+    expect(
+      isThreadIdleReapable({ ...open, lastActivity: now - BACKGROUND_AGENT_REAP_GRACE_MS }),
+    ).toBe(true)
+    expect(
+      isThreadIdleReapable({ ...open, openBackgroundAgents: 0, lastActivity: now - idleReapMs }),
     ).toBe(true)
   })
 })
