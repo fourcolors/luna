@@ -36,20 +36,31 @@ const entry = (patch: Partial<JournalEntry> = {}): JournalEntry => ({
   ...patch,
 })
 
-const fakes = (opts: { conflictOnRecord?: boolean } = {}) => {
+const fakes = (opts: { failPuts?: number } = {}) => {
   const memory = new Map<string, MemoryRecord>()
   const notes = new Map<string, AgentNote>()
   let recordCalls = 0
+  let putCalls = 0
+  let failPuts = opts.failPuts ?? 0
   const mem = {
-    put: (r: MemoryRecord) => Effect.sync(() => void memory.set(r.id, r)),
+    // Yields first, so two concurrent submits interleave inside the write.
+    put: (r: MemoryRecord) =>
+      Effect.yieldNow.pipe(
+        Effect.flatMap(() => {
+          putCalls++
+          if (failPuts > 0) {
+            failPuts--
+            return Effect.die(new Error("interrupted write"))
+          }
+          return Effect.sync(() => void memory.set(r.id, r))
+        }),
+      ),
+    get: (id: string) => Effect.sync(() => memory.get(id) ?? null),
   }
   const agentNotes = {
     getById: (id: string) => Effect.sync(() => notes.get(id) ?? null),
     record: (input: { id?: string; sessionId: string; kind: string; summary: string; payload?: unknown }) => {
       recordCalls++
-      if (opts.conflictOnRecord === true) {
-        return Effect.fail(new NoteError({ op: "record", message: "UNIQUE constraint failed: agent_notes.id" }))
-      }
       const note: AgentNote = {
         id: input.id!,
         sessionId: input.sessionId,
@@ -66,7 +77,7 @@ const fakes = (opts: { conflictOnRecord?: boolean } = {}) => {
       return Effect.succeed(note)
     },
   }
-  return { memory, notes, mem, agentNotes, recordCalls: () => recordCalls }
+  return { memory, notes, mem, agentNotes, recordCalls: () => recordCalls, putCalls: () => putCalls }
 }
 
 const textOf = (r: MemoryRecord | undefined): string => (r?.content as { text: string }).text
@@ -149,6 +160,49 @@ describe("redactSecrets", () => {
   })
 })
 
+const TOK = "Lj7" + "qZ".repeat(14) + "x9"
+
+describe("redactSecrets reproduced leaks", () => {
+  it("drops the whole value for credential keys, auth schemes and URLs", () => {
+    const cases = [
+      `export LUNA_JOURNAL_TOKEN=${TOK}`,
+      `Authorization: Bearer ${TOK}`,
+      `curl -H "Authorization: token ${TOK}"`,
+      `x-api-key: ${TOK}`,
+      `{"client_secret": "${TOK} with space"}`,
+      `aws_access_key_id = ${TOK}`,
+      `https://user:${TOK}@example.com/repo.git`,
+      `https://example.com/cb?state=1&access_token=${TOK}&x=2`,
+      `sent Bearer ${TOK} upstream`,
+    ]
+    for (const c of cases) {
+      const out = redactSecrets(c)
+      expect(out).not.toContain(TOK.slice(0, 10))
+      expect(out).toContain("[REDACTED]")
+    }
+    expect(redactSecrets(`Authorization: Bearer ${TOK}`)).toBe("Authorization: [REDACTED]")
+    expect(redactSecrets(`glued${TOK}glued`, { exact: [TOK] })).toBe("glued[REDACTED]glued")
+  })
+
+  it("the sink scrubs its configured secrets by exact value from every field", async () => {
+    const f = fakes()
+    const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: () => {}, secrets: [TOK] })
+    await Effect.runPromise(
+      sink.submit(
+        entry({
+          summary: `Saw ${TOK} in output. LUNA_JOURNAL_TOKEN=${TOK}`,
+          repo_path: `/Users/op/${TOK}/luna`,
+          branch: `feat-${TOK}`,
+          files_changed: [`notes/${TOK}.md`, `cfg?token=${TOK}`],
+        }),
+      ),
+    )
+    const all = JSON.stringify([...f.memory.values(), ...f.notes.values()])
+    expect(all).not.toContain(TOK)
+    expect(all).toContain("notes/[REDACTED].md")
+  })
+})
+
 describe("makeJournalSink", () => {
   it("first submit writes memory + one note; a resend dedupes and keeps the first memory", async () => {
     const f = fakes()
@@ -165,7 +219,9 @@ describe("makeJournalSink", () => {
     const second = await Effect.runPromise(sink.submit(entry({ summary: "Fixed the flicker, take two." })))
     expect(second).toEqual({ ok: true, id: first.ok ? first.id : "", deduped: true })
     expect(f.notes.size).toBe(1)
-    expect(f.recordCalls()).toBe(1)
+    // The resend lost the claim and found the memory already written.
+    expect(f.recordCalls()).toBe(2)
+    expect(f.putCalls()).toBe(1)
     expect(f.memory.size).toBe(1)
     expect(textOf([...f.memory.values()][0])).toContain("Fixed the flicker.\nAdded tests.")
     expect(textOf([...f.memory.values()][0])).not.toContain("take two")
@@ -184,17 +240,61 @@ describe("makeJournalSink", () => {
     expect((rec.content as { journal: { untrusted: boolean } }).journal.untrusted).toBe(true)
   })
 
-  it("a primary-key conflict on the ledger insert reports deduped, not an error", async () => {
-    const f = fakes({ conflictOnRecord: true })
+  it("concurrent duplicates with different summaries leave memory equal to the ledger", async () => {
+    const f = fakes()
     const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: () => {} })
-    const r = await Effect.runPromise(sink.submit(entry()))
-    expect(r).toEqual({ ok: true, id: journalId(entry()), deduped: true })
+    const [a, b] = await Effect.runPromise(
+      Effect.all([sink.submit(entry({ summary: "First copy." })), sink.submit(entry({ summary: "Second copy." }))], {
+        concurrency: "unbounded",
+      }),
+    )
+    expect(a).toEqual({ ok: true, id: journalId(entry()), deduped: false })
+    expect(b).toEqual({ ok: true, id: journalId(entry()), deduped: true })
+    expect(f.notes.size).toBe(1)
+    expect(f.memory.size).toBe(1)
+    const ledger = [...f.notes.values()][0]!.payload as { summary: string }
+    const stored = [...f.memory.values()][0]!
+    expect(ledger.summary).toBe("First copy.")
+    expect(textOf(stored)).toContain("First copy.")
+    expect(textOf(stored)).not.toContain("Second copy.")
+  })
+
+  it("a memory write interrupted after the claim is completed by a retry, from the claimed entry", async () => {
+    const f = fakes({ failPuts: 1 })
+    const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: () => {} })
+    expect(await Effect.runPromise(sink.submit(entry({ summary: "Original." })))).toEqual({ ok: false })
+    expect(f.notes.size).toBe(1)
+    expect(f.memory.size).toBe(0)
+    const retry = await Effect.runPromise(sink.submit(entry({ summary: "Changed on retry." })))
+    expect(retry).toEqual({ ok: true, id: journalId(entry()), deduped: true })
+    expect(f.memory.size).toBe(1)
+    const rec = [...f.memory.values()][0]!
+    expect(textOf(rec)).toContain("Original.")
+    expect(textOf(rec)).not.toContain("Changed on retry.")
+    expect(rec.provenance).toEqual({ source: "external", sessionId: "sess-0001" })
+    // A third send finds everything in place and writes nothing.
+    await Effect.runPromise(sink.submit(entry()))
+    expect(f.putCalls()).toBe(2)
+  })
+
+  it("a ledger conflict with no readable row is an error, not a silent dedupe", async () => {
+    const f = fakes()
+    const sink = makeJournalSink({
+      mem: f.mem,
+      agentNotes: {
+        ...f.agentNotes,
+        record: () => Effect.fail(new NoteError({ op: "record", message: "UNIQUE constraint failed: agent_notes.id" })),
+      },
+      log: () => {},
+    })
+    expect(await Effect.runPromise(sink.submit(entry()))).toEqual({ ok: false })
+    expect(f.memory.size).toBe(0)
   })
 
   it("other failures resolve ok:false and log only the id", async () => {
     const logs: string[] = []
     const sink = makeJournalSink({
-      mem: { put: () => Effect.die(new Error("disk full sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA")) },
+      mem: { put: () => Effect.die(new Error("disk full sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA")), get: () => Effect.succeed(null) },
       agentNotes: fakes().agentNotes,
       log: (m) => logs.push(m),
     })

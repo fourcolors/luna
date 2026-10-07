@@ -4748,8 +4748,13 @@ const buildServerLayer = (
       // job or turn. The route stays 503 unless LUNA_JOURNAL_TOKEN (>= 32
       // chars, distinct from the ui-ws token) is set; read here rather than at
       // module load so vault-hydrated env is visible.
-      const journalSink = makeJournalSink({ mem, agentNotes })
       const journalToken = process.env["LUNA_JOURNAL_TOKEN"]?.trim() || null
+      // Both bearers are scrubbed by exact value from anything a journal stores.
+      const journalSink = makeJournalSink({
+        mem,
+        agentNotes,
+        secrets: [journalToken, TOKEN].filter((t): t is string => typeof t === "string" && t.length > 0),
+      })
       if (journalToken !== null && journalToken === TOKEN) {
         console.warn("[luna/journal] LUNA_JOURNAL_TOKEN must differ from the ui-ws token; /v1/journal disabled")
       }
