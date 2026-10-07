@@ -7,6 +7,7 @@ import {
   makeEntryId,
   porcelainPaths,
   redact,
+  redactPath,
 } from '../hooks/lib.js'
 
 const HOUR = 3600e3
@@ -29,6 +30,8 @@ type Opts = {
   toplevel?: string
   repoRoot?: string
   cwd?: string
+  // While `on` is true, store.set on a sess: key is refused (rejects in the mod).
+  sessSetFails?: { on: boolean }
 }
 
 // Registers every stub the mod needs. Must run before the test's first $ call.
@@ -37,11 +40,14 @@ function rig(on: any, o: Opts = {}) {
   const fetches: Array<{ url: string; init: any }> = []
   const modelCalls: unknown[] = []
   const runs: Array<{ argv: string; cwd: string | undefined }> = []
+  // Every tool call that reached Claude Code's own behavior, as it arrived.
+  const toolCalls: unknown[] = []
   const statuses = [...(o.fetchStatus ?? [200])]
   const clock = mock.clock(on, { now: o.now ?? T0 })
   mock.env(on, o.env ?? {})
   on('store.get', ($: any, e: any) => ({ value: saved.get(e.key) }))
   on('store.set', ($: any, e: any) => {
+    if (o.sessSetFails?.on && String(e.key).startsWith('sess:')) return { deny: 'store unavailable' }
     saved.set(e.key, JSON.parse(JSON.stringify(e.value)))
     return { value: undefined }
   })
@@ -82,8 +88,13 @@ function rig(on: any, o: Opts = {}) {
   on('session.start', () => ({ cwd: '/r' }))
   on('turn.complete', () => ({ text: '' }))
   on('session.end', ($: any, e: any) => ({ sessionId: e.sessionId }))
-  on('tool.call', ($: any, e: any) => (e.tool === 'Write' ? { deny: 'no' } : { result: 'ok' }))
-  return { saved, fetches, modelCalls, clock, runs }
+  on('tool.call', ($: any, e: any) => {
+    // tool_use_id is minted by the kit per call, so it is left out.
+    const { tool_use_id: _id, ...args } = e
+    toolCalls.push(JSON.parse(JSON.stringify(args)))
+    return e.tool === 'Write' ? { deny: 'no' } : { result: 'ok' }
+  })
+  return { saved, fetches, modelCalls, clock, runs, toolCalls }
 }
 
 const pendingKeys = (saved: Map<string, unknown>) => [...saved.keys()].filter((k) => k.startsWith('pending:'))
@@ -155,6 +166,38 @@ test('tool.call records edits and skips denied calls', async ($, on) => {
   await $.tool.call({ tool: 'Write', file_path: '/r/b.ts', content: 'z' })
   const acc = r.saved.get('sess:s1-0000-session') as any
   expect(acc.files).toEqual(['/r/a.ts'])
+})
+
+test('a failing edit bookkeeping step lets the tool call through unchanged', async ($, on) => {
+  const failing = { on: false }
+  const r = rig(on, { sessSetFails: failing })
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/r' })
+  failing.on = true
+  const edit = { tool: 'Edit', file_path: '/r/a.ts', old_string: 'x', new_string: 'y' }
+  const write = { tool: 'Write', file_path: '/r/b.ts', content: 'z' }
+  // The store refusing the write makes recordEdit throw inside the hook.
+  expect(await $.tool.call(edit)).toEqual({ result: 'ok' })
+  // A denied call keeps its denial: the mod neither lifts nor rewrites it.
+  expect(await $.tool.call(write)).toEqual({ deny: 'no' })
+  // Each call reached Claude Code exactly once, with its arguments untouched:
+  // the .catch replays the settled result instead of running the tool again.
+  expect(r.toolCalls).toEqual([edit, write])
+  expect((r.saved.get('log') as any[]).map((l) => l.what)).toEqual(['tool'])
+  expect((r.saved.get('sess:s1-0000-session') as any).files).toEqual([])
+  // Once the store recovers, recording resumes.
+  failing.on = false
+  expect(await $.tool.call(edit)).toEqual({ result: 'ok' })
+  expect((r.saved.get('sess:s1-0000-session') as any).files).toEqual(['/r/a.ts'])
+})
+
+test('a failing lazy accumulator write also fails open', async ($, on) => {
+  const failing = { on: true }
+  const r = rig(on, { sessSetFails: failing })
+  // No session.start: the hook creates the accumulator lazily, and that write fails.
+  const edit = { tool: 'Edit', file_path: '/r/a.ts', old_string: 'x', new_string: 'y' }
+  expect(await $.tool.call(edit)).toEqual({ result: 'ok' })
+  expect(r.toolCalls).toEqual([edit])
+  expect(r.saved.has('sess:s1-0000-session')).toBe(false)
 })
 
 test('flush posts a redacted body 15s into the next session and deletes on 200', async ($, on) => {
@@ -456,6 +499,22 @@ test('lib: redact drops the whole value for credential keys, auth schemes and UR
   expect(redact(`glued${TOK}glued`)).toContain(TOK)
   expect(redact(`glued${TOK}glued`, [TOK])).toBe('glued[REDACTED]glued')
   expect(redact('short words stay', ['short'])).toBe('short words stay')
+})
+
+test('lib: a credential key in a path keeps the rest of the path', async () => {
+  expect(redactPath('/r/TOKEN=x/a.ts')).toBe('/r/TOKEN=[REDACTED]/a.ts')
+  expect(redactPath(`/r/api_key=${TOK}/sub/a.ts`)).toBe('/r/api_key=[REDACTED]/sub/a.ts')
+  expect(redactPath('/r/cb?access_token=x/a.ts')).toBe('/r/cb?access_token=[REDACTED]/a.ts')
+  expect(cleanFiles(['/r/TOKEN=x/a.ts'], '/r')).toEqual(['TOKEN=[REDACTED]/a.ts'])
+  // Prose keeps the whole value, slashes included.
+  expect(redact(`TOKEN=${TOK}/more`)).toBe('TOKEN=[REDACTED]')
+})
+
+test('lib: key => value drops the whole value', async () => {
+  expect(redact(`'Authorization' => "Bearer ${TOK}"`)).toBe(`'Authorization' => [REDACTED]`)
+  expect(redact(`Authorization => "Bearer ${TOK}"`)).toBe('Authorization => [REDACTED]')
+  expect(redact(`:api_key => ${TOK},`)).toBe(':api_key => [REDACTED],')
+  expect(redact(`password=>'${TOK}'`)).toBe('password=>[REDACTED]')
 })
 
 test('lib: file paths, repo and branch are redacted before the prompt and the body', async () => {

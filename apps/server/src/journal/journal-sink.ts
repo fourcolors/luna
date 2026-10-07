@@ -33,17 +33,20 @@ export const journalId = (e: Pick<JournalEntry, "session_id" | "entry_id">): str
 // scheme so the text still reads, and drop the whole value.
 const R = "[REDACTED]"
 const CRED_WORD = "token|secret|key|password|passwd|pwd|auth|credential|private|access|api|session|cookie"
-const SECRET_RES: ReadonlyArray<readonly [RegExp, string]> = [
+// `stop` is extra characters an unquoted value ends at: "/" for single-line
+// fields (paths, repo, branch), so /r/TOKEN=x/a.ts keeps the rest of the path.
+const secretRes = (stop: string): ReadonlyArray<readonly [RegExp, string]> => [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, R],
   // scheme://user:pass@host keeps the scheme and host.
   [/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]+@/gi, `$1${R}@`],
   // Query parameters whose name looks like a credential.
-  [new RegExp(`([?&#][^=&#\\s]*(?:${CRED_WORD}|sig|signature|code)[^=&#\\s]*=)[^&#\\s"'<>]+`, "gi"), `$1${R}`],
-  // KEY=value, key: value, "key": "value", including Authorization: <scheme> <value>.
+  [new RegExp(`([?&#][^=&#\\s]*(?:${CRED_WORD}|sig|signature|code)[^=&#\\s]*=)[^&#\\s"'<>${stop}]+`, "gi"), `$1${R}`],
+  // KEY=value, key: value, "key": "value", key => "value", including
+  // Authorization: <scheme> <value>.
   [
     new RegExp(
-      `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*["']?\\s*[:=]\\s*)` +
-        `(?:"[^"\\n]*"|'[^'\\n]*'|(?:(?:bearer|basic|token|digest|negotiate)\\s+)?[^\\s"',;}]+)`,
+      `([A-Za-z0-9_.-]*(?:${CRED_WORD})[A-Za-z0-9_.-]*["']?\\s*(?:=>|[:=])\\s*)` +
+        `(?:"[^"\\n]*"|'[^'\\n]*'|(?:(?:bearer|basic|token|digest|negotiate)\\s+)?[^\\s"',;}${stop}]+)`,
       "gi",
     ),
     `$1${R}`,
@@ -59,6 +62,8 @@ const SECRET_RES: ReadonlyArray<readonly [RegExp, string]> = [
   [/AIza[0-9A-Za-z_-]{35}/g, R],
   [/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, R],
 ]
+const SECRET_RES = secretRes("")
+const SINGLE_LINE_RES = secretRes("/")
 // The long-base64 catch-all also matches deep slash-only file paths, so it
 // runs on prose (the summary) but not on paths and short identifiers.
 const BASE64_RUN = /\b[A-Za-z0-9+/]{48,}={0,2}/g
@@ -78,7 +83,7 @@ export const redactSecrets = (
     const t = v.trim()
     if (t.length >= 8) out = out.replace(new RegExp(escapeRe(t), "g"), R)
   }
-  for (const [re, rep] of SECRET_RES) out = out.replace(re, rep)
+  for (const [re, rep] of opts.prose === true ? SECRET_RES : SINGLE_LINE_RES) out = out.replace(re, rep)
   if (opts.prose === true) out = out.replace(BASE64_RUN, R)
   return out
 }

@@ -383,6 +383,25 @@ async function flushAll($, options) {
   }
 }
 
+// Notes one edited file in the session's accumulator. May throw: the
+// tool.call hook's .catch is what keeps a failure here off the tool call.
+async function recordEdit($, options, e, r) {
+  const raw = e.file_path || e.notebook_path
+  if (!raw || r?.deny || r?.isError) return
+  const path = redactPath(raw, await secretsFor($, options))
+  const sid = await $.session.id()
+  const created = await withLock('sess:' + sid, async () => {
+    const [acc, isNew] = await loadAccumulator($, sid)
+    if (!acc.files.includes(path) && acc.files.length < MAX_FILES) {
+      acc.files.push(path)
+      acc.lastActivityAt = await $.clock.now()
+      await $.store.set('sess:' + sid, acc)
+    }
+    return isNew
+  })
+  if (created) inBackground($, options, sid, { snapshot: false })
+}
+
 export function register(on, options = {}) {
   on('session.start', async ($, e, next) => {
     const r = await next(e)
@@ -429,25 +448,18 @@ export function register(on, options = {}) {
     return r
   })
 
+  // Only observes: the call and its result pass through untouched. Bookkeeping
+  // runs after next() settled, and a failure there (a throw or an overrun) is
+  // answered by the .catch below, which fails OPEN: next(e) in a .catch
+  // handler replays what the hook's own next() settled to, so the tool runs
+  // once and its result stands exactly as Claude Code produced it.
   on('tool.call', { tool: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, async ($, e, next) => {
     const r = await next(e)
-    if (!enabled(options)) return r
-    try {
-      const raw = e.file_path || e.notebook_path
-      if (!raw || r?.deny || r?.isError) return r
-      const path = redactPath(raw, await secretsFor($, options))
-      const sid = await $.session.id()
-      const created = await withLock('sess:' + sid, async () => {
-        const [acc, isNew] = await loadAccumulator($, sid)
-        if (!acc.files.includes(path) && acc.files.length < MAX_FILES) {
-          acc.files.push(path)
-          acc.lastActivityAt = await $.clock.now()
-          await $.store.set('sess:' + sid, acc)
-        }
-        return isNew
-      })
-      if (created) inBackground($, options, sid, { snapshot: false })
-    } catch {}
+    if (enabled(options)) await recordEdit($, options, e, r)
+    return r
+  }).catch(async ($, e, next) => {
+    const r = await next(e)
+    await log($, 'tool')
     return r
   })
 

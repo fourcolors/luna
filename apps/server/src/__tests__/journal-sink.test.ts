@@ -184,6 +184,18 @@ describe("redactSecrets reproduced leaks", () => {
     expect(redactSecrets(`glued${TOK}glued`, { exact: [TOK] })).toBe("glued[REDACTED]glued")
   })
 
+  it("key => value drops the whole value", () => {
+    expect(redactSecrets(`Authorization => "Bearer ${TOK}"`, { prose: true })).toBe("Authorization => [REDACTED]")
+    expect(redactSecrets(`:api_key => ${TOK},`, { prose: true })).toBe(":api_key => [REDACTED],")
+  })
+
+  it("a credential key in a path keeps the rest of the path, including after the mod redacted it", () => {
+    const e = sanitizeEntry(entry({ files_changed: ["/r/TOKEN=x/a.ts", "/r/TOKEN=[REDACTED]/b.ts"] }))
+    expect(e.files_changed).toEqual(["/r/TOKEN=[REDACTED]/a.ts", "/r/TOKEN=[REDACTED]/b.ts"])
+    // The summary is prose: the value runs to the next delimiter, slashes included.
+    expect(redactSecrets(`TOKEN=${TOK}/more`, { prose: true })).toBe("TOKEN=[REDACTED]")
+  })
+
   it("the sink scrubs its configured secrets by exact value from every field", async () => {
     const f = fakes()
     const sink = makeJournalSink({ mem: f.mem, agentNotes: f.agentNotes, log: () => {}, secrets: [TOK] })
