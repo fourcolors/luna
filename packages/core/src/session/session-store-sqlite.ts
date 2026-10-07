@@ -38,6 +38,7 @@ import {
   type StoredMessage,
 } from "../messages.js"
 import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
+import { RENDERABLE_MESSAGE_KINDS_SQL } from "./projection.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { IntegrityError } from "../errors.js"
 import { extractTextPreview } from "./projection.js"
@@ -89,6 +90,32 @@ const SCHEMA_V1 = `
 const SCHEMA_V2 = `
   CREATE INDEX IF NOT EXISTS idx_messages_toplevel_user
     ON messages(session_id) WHERE kind = 'user' AND parent_id IS NULL;
+`
+
+// Version 4: partial index backing the bounded SNAPSHOT read (see
+// `messagesRenderableRecent` below and DEFAULT_SNAPSHOT_MESSAGE_LIMIT in
+// chat-service.ts).
+//
+// Why a partial index and not just a WHERE clause: the snapshot query filters
+// to renderable kinds, but `stream_event` rows are the overwhelming majority
+// of `messages` (measured on the live DB: 95.7% of one thread's 8,796 rows;
+// 89% across 524,768 rows overall). Filtering on the plain
+// (session_id, seq) index means walking — and row-fetching — roughly ten
+// index entries for every one the snapshot keeps. Measured on the worst real
+// thread (19,712 rows, 91.7% stream_event): 3ms unfiltered, 23ms filtered
+// with no partial index, which is the SAME cost as the unbounded full-history
+// read the 500-row cap was added to eliminate. With this index: 5ms.
+//
+// The index predicate is generated from RENDERABLE_MESSAGE_KINDS_SQL, the
+// same constant the query uses, because SQLite only picks a partial index
+// when the query's WHERE provably implies the index's WHERE. Writing the two
+// predicates independently is how that silently stops being true.
+//
+// Cost: indexes only the renderable rows (11% of the table on the live DB),
+// ~2MB on a 623MB database, 0.48s to build over 524k rows.
+const SCHEMA_V4 = `
+  CREATE INDEX IF NOT EXISTS idx_messages_renderable
+    ON messages(session_id, seq) WHERE kind IN (${RENDERABLE_MESSAGE_KINDS_SQL});
 `
 
 // Version 3: perf fix (2026-07-23) for `list()`'s ordering. Diagnostic
@@ -326,6 +353,7 @@ export const makeSessionStoreSqlite = (
       applyMigration(db, "sessions", 1, SCHEMA_V1, Date.now())
       applyMigration(db, "sessions", 2, SCHEMA_V2, Date.now())
       applyMigration(db, "sessions", 3, SCHEMA_V3, Date.now())
+      applyMigration(db, "sessions", 4, SCHEMA_V4, Date.now())
 
       yield* Effect.addFinalizer(() => Effect.sync(() => db.close()))
 
@@ -382,6 +410,32 @@ export const makeSessionStoreSqlite = (
         `SELECT * FROM (
            SELECT * FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT ?
          ) ORDER BY seq ASC`,
+      )
+      // Renderable-only twin of `messagesRecent` — the snapshot read.
+      //
+      // The bug this fixes: `messagesRecent` bounds on RAW rows, but ~90% of
+      // rows are `stream_event`, which `projectOne` drops. A 500-row window
+      // therefore yielded as few as 8 rendered messages out of 602 on a real
+      // thread, so reopening a long thread showed a fraction of it with no
+      // way to load the rest (there is still no pagination endpoint). Bounding
+      // on renderable kinds makes the limit mean what its name says.
+      //
+      // Predicate is the shared constant so it matches `idx_messages_renderable`.
+      const messagesRenderableRecent = db.query(
+        `SELECT * FROM (
+           SELECT * FROM messages
+             WHERE session_id = ? AND kind IN (${RENDERABLE_MESSAGE_KINDS_SQL})
+             ORDER BY seq DESC LIMIT ?
+         ) ORDER BY seq ASC`,
+      )
+      // True max seq for a session, independent of kind. Served by
+      // idx_messages_session_seq as a COVERING index (measured: 1ms on a
+      // 19,712-row thread), so this is cheap enough to pair with every
+      // snapshot read. See `readMaxSeq` for why the snapshot cannot derive
+      // this from its own (now filtered) rows.
+      const messagesMaxSeq = db.query(
+        `SELECT COALESCE(MAX(seq), -1) AS max_seq
+           FROM messages WHERE session_id = ?`,
       )
       // Bounded lookup for the thread's first top-level user message — used by
       // sidebar title derivation. LIMIT 1 so it never materializes the whole
@@ -675,7 +729,10 @@ export const makeSessionStoreSqlite = (
        */
       const readMessages = (
         sessionId: string,
-        opts?: { readonly limit?: number },
+        opts?: {
+          readonly limit?: number
+          readonly renderableOnly?: boolean
+        },
       ): Stream.Stream<StoredMessage, IntegrityError> =>
         Stream.unwrap(
           Effect.sync(() => {
@@ -688,13 +745,39 @@ export const makeSessionStoreSqlite = (
               )
             }
             const limit = opts?.limit
-            const rows =
-              limit !== undefined && limit >= 0
-                ? (messagesRecent.all(sessionId, limit) as MessageDbRow[])
-                : (messagesAll.all(sessionId) as MessageDbRow[])
+            const bounded = limit !== undefined && limit >= 0
+            const rows = bounded
+              ? opts?.renderableOnly === true
+                ? (messagesRenderableRecent.all(
+                    sessionId,
+                    limit,
+                  ) as MessageDbRow[])
+                : (messagesRecent.all(sessionId, limit) as MessageDbRow[])
+              : (messagesAll.all(sessionId) as MessageDbRow[])
             return Stream.fromIterable(rows.map(rowToMessage))
           }),
         )
+
+      /**
+        * Highest `seq` stored for a session, or -1 when it has no messages
+        * (also -1 for an unknown session — callers treat "no messages" and
+        * "no session" identically here).
+        *
+        * Exists so the chat snapshot's `throughSeq` watermark can stay the
+        * TRUE end of the log while the snapshot itself reads only renderable
+        * rows. `throughSeq` is the client's dedupe cutoff (it drops live
+        * frames with `seq <= throughSeq`), so deriving it from a filtered row
+        * set would silently lower it by however many trailing non-renderable
+        * rows a thread ends on — measured at 0-5 on live threads — and let
+        * already-seen frames through on reconnect-during-turn.
+        */
+      const readMaxSeq = (sessionId: string): Effect.Effect<number> =>
+        Effect.sync(() => {
+          const row = messagesMaxSeq.get(sessionId) as
+            | { max_seq: number | null }
+            | undefined
+          return row?.max_seq ?? -1
+        })
 
       // First top-level user message, or null (also null for an unknown
       // session — callers treat "no first message" the same as "not found").
@@ -792,6 +875,7 @@ export const makeSessionStoreSqlite = (
         appendMessage,
         readMessages,
         readFirstUserMessage,
+        readMaxSeq,
         list,
       })
     }),

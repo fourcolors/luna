@@ -21,7 +21,10 @@ import {
   type StoredMessage,
 } from "../messages.js"
 import { IntegrityError } from "../errors.js"
-import { extractTextPreview } from "./projection.js"
+import {
+  extractTextPreview,
+  RENDERABLE_MESSAGE_KINDS,
+} from "./projection.js"
 
 interface SessionRow {
   readonly id: string
@@ -105,11 +108,32 @@ export interface SessionStoreApi {
   }) => Effect.Effect<StoredMessage, IntegrityError>
   readonly readMessages: (
     sessionId: string,
-    opts?: { readonly limit?: number },
+    opts?: {
+      readonly limit?: number
+      /**
+       * Bound `limit` on RENDERABLE messages (RENDERABLE_MESSAGE_KINDS)
+       * instead of raw stored rows. Only meaningful together with `limit`.
+       *
+       * The chat snapshot is the caller this exists for. Without it a
+       * `limit` of N is spent almost entirely on `stream_event` rows that
+       * never reach the UI, so the user sees a small fraction of their
+       * thread on reopen. Full-history callers (findStoredById, dream's
+       * gatherInputs) pass no opts at all and are unaffected.
+       */
+      readonly renderableOnly?: boolean
+    },
   ) => Stream.Stream<StoredMessage, IntegrityError>
   readonly readFirstUserMessage: (
     sessionId: string,
   ) => Effect.Effect<StoredMessage | null, IntegrityError>
+  /**
+   * Highest `seq` stored for a session, or -1 if it has none.
+   *
+   * Separate from `readMessages` on purpose: a caller that reads a FILTERED
+   * view of the log still needs the unfiltered end of it. The chat snapshot's
+   * `throughSeq` dedupe watermark is exactly that caller.
+   */
+  readonly readMaxSeq: (sessionId: string) => Effect.Effect<number>
   readonly list: (q?: SessionQuery) => Stream.Stream<SessionSummary>
   readonly setOptions: (
     id: string,
@@ -297,7 +321,10 @@ export class SessionStore extends Context.Service<SessionStore, SessionStoreApi>
        */
       const readMessages = (
         sessionId: string,
-        opts?: { readonly limit?: number },
+        opts?: {
+          readonly limit?: number
+          readonly renderableOnly?: boolean
+        },
       ): Stream.Stream<StoredMessage, IntegrityError> =>
         Stream.unwrap(
           Ref.get(ref).pipe(
@@ -312,14 +339,41 @@ export class SessionStore extends Context.Service<SessionStore, SessionStoreApi>
                   }),
                 )
               }
+              // Mirror the SQLite twin: when `renderableOnly` is set the
+              // limit counts renderable messages, so filter BEFORE slicing.
+              // Filtering after would reproduce the exact bug this option
+              // exists to fix, and the in-memory store is what most tests
+              // run against — a divergence here would hide a real regression.
+              const pool =
+                opts?.renderableOnly === true
+                  ? msgs.filter((m) =>
+                      (RENDERABLE_MESSAGE_KINDS as readonly string[]).includes(
+                        m.kind,
+                      ),
+                    )
+                  : msgs
               const limit = opts?.limit
               const bounded =
-                limit !== undefined && limit >= 0 && limit < msgs.length
-                  ? msgs.slice(msgs.length - limit)
-                  : msgs
+                limit !== undefined && limit >= 0 && limit < pool.length
+                  ? pool.slice(pool.length - limit)
+                  : pool
               return Stream.fromIterable(bounded)
             }),
           ),
+        )
+
+      // Highest stored seq, or -1 when the session has no messages or does
+      // not exist. Twin of the SQLite `readMaxSeq`; see the interface for why
+      // this is not derived from `readMessages`.
+      const readMaxSeq = (sessionId: string): Effect.Effect<number> =>
+        Ref.get(ref).pipe(
+          Effect.map((state) => {
+            const msgs = state.messages.get(sessionId)
+            if (!msgs || msgs.length === 0) return -1
+            let max = -1
+            for (const m of msgs) if (m.seq > max) max = m.seq
+            return max
+          }),
         )
 
       // First top-level user message, or null (also null for an unknown
@@ -421,6 +475,7 @@ export class SessionStore extends Context.Service<SessionStore, SessionStoreApi>
         appendMessage,
         readMessages,
         readFirstUserMessage,
+        readMaxSeq,
         list,
       } as const
     }),

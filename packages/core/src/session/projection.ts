@@ -253,11 +253,64 @@ function extractAttachments(payload: unknown): ReadonlyArray<ChatAttachment> {
 }
 
 /**
+ * The ONLY message kinds `projectOne` can ever turn into a rendered
+ * ChatMessage, and the only kinds the chat snapshot path consumes.
+ *
+ * Single source of truth, deliberately. This same predicate is needed in
+ * three places that are otherwise far apart: `projectOne` below, the SQLite
+ * store's bounded snapshot query, and the partial index that backs it. Those
+ * were previously three independent restatements waiting to drift; a store
+ * that filtered on a different set than `projectOne` renders would silently
+ * truncate history with no failing test. Both stores and the index DDL now
+ * derive from this array.
+ *
+ * `attachHistoryToolResults` (chat-service) reads tool results out of `user`
+ * envelopes, which `projectOne` itself drops for having a parentId — so
+ * `user` must stay in this set even though not every `user` row renders.
+ *
+ * Adding a kind here widens what the snapshot loads. That is the intended
+ * lever: if a new kind becomes renderable, add it here and the store query
+ * and index follow automatically.
+ */
+export const RENDERABLE_MESSAGE_KINDS = ["user", "assistant"] as const
+
+/** SQL fragment for `RENDERABLE_MESSAGE_KINDS`, e.g. `'user','assistant'`.
+ *  Derived, never hand-written, so the index predicate and the query
+ *  predicate are always literally the same string — SQLite only uses a
+ *  partial index when the query's WHERE provably implies the index's. */
+export const RENDERABLE_MESSAGE_KINDS_SQL = RENDERABLE_MESSAGE_KINDS.map(
+  (k) => `'${k}'`,
+).join(",")
+
+/** Mutual-assignability check: `never` unless A and B are the same union. */
+type ExactUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never
+
+/**
+ * Compile-time proof that `RENDERABLE_MESSAGE_KINDS` and the literal narrow
+ * inside `projectOne` describe the SAME set.
+ *
+ * `projectOne` keeps its explicit `kind !== "user" && kind !== "assistant"`
+ * test because that is what narrows `stored.kind` for the `role` field below;
+ * an `Array.includes` call does not narrow. That would normally leave the
+ * constant and the narrow as two independent restatements — the exact drift
+ * this constant exists to prevent. This line fails to compile if they ever
+ * disagree, so the duplication is checked rather than trusted.
+ */
+const _renderableKindsMatchProjectOne: ExactUnion<
+  (typeof RENDERABLE_MESSAGE_KINDS)[number],
+  "user" | "assistant"
+> = true
+void _renderableKindsMatchProjectOne
+
+/**
  * Project a single stored envelope into a ChatMessage. Returns null for
  * messages we don't surface (system/result/stream_event/hook/status/other,
  * or malformed user/assistant payloads).
  */
 export function projectOne(stored: StoredMessage): ChatMessage | null {
+  // Literal narrow (not RENDERABLE_MESSAGE_KINDS.includes) so `stored.kind`
+  // narrows for the `role` field below. Kept honest by the
+  // `_renderableKindsMatchProjectOne` compile-time proof above.
   if (stored.kind !== "user" && stored.kind !== "assistant") return null
   // Subagent-internal messages: the adapter mirrors every SDK message,
   // including those forwarded from INSIDE a Task/Agent subagent (marked by

@@ -1186,17 +1186,41 @@ const makeChatService = Effect.gen(function* () {
           const collected = yield* store
             .readMessages(
               threadId,
-              snapshotMessageLimit > 0 ? { limit: snapshotMessageLimit } : undefined,
+              snapshotMessageLimit > 0
+                ? // `renderableOnly` makes the cap count messages the UI can
+                  // actually draw. Without it the cap counted raw rows, and
+                  // `stream_event` rows are ~90% of the table, so the window
+                  // was spent on rows `projectOne` throws away: measured on a
+                  // live thread, 500 rows yielded 22 rendered messages out of
+                  // 171, and on the worst thread 8 out of 602. Users saw a
+                  // sliver of their own history on reopen with no way to ask
+                  // for the rest (there is still no pagination endpoint).
+                  { limit: snapshotMessageLimit, renderableOnly: true }
+                : undefined,
             )
             .pipe(Stream.runCollect, Effect.orDie)
           const stored = Array.from(collected)
           const projected: ChatMessage[] = []
-          let throughSeq = -1
           for (const s of stored) {
             const p = projectOne(s)
             if (p !== null) projected.push(p)
-            if (s.seq > throughSeq) throughSeq = s.seq
           }
+          // `throughSeq` is the TRUE end of the log, read separately —
+          // deliberately NOT the max seq of `stored` above.
+          //
+          // It is the client's dedupe cutoff (ui-shared/reducer.ts drops live
+          // frames with `seq <= throughSeq`). `stored` is now a filtered view,
+          // so its max is the last RENDERABLE row, which trails the real end
+          // of the log by however many non-renderable rows the thread happens
+          // to end on (measured at 0-5 across live threads). Publishing that
+          // as the watermark would quietly let already-seen frames back
+          // through on a reconnect mid-turn. The read is a covering-index
+          // lookup on (session_id, seq) — ~1ms — so correctness here is
+          // nearly free.
+          //
+          // Unbounded mode (limit 0) keeps the old semantics by construction:
+          // it reads every row, so the true max is also `stored`'s max.
+          const throughSeq = yield* store.readMaxSeq(threadId)
           const snapshotFrame: ChatFrame = {
             type: "snapshot",
             threadId,
