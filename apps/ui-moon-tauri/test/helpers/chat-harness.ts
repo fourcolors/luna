@@ -102,7 +102,11 @@ export function loadVendorInto(target: Window & typeof globalThis, file: string)
 export function installSyncRequestAnimationFrame(target: Window & typeof globalThis = window): void {
   target.requestAnimationFrame = ((cb: FrameRequestCallback): number => {
     flushSync(() => cb(0))
-    return 1
+    // 0 = no frame pending: the callback already ran, so production's
+    // `guard = rAF(() => { guard = 0; ... })` throttle pattern re-arms.
+    // Returning a nonzero handle would stomp the guard truthy AFTER the
+    // callback cleared it, sticking the throttle for the rest of the test.
+    return 0
   }) as typeof target.requestAnimationFrame
   target.cancelAnimationFrame = (() => {}) as typeof target.cancelAnimationFrame
 }
