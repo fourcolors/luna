@@ -102,6 +102,23 @@ export function createDom() {
       scopeBtn: document.getElementById('scope-btn'),
       scopeMenu: document.getElementById('scope-menu'),
       scopeFullAccess: document.getElementById('scope-full-access'),
+      // Voice composer chrome: mic + menu caret in the input shell, and the
+      // quick-setup popover (talk mode, reply engine, Fish key, model download).
+      voiceCluster:       document.getElementById('voice-cluster'),
+      voiceMicBtn:        document.getElementById('voice-mic-btn'),
+      voiceModeBtn:       document.getElementById('voice-mode-btn'),
+      voiceMenuBtn:       document.getElementById('voice-menu-btn'),
+      voiceMenu:          document.getElementById('voice-menu'),
+      voiceFishSection:   document.getElementById('voice-fish-section'),
+      voiceFishKey:       document.getElementById('voice-fish-key'),
+      voiceFishSave:      document.getElementById('voice-fish-save'),
+      voiceFishClear:     document.getElementById('voice-fish-clear'),
+      voiceFishStatus:    document.getElementById('voice-fish-status'),
+      voiceFishLink:      document.getElementById('voice-fish-link'),
+      voiceModelRow:      document.getElementById('voice-model-row'),
+      voiceModelText:     document.getElementById('voice-model-text'),
+      voiceModelDownload: document.getElementById('voice-model-download'),
+      voiceSettingsLink:  document.getElementById('voice-settings-link'),
       // Composer config cluster (model + effort switcher). `#composer-config`,
       // `#effort-cfg-sep`, and `#cfg-deferred-hint` are React-owned now
       // (ComposerConfig.tsx, mounted from main-chat.tsx via
