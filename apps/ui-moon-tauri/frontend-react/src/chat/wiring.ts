@@ -101,7 +101,7 @@ export function installWiring(ctx: WiringCtx) {
     ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
     LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
     SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
-    VoiceEngine, moonDragDebugNote,
+    UpdateBanner, VoiceEngine, moonDragDebugNote,
   } = ctx.engines
 
   // ── Boot params FIRST (0.0.71 / #563 ignition isolation) ───────────────
@@ -1012,6 +1012,26 @@ function installWiringChromeAndWindow(ctx, engines) {
       : null;
     LunaDock.wire({ win: W, label: winLabel, redock: redockOpts });
   }
+
+  // ── Update banner: the in-chat staged-update nudge ──────────────────────
+  // The Rust updater broadcasts `update://ready` to every window once a
+  // build is downloaded AND verified (updater.rs). The banner object is
+  // constructed in bootChat.ts but nothing in the chat window ever
+  // subscribed, so the nudge above the composer never appeared — only the
+  // hub's orb pip and the Updates panel listened. Subscribe here so the
+  // bar shows where it is anchored.
+  try {
+    if (W && typeof W.listen === 'function') {
+      W.listen('update://ready', (e) => {
+        try {
+          const p = (e && e.payload) || {};
+          if (UpdateBanner && typeof UpdateBanner.onReady === 'function') {
+            UpdateBanner.onReady(p);
+          }
+        } catch (err) { Logger.warn('update://ready banner failed:', err); }
+      });
+    }
+  } catch (_) { /* not in Tauri (tests/browser); banner stays inert */ }
 
   // ── hub-event return channel ────────────────────────────────────────────
   // Rust delivers window-targeted hub-events with strict `for:` discipline.

@@ -755,6 +755,7 @@ export function bootChat() {
         ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine,
         ChatEngine: chatEngine.ChatEngine,
         VoiceEngine: chatEngine.VoiceEngine,
+        UpdateBanner: updateBanner,
         formatRelTime,
         buildMessageMeta,
         moonDragDebugNote,
