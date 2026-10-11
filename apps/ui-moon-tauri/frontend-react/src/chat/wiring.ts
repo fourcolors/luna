@@ -126,7 +126,7 @@ export function installWiring(ctx: WiringCtx) {
       ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
       LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
       SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
-      VoiceEngine, moonDragDebugNote,
+      UpdateBanner, VoiceEngine, moonDragDebugNote,
       SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE, MAX_REATTACH_ROUNDS,
     });
   } catch (err) {
@@ -150,7 +150,7 @@ function installWiringChromeAndWindow(ctx, engines) {
     ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
     LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
     SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
-    VoiceEngine, moonDragDebugNote,
+    UpdateBanner, VoiceEngine, moonDragDebugNote,
     PINNED_THREAD, REDOCK_TO,
   } = engines
 
@@ -1034,6 +1034,26 @@ function installWiringChromeAndWindow(ctx, engines) {
       // as an unhandled rejection, it just means the banner stays inert.
       if (listened && typeof listened.catch === 'function') {
         listened.catch(() => {});
+      }
+      // Invalidation: a later updater error clears the staged bytes
+      // (emit_update_error sets staged=None in updater.rs), and an
+      // up-to-date check means no valid stage exists — either way the bar
+      // would offer a Restart that apply_update rejects, so hide it. A
+      // newer ready re-shows via onReady. hide() is idempotent, so events
+      // with no visible bar are harmless.
+      for (const evt of ['update://error', 'update://none']) {
+        try {
+          const inv = W.listen(evt, () => {
+            try {
+              if (UpdateBanner && typeof UpdateBanner.hide === 'function') {
+                UpdateBanner.hide();
+              }
+            } catch (err) { Logger.warn(evt + ' banner hide failed:', err); }
+          });
+          if (inv && typeof inv.catch === 'function') {
+            inv.catch(() => {});
+          }
+        } catch (_) { /* best-effort per event */ }
       }
     }
   } catch (_) { /* not in Tauri (tests/browser); banner stays inert */ }
