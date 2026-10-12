@@ -35,6 +35,28 @@ describe("markdownToTelegramHtml — inline styles", () => {
     )
   })
 
+  it("keeps balanced parentheses inside link URLs intact", () => {
+    expect(
+      markdownToTelegramHtml(
+        "[Disambiguation](https://en.wikipedia.org/wiki/Mercury_(disambiguation))",
+      ),
+    ).toBe(
+      '<a href="https://en.wikipedia.org/wiki/Mercury_(disambiguation)">Disambiguation</a>',
+    )
+  })
+
+  it("keeps multiple balanced paren groups inside link URLs intact", () => {
+    expect(markdownToTelegramHtml("[a](https://example.com/x_(y)_z)")).toBe(
+      '<a href="https://example.com/x_(y)_z">a</a>',
+    )
+  })
+
+  it("leaves unbalanced paren URLs as literal text instead of truncating", () => {
+    expect(markdownToTelegramHtml("[t](https://example.com/a_(b)")).toBe(
+      "[t](https://example.com/a_(b)",
+    )
+  })
+
   it("does NOT treat underscores as emphasis (tool names survive)", () => {
     expect(markdownToTelegramHtml("call mcp__web__search or snake_case_name")).toBe(
       "call mcp__web__search or snake_case_name",

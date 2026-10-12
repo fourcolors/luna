@@ -82,13 +82,16 @@ const applyInline = (escaped: string): string => {
   })
   out = out.replace(/`([^`\n]+)`/g, (_m, code: string) => put(`<code>${code}</code>`))
 
-  // Links: [text](http…). The whole anchor is stashed — emphasis inside link
+  // Links: [text](http…). The URL pattern allows one level of balanced
+  // parentheses (e.g. Wikipedia disambiguation links) so they are not cut at
+  // the first ")"; deeper nesting degrades to literal text rather than a
+  // truncated href. The whole anchor is stashed — emphasis inside link
   // text is sacrificed for the guarantee that URLs are never rewritten, and
   // any code span already stashed inside the text is resolved to plain text
   // (nesting <code> inside <a> is not reliably accepted by Telegram, and
   // one-pass restoration could never reach it anyway).
   out = out.replace(
-    /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    /\[([^\]\n]+)\]\((https?:\/\/[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g,
     (_m, text: string, url: string) =>
       put(`<a href="${url.replace(/"/g, "&quot;")}">${resolvePlain(text)}</a>`),
   )
