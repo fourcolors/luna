@@ -57,6 +57,14 @@ describe("markdownToTelegramHtml — inline styles", () => {
     )
   })
 
+  it("leaves an incomplete (hostless) link destination as literal text", () => {
+    // Mid-stream partials can end right after the scheme; the old pattern
+    // required at least one character after "https://", and the balanced-
+    // paren rewrite must keep that so an incomplete destination is not
+    // emitted as a hostless anchor.
+    expect(markdownToTelegramHtml("[docs](https://)")).toBe("[docs](https://)")
+  })
+
   it("does NOT treat underscores as emphasis (tool names survive)", () => {
     expect(markdownToTelegramHtml("call mcp__web__search or snake_case_name")).toBe(
       "call mcp__web__search or snake_case_name",

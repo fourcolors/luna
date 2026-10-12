@@ -91,7 +91,7 @@ const applyInline = (escaped: string): string => {
   // (nesting <code> inside <a> is not reliably accepted by Telegram, and
   // one-pass restoration could never reach it anyway).
   out = out.replace(
-    /\[([^\]\n]+)\]\((https?:\/\/[^\s()]*(?:\([^\s()]*\)[^\s()]*)*)\)/g,
+    /\[([^\]\n]+)\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/g,
     (_m, text: string, url: string) =>
       put(`<a href="${url.replace(/"/g, "&quot;")}">${resolvePlain(text)}</a>`),
   )
