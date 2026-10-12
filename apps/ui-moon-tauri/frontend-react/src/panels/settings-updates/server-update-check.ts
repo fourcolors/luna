@@ -53,12 +53,27 @@ function compareSemver(a: string, b: string): number {
 }
 
 /**
+ * Normalize a server version string to bare semver ("0.6.0").
+ *
+ * The wire field is documented as bare semver, but resolveBuildVersion
+ * (chat-server.ts) passes LUNA_BUILD_VERSION through verbatim, so a
+ * release-tagged value like "server-v0.6.0" can arrive here. Strip the known
+ * prefixes; anything that still isn't bare semver is unparseable and treated
+ * as unknown (null). Without this, compareSemver's NaN result makes
+ * `NaN <= 0` false and the panel reports "update available" forever.
+ */
+function normalizeServerVersion(v: string): string | null {
+  const stripped = v.replace(/^server-v/i, "").replace(/^v/i, "")
+  return /^\d+\.\d+\.\d+$/.test(stripped) ? stripped : null
+}
+
+/**
  * Returns ServerUpdateInfo when a newer server release exists, null when the
  * server is current (or its version is unknown / no server releases found).
  * Throws on network or API errors so the caller can show a soft error state.
  */
 export async function checkServerUpdate(): Promise<ServerUpdateInfo | null> {
-  const current = getServerVersion()
+  const current = normalizeServerVersion(getServerVersion() ?? "")
   if (!current) return null
 
   const res = await fetch(RELEASES_URL, {
