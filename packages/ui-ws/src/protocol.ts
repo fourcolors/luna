@@ -366,6 +366,29 @@ export interface ToolResultFrame {
   /** Mirror of ToolCallFrame.parentToolUseId for subagent-internal results.
    *  OPTIONAL/additive. */
   readonly parentToolUseId?: string
+  /** True when the result is a background Agent's launch ack: the subagent
+   *  is still running and ends with a later `subagent-settled`. Additive. */
+  readonly async?: boolean
+}
+
+/** A background subagent ended (SDK `task_notification`). `toolCallId` is the
+ *  spawning Agent call's id. Additive: old clients ignore unknown types. */
+export interface SubagentSettledFrame {
+  readonly type: "subagent-settled"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly status: "done" | "error"
+}
+
+/** Progress from a background subagent (SDK `task_progress`). Additive. */
+export interface SubagentProgressFrame {
+  readonly type: "subagent-progress"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly tool?: string
+  readonly toolCount?: number
+  /** The subagent was registered in, or moved to, the background. */
+  readonly async?: boolean
 }
 
 /** Marks the true end of an agentic turn (SDK `result`), after every
@@ -1348,6 +1371,9 @@ export interface SubagentNode {
   /** The subagent's current/last tool, or null before it runs one. */
   readonly tool: string | null
   readonly toolCount: number
+  /** Set when the server closed a background node by its idle TTL rather
+   *  than by a real settle. Informational; clients may ignore it. */
+  readonly stale?: boolean
 }
 
 /** Server→client: the live subagent tree for a thread. Broadcast on change and
@@ -1602,6 +1628,8 @@ export type ServerFrame =
   | ArtifactsExtractedFrame
   | ToolCallFrame
   | ToolResultFrame
+  | SubagentSettledFrame
+  | SubagentProgressFrame
   | TurnCompleteFrame
   | ResultDeliveredFrame
   | AccountListFrame

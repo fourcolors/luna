@@ -277,8 +277,11 @@ export const makeOllamaEmbedderLayer = (
               if (stickyMismatch !== null) {
                 return yield* Effect.fail(stickyMismatch)
               }
+              // Effect aborts this signal when the fiber is interrupted, so a
+              // caller that gives up (a request deadline, a client hanging up)
+              // cancels the HTTP call instead of leaving Ollama working.
               const vec = yield* Effect.tryPromise({
-                try: () => ollamaEmbedHttp(baseUrl, model, text),
+                try: (signal) => ollamaEmbedHttp(baseUrl, model, text, signal),
                 catch: (cause) =>
                   new EmbedderError({
                     provider: "ollama",

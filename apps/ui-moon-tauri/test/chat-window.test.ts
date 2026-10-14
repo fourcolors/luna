@@ -5348,6 +5348,27 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(document.querySelectorAll('.thread-agent-row').length).toBe(0)
     })
 
+    it('Scenario: agents delegated from the Main chat nest under the Main chat card', () => {
+      // The Main chat is filtered out of the strip, so before this its
+      // agents rendered nowhere at all.
+      const m = M()
+      localStorage.setItem('luna.mainThreadId', 'b')
+      m.State.activeThreadId = 'a'
+      m.State.threadDrawerOpen = true
+      seed()
+      const host = document.getElementById('main-chat-agents') as HTMLElement
+      expect(host.hidden).toBe(true)
+      m.handleFrame({ type: 'subagent-tree', threadId: 'b', agents: [subagent()] })
+      expect(host.hidden).toBe(false)
+      expect(host.querySelectorAll('.thread-agent-row').length).toBe(1)
+      expect(document.querySelectorAll('#thread-drawer-list .thread-agent-row').length).toBe(0)
+      m.handleFrame({
+        type: 'subagent-tree', threadId: 'b', agents: [subagent({ status: 'done' })],
+      })
+      expect(host.querySelectorAll('.thread-agent-row').length).toBe(0)
+      expect(host.hidden).toBe(true)
+    })
+
     it('Scenario: a thread-snapshot asks for THAT thread\'s live subagent tree', () => {
       // codex review of #613: this request used to ride `hello`, where
       // activeThreadId is still null on a cold boot (syncThread assigns it

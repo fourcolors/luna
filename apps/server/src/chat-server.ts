@@ -485,6 +485,7 @@ import {
 } from "@luna/thread-tools"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
+import { makeJournalSink } from "./journal/journal-sink.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
 import type { PtyOutputFrame } from "@luna/ui-ws"
 
@@ -4742,6 +4743,22 @@ const buildServerLayer = (
         },
       }
 
+      // Claude Code session journals (POST /v1/journal). Writes one episodic
+      // memory with provenance 'external' plus one ledger row; never starts a
+      // job or turn. The route stays 503 unless LUNA_JOURNAL_TOKEN (>= 32
+      // chars, distinct from the ui-ws token) is set; read here rather than at
+      // module load so vault-hydrated env is visible.
+      const journalToken = process.env["LUNA_JOURNAL_TOKEN"]?.trim() || null
+      // Both bearers are scrubbed by exact value from anything a journal stores.
+      const journalSink = makeJournalSink({
+        mem,
+        agentNotes,
+        secrets: [journalToken, TOKEN].filter((t): t is string => typeof t === "string" && t.length > 0),
+      })
+      if (journalToken !== null && journalToken === TOKEN) {
+        console.warn("[luna/journal] LUNA_JOURNAL_TOKEN must differ from the ui-ws token; /v1/journal disabled")
+      }
+
       // ── Model Routing Settings (PR 1) ───────────────────────────────────
       // Wire the ProviderSettingsStore to a modelRoutingService handle so the
       // WS server advertises capabilities.modelRouting, pushes model-routing-list
@@ -4992,6 +5009,8 @@ const buildServerLayer = (
         },
         survey: surveyHandle, // Phase 3 D3: resolved handle
         feedbackSink, // point-at-the-UI feedback → agent_notes (kind='ui_feedback')
+        journalSink,
+        journalToken: journalToken !== TOKEN ? journalToken : null,
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         capabilityRegistry: capabilityWsHandle, // Capability layer: backend-advertised commands (static catalog)
         // 14-day auto-archive → broadcast `thread-archived` to live clients.

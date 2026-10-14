@@ -108,7 +108,7 @@ import {
 } from "./effort.js"
 import { applyClientMarker, stripClientMarker, type ClientMarkerInput } from "./client-marker.js"
 import { ThreadToolsProviderTag } from "./chat-service-tools.js"
-import { attachHistoryToolResults } from "./chat-service-sdk-messages.js"
+import { attachHistoryToolResults, type BackgroundAgents } from "./chat-service-sdk-messages.js"
 import { makeThreadLifecycle } from "./chat-service-thread-lifecycle.js"
 
 /** Re-exported for callers that want the same shape. */
@@ -191,6 +191,9 @@ export interface ThreadEntry {
    *  drain. */
   readonly pendingTurnsLock: Semaphore.Semaphore
   readonly assistantText: Ref.Ref<string>
+  /** Background Agent calls the CLI is still running. The idle reaper
+   *  holds off on a thread with any open (see isThreadIdleReapable). */
+  readonly backgroundAgents: BackgroundAgents
   /** Queue + Steer state for mid-turn sends. Present on the recall path
    *  only (see chat-service-turn-queue.ts); the ordinary path's long-lived
    *  prompt stream hands every send to the CLI as it arrives. */
@@ -277,21 +280,31 @@ export const parseSnapshotMessageLimit = (raw: string | undefined): number => {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SNAPSHOT_MESSAGE_LIMIT
 }
 
+/** A thread with a background agent still open is reaped only after this
+ *  much quiet (or its idle window, if longer). Reaping kills the agent, but
+ *  a lost task_notification must not pin the subprocess forever. */
+export const BACKGROUND_AGENT_REAP_GRACE_MS = 2 * 60 * 60_000
+
 /**
  * Pure decision: should a thread be reaped right now? A thread is reapable iff
  * the reaper is enabled (idleReapMs > 0), it has no in-flight turn, and it has
- * been quiet for at least the idle window. Kept pure so the policy is tested
- * without standing up the whole ChatService.
+ * been quiet for at least the idle window (at least
+ * BACKGROUND_AGENT_REAP_GRACE_MS while a background agent is open). Kept pure
+ * so the policy is tested without standing up the whole ChatService.
  */
 export const isThreadIdleReapable = (args: {
   readonly now: number
   readonly lastActivity: number
   readonly inFlightTurnId: string | null
   readonly idleReapMs: number
+  readonly openBackgroundAgents?: number
 }): boolean =>
   args.idleReapMs > 0 &&
   args.inFlightTurnId === null &&
-  args.now - args.lastActivity >= args.idleReapMs
+  args.now - args.lastActivity >=
+    ((args.openBackgroundAgents ?? 0) > 0
+      ? Math.max(args.idleReapMs, BACKGROUND_AGENT_REAP_GRACE_MS)
+      : args.idleReapMs)
 
 /**
  * Derive a cheap, no-model-call title from the first user message text.
@@ -1731,7 +1744,13 @@ const makeChatService = Effect.gen(function* () {
             const inFlightTurnId = yield* Ref.get(e.inFlightTurnId)
             const last = yield* Ref.get(e.lastActivity)
             if (
-              !isThreadIdleReapable({ now, lastActivity: last, inFlightTurnId, idleReapMs })
+              !isThreadIdleReapable({
+                now,
+                lastActivity: last,
+                inFlightTurnId,
+                idleReapMs,
+                openBackgroundAgents: e.backgroundAgents.open.size,
+              })
             )
               continue
             yield* Effect.logInfo("[chat] reaping idle thread", {

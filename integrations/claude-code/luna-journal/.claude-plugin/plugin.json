@@ -1,0 +1,31 @@
+{
+  "name": "luna-journal",
+  "version": "0.1.0",
+  "description": "Posts a short end-of-session journal to Luna as untrusted episodic memory",
+  "author": { "name": "Jax" },
+  "userConfig": {
+    "luna_url": {
+      "type": "string",
+      "title": "Luna journal URL",
+      "description": "Full URL of Luna's journal route, e.g. http://<luna-host>:4753/v1/journal"
+    },
+    "luna_token": {
+      "type": "string",
+      "title": "Luna journal token",
+      "description": "LUNA_JOURNAL_TOKEN from the Luna server. Optional: the macOS Keychain item 'luna-journal' or the LUNA_JOURNAL_TOKEN env var also work.",
+      "sensitive": true
+    },
+    "model": {
+      "type": "string",
+      "title": "Summary model",
+      "description": "Model alias used to write the 2-4 line summary",
+      "default": "haiku"
+    },
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Turn journaling off without uninstalling the mod",
+      "default": true
+    }
+  }
+}
