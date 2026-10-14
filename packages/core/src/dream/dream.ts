@@ -129,6 +129,19 @@ export const applyOps = (
           })
           continue
         }
+        // memory_dedup is a delete-only op ("idempotent delete of an exact
+        // duplicate"): a non-null after is off-contract — the model
+        // fabricated a record. Writing it into operator memory would bypass
+        // the Phase 3 survey gate, so hold it as proposed instead of
+        // materializing it.
+        if (op.kind === "memory_dedup" && op.after !== null) {
+          yield* store.record({
+            dreamId, at: now, op: op.kind, targetId: op.targetId,
+            before: op.before, after: op.after, rationale: op.rationale,
+            status: "proposed", appliedAt: null,
+          })
+          continue
+        }
         // Idempotent state-set: null after = delete; else upsert to desired state.
         if (op.after === null) {
           yield* mem.delete(op.targetId)
