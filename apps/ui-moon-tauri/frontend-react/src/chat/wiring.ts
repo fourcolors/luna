@@ -101,7 +101,7 @@ export function installWiring(ctx: WiringCtx) {
     ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
     LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
     SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
-    VoiceEngine, moonDragDebugNote,
+    UpdateBanner, VoiceEngine, moonDragDebugNote,
   } = ctx.engines
 
   // ── Boot params FIRST (0.0.71 / #563 ignition isolation) ───────────────
@@ -126,7 +126,7 @@ export function installWiring(ctx: WiringCtx) {
       ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
       LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
       SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
-      VoiceEngine, moonDragDebugNote,
+      UpdateBanner, VoiceEngine, moonDragDebugNote,
       SPAWN_FRESH, PINNED_THREAD, REDOCK_TO, INITIAL_VIEW_MODE, MAX_REATTACH_ROUNDS,
     });
   } catch (err) {
@@ -150,7 +150,7 @@ function installWiringChromeAndWindow(ctx, engines) {
     ComposerConfig, FeedbackEngine, formatRelTime, buildMessageMeta,
     LocalShell, MentionMenu, SecretPromptEngine, SlashMenu,
     SuggestedActionsEngine, SurveyEngine, ThreadCache, ThreadDrawerEngine,
-    VoiceEngine, moonDragDebugNote,
+    UpdateBanner, VoiceEngine, moonDragDebugNote,
     PINNED_THREAD, REDOCK_TO,
   } = engines
 
@@ -1038,6 +1038,69 @@ function installWiringChromeAndWindow(ctx, engines) {
       : null;
     LunaDock.wire({ win: W, label: winLabel, redock: redockOpts });
   }
+
+  // ── Update banner: the in-chat staged-update nudge ──────────────────────
+  // The Rust updater broadcasts `update://ready` to every window once a
+  // build is downloaded AND verified (updater.rs). The banner object is
+  // constructed in bootChat.ts but nothing in the chat window ever
+  // subscribed, so the nudge above the composer never appeared — only the
+  // hub's orb pip and the Updates panel listened. Subscribe here so the
+  // bar shows where it is anchored.
+  try {
+    if (W && typeof W.listen === 'function') {
+      const listened = W.listen('update://ready', (e) => {
+        try {
+          const p = (e && e.payload) || {};
+          if (UpdateBanner && typeof UpdateBanner.onReady === 'function') {
+            UpdateBanner.onReady(p);
+          }
+        } catch (err) { Logger.warn('update://ready banner failed:', err); }
+      });
+      // listen() is async: a rejection (no event plugin) must not surface
+      // as an unhandled rejection, it just means the banner stays inert.
+      if (listened && typeof listened.catch === 'function') {
+        listened.catch(() => {});
+      }
+      // Invalidation: a later updater error clears the staged bytes
+      // (emit_update_error sets staged=None in updater.rs), and an
+      // up-to-date check means no valid stage exists — either way the bar
+      // would offer a Restart that apply_update rejects, so hide it. A
+      // newer ready re-shows via onReady. hide() is idempotent, so events
+      // with no visible bar are harmless.
+      for (const evt of ['update://error', 'update://none']) {
+        try {
+          const inv = W.listen(evt, () => {
+            try {
+              if (UpdateBanner && typeof UpdateBanner.hide === 'function') {
+                UpdateBanner.hide();
+              }
+            } catch (err) { Logger.warn(evt + ' banner hide failed:', err); }
+          });
+          if (inv && typeof inv.catch === 'function') {
+            inv.catch(() => {});
+          }
+        } catch (_) { /* best-effort per event */ }
+      }
+    }
+  } catch (_) { /* not in Tauri (tests/browser); banner stays inert */ }
+
+  // Replay-on-open: a chat window booted after the build was already staged
+  // missed the broadcast entirely. Mirror the Updates panel's replay
+  // (UpdatesPanel.tsx): one update_state snapshot, show the banner when a
+  // build is staged.
+  try {
+    const core = window.__TAURI__ && window.__TAURI__.core;
+    if (core && typeof core.invoke === 'function') {
+      core.invoke('update_state').then((dto) => {
+        try {
+          if (dto && typeof dto === 'object' && dto.phase === 'ready' && dto.version &&
+              UpdateBanner && typeof UpdateBanner.onReady === 'function') {
+            UpdateBanner.onReady({ version: dto.version, notes: dto.notes });
+          }
+        } catch (err) { Logger.warn('update_state banner replay failed:', err); }
+      }).catch(() => { /* off-Tauri / updater not ready; banner stays inert */ });
+    }
+  } catch (_) { /* best-effort */ }
 
   // ── hub-event return channel ────────────────────────────────────────────
   // Rust delivers window-targeted hub-events with strict `for:` discipline.
