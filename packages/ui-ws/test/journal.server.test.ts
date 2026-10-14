@@ -336,6 +336,42 @@ describe("POST /v1/journal deadlines and in-flight cap", () => {
     await until(() => h.state.interrupted)
   })
 
+  it("the socket inactivity timeout guards only the body read, not the sink write", async () => {
+    const h = hanging()
+    const timeouts: number[] = []
+    let sinkSawTimeouts: number[] = []
+    const socket = Object.assign(new EventEmitter(), { remoteAddress: "127.0.0.1" })
+    const req = Object.assign(new EventEmitter(), {
+      method: "POST",
+      headers: { ...authed(), "content-length": "10" } as Record<string, string>,
+      socket,
+      setTimeout: (ms: number) => void timeouts.push(ms),
+      destroy: () => {},
+    })
+    const res = Object.assign(new EventEmitter(), {
+      headersSent: false,
+      writableFinished: false,
+      writeHead: () => {},
+      end: () => {},
+    })
+    const done = handleJournalRequest(req as never, res as never, {
+      token: JOURNAL_TOKEN,
+      sink: { submit: () => ((sinkSawTimeouts = [...timeouts]), h.write()) },
+      tokenEq: (a, b) => a === b,
+      rateLimiter: new JournalRateLimiter(),
+      inFlight: new JournalInFlight(1),
+      deadlineMs: 60_000,
+      log: () => {},
+    })
+    req.emit("data", Buffer.from(JSON.stringify(goodEntry())))
+    req.emit("end")
+    await until(() => sinkSawTimeouts.length > 0)
+    expect(sinkSawTimeouts[0]).toBeGreaterThan(0)
+    expect(sinkSawTimeouts[sinkSawTimeouts.length - 1]).toBe(0)
+    res.emit("close")
+    await done
+  })
+
   // Bun's node:http (the server runtime) does not report a client that drops
   // while the response is pending, so this drives the handler directly with
   // emitters standing in for Node's request, response and socket. Under Bun

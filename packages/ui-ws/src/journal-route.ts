@@ -513,6 +513,11 @@ export async function handleJournalRequest(
   }
   try {
     const body = await readBody(req, JOURNAL_MAX_BODY_BYTES, abort.signal)
+    // Body fully read: the socket inactivity timeout has guarded the read
+    // phase. Disable it so the absolute deadline below owns the sink phase;
+    // otherwise a sink stalling past 10s kills the connection instead of
+    // answering the designed 504 at the deadline.
+    req.setTimeout(0)
     if (body === "too_large") {
       tooLarge(req, res)
       return
