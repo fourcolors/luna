@@ -84,6 +84,22 @@ export class LocomoHardStopError extends Error {
   }
 }
 
+/**
+ * What the run loop does when an answer-model call throws.
+ * - "hard-stop": ollama-cloud's systemic failure; stop, write partial results (exit 6).
+ * - "abort": any local Ollama failure (model not pulled, daemon crash, timeout);
+ *   stop with NO results written (exit 7), so a broken backend can never
+ *   produce a normal-looking file of empty predictions scored 0.
+ * - "score-empty": anything else keeps the historical per-pair empty prediction.
+ */
+export type AnswerFailureAction = "hard-stop" | "abort" | "score-empty"
+
+export function answerFailureAction(backend: string, cause: unknown): AnswerFailureAction {
+  if (cause instanceof LocomoHardStopError) return "hard-stop"
+  if (backend === "ollama") return "abort"
+  return "score-empty"
+}
+
 /** Exponential backoff (ms) for the Nth (1-based) failed attempt, capped at 4s. */
 export function backoffDelayMs(attempt: number): number {
   return Math.min(400 * 2 ** (attempt - 1), 4000)

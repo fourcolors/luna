@@ -1172,6 +1172,42 @@ describe('Luna Chat Window (chat.html) - Behavioral Tests', () => {
       expect(chat.children[1].className).toBe('msg assistant')
     })
 
+    it('user-accepted restores the optimistic user bubble a late thread-snapshot wiped', () => {
+      const ts = Date.now()
+      // The snapshot's restart-survival tail persists the thread id via core.invoke.
+      ;(window as any).__TAURI__.core = { invoke: vi.fn(async () => null) }
+      M().State.activeThreadId = 'th-late'
+      M().ChatState.appendUser('question after switch', null, ts)
+      M().ChatLoop.flush()
+      expect(chat.querySelectorAll('.msg.user')).toHaveLength(1)
+
+      // The re-subscribe snapshot was built before the send, so it lacks the message.
+      M().handleFrame({ type: 'thread-snapshot', threadId: 'th-late', messages: [{ role: 'assistant', text: 'older reply' }] })
+      expect(chat.querySelectorAll('.msg.user')).toHaveLength(0)
+
+      M().handleFrame({ type: 'user-accepted', threadId: 'th-late', message: { role: 'user', text: 'question after switch', ts: ts + 40 } })
+      M().ChatLoop.flush()
+      const users = chat.querySelectorAll('.msg.user')
+      expect(users).toHaveLength(1)
+      expect(users[0].textContent).toContain('question after switch')
+    })
+
+    it('user-accepted does not duplicate an optimistic bubble that survived', () => {
+      const ts = Date.now()
+      M().State.activeThreadId = 'th-normal'
+      M().ChatState.appendUser('plain send', null, ts)
+      M().handleFrame({ type: 'user-accepted', threadId: 'th-normal', message: { role: 'user', text: 'plain send', ts: ts + 25 } })
+      M().ChatLoop.flush()
+      expect(chat.querySelectorAll('.msg.user')).toHaveLength(1)
+    })
+
+    it('user-accepted for a thread that is not on screen leaves the visible transcript alone', () => {
+      M().State.activeThreadId = 'th-visible'
+      M().handleFrame({ type: 'user-accepted', threadId: 'th-background', message: { role: 'user', text: 'elsewhere', ts: Date.now() } })
+      M().ChatLoop.flush()
+      expect(chat.querySelectorAll('.msg.user')).toHaveLength(0)
+    })
+
     it('assistant-delta after a tool-call opens a fresh text bubble; the card is preserved', () => {
       M().handleFrame({ type: 'assistant-delta', turnId: 't1', text: 'Looking up ' })
       M().handleFrame({ type: 'tool-call', turnId: 't1', toolCallId: 'tc-1', name: 'bash', input: { cmd: 'ls' } })

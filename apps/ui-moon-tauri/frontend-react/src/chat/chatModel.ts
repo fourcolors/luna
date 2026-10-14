@@ -225,7 +225,7 @@ function historyAttachmentName(mediaType: string): string {
 /** Rebuild the preview chips the composer attached at send time, so a
  *  restored user turn still shows the image it was sent with. Returns null
  *  (not []) for none, matching what a text-only turn carries. */
-function historyPreviews(raw: readonly HistoryAttachment[] | undefined): Preview[] | null {
+export function historyPreviews(raw: readonly HistoryAttachment[] | undefined): Preview[] | null {
   if (!Array.isArray(raw) || raw.length === 0) return null
   const out: Preview[] = []
   for (const a of raw) {

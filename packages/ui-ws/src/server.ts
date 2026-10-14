@@ -1998,6 +1998,12 @@ export const startUIWebSocketServer = (
             if (m.has(threadId)) {
               // Already forwarding live frames — re-paint only.
               const frames = yield* chat.snapshot(threadId)
+              // unsubscribeChatThread does not take subscribeMutex, so an
+              // unsubscribe may have landed while the snapshot was in
+              // flight. Only repaint while the subscription is still live,
+              // or the client gets a stale snapshot for a thread it left.
+              const live = yield* Ref.get(chatFibers)
+              if (!live.has(threadId)) return
               if (ws.readyState === ws.OPEN) {
                 for (const f of frames) {
                   send(ws, chatFrameToWire(f))

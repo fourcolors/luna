@@ -18,6 +18,7 @@
  */
 import { afterAll, describe, expect, it } from "vitest"
 import {
+  Deferred,
   Effect,
   Fiber,
   Layer,
@@ -1239,17 +1240,31 @@ describe("ChatService (Tier-2 sim)", () => {
           // + turn-complete (the SDK `result`) = 3 frames. Plus 1 snapshot →
           // 1 + TURNS * 3 = 10 frames.
           // (No assistant-delta frames — fake doesn't emit stream_event.)
-          const collectN = (s: Stream.Stream<ChatFrame, never>, n: number) =>
-            s.pipe(Stream.take(n), Stream.runCollect)
+          // Each subscriber signals on its first frame (the snapshot).
+          // subscribe() opens the live PubSub subscription BEFORE building
+          // the snapshot, so a seen snapshot proves no later frame can be
+          // missed. A fixed sleep here lost the race under CI load.
+          const collectN = (
+            s: Stream.Stream<ChatFrame, never>,
+            n: number,
+            attached: Deferred.Deferred<void>,
+          ) =>
+            s.pipe(
+              Stream.tap(() => Deferred.succeed(attached, undefined)),
+              Stream.take(n),
+              Stream.runCollect,
+            )
 
-          const aFiber = yield* Effect.forkChild(collectN(subA, 1 + TURNS * 3))
-          const bFiber = yield* Effect.forkChild(collectN(subB, 1 + TURNS * 3))
-          const cFiber = yield* Effect.forkChild(collectN(subC, 1)) // just snapshot
+          const aAttached = yield* Deferred.make<void>()
+          const bAttached = yield* Deferred.make<void>()
+          const cAttached = yield* Deferred.make<void>()
+          const aFiber = yield* Effect.forkChild(collectN(subA, 1 + TURNS * 3, aAttached))
+          const bFiber = yield* Effect.forkChild(collectN(subB, 1 + TURNS * 3, bAttached))
+          const cFiber = yield* Effect.forkChild(collectN(subC, 1, cAttached)) // just snapshot
 
-          // Let the forked subscribers attach to their PubSub before any
-          // send fires — `Stream.unwrap` only opens the underlying
-          // PubSub.subscribe lazily on first pull.
-          yield* Effect.sleep("30 millis")
+          yield* Deferred.await(aAttached)
+          yield* Deferred.await(bAttached)
+          yield* Deferred.await(cAttached)
 
           // Drive the conversation.
           for (let i = 0; i < TURNS; i++) {

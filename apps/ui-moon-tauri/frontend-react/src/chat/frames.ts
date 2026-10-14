@@ -29,6 +29,7 @@
 
 import { createQueueTray } from './queueTray'
 import { createForkTray } from './forkTray'
+import { historyPreviews } from './chatModel'
 
 export interface FramesCtx {
   readonly Logger: {
@@ -817,6 +818,29 @@ export function createFrames(ctx: FramesCtx) {
     QueueTray.applyUpdate(frame);
   });
 
+  // A user turn is the optimistic bubble for `message` when it matches the
+  // accepted message's text and its ts is within wall-clock tolerance of
+  // the server's persist ts. The optimistic turn carries only a
+  // client-side ts (Date.now at send) while the frame carries the
+  // server's — close, never equal — so an id comparison is impossible and
+  // text+ts is the stable pairing. A non-finite ts on either side degrades
+  // to text-only, conservatively preferring to skip a restore over
+  // duplicating a bubble.
+  function userBubbleMissing(message) {
+    const text = message && typeof message.text === 'string' ? message.text : '';
+    const ts = message ? Number(message.ts) : NaN;
+    const turns = (ChatState && ChatState.turns) || [];
+    for (const t of turns) {
+      if (!t || t.role !== 'user') continue;
+      const seg = t.segments && t.segments[0];
+      const tText = seg && typeof seg.raw === 'string' ? seg.raw : '';
+      if (tText !== text) continue;
+      const tTs = Number(t.ts);
+      if (!Number.isFinite(ts) || !Number.isFinite(tTs) || Math.abs(tTs - ts) < 30000) return false;
+    }
+    return true;
+  }
+
   MoonFrames.register('user-accepted', (frame) => {
     // The server persisted a user message. Moon already drew the bubble
     // optimistically, so the only job here is the per-thread cache: without
@@ -826,6 +850,24 @@ export function createFrames(ctx: FramesCtx) {
     // already covers.
     if (frame && frame.threadId && frame.message) {
       ThreadCache.appendMessage(frame.threadId, frame.message);
+      // Late-snapshot race: the re-subscribe snapshot is built at subscribe
+      // time, so a message sent before it lands is not in it — the
+      // snapshot's reset()+loadHistory wipes the optimistic bubble, and the
+      // cache-only append above leaves the visible transcript without the
+      // user's question until a switch-back repaints from the cache. When
+      // the accepted message belongs to the active thread and its bubble is
+      // missing from the visible transcript, restore it. Idempotent: the
+      // normal case (bubble survived) matches on text+ts and skips, so no
+      // duplicate bubble.
+      if (frame.threadId === State.activeThreadId && userBubbleMissing(frame.message)) {
+        const text = typeof frame.message.text === 'string' ? frame.message.text : '';
+        const previews = historyPreviews(frame.message.attachments);
+        const mts = Number(frame.message.ts);
+        // Mirror load-history's skip rule: restore only what would render.
+        if (text.trim() || (previews && previews.length > 0)) {
+          ChatState.appendUser(text, previews, Number.isFinite(mts) ? mts : undefined);
+        }
+      }
     }
   });
 

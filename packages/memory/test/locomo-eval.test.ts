@@ -8,10 +8,12 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { aggregateByCategory, f1Score, scoreQA } from "../src/adapters/locomo-eval/scoring.js"
 import {
+  answerFailureAction,
   answerFromContextOllama,
   backoffDelayMs,
   buildDateIndexBlock,
   classifyOllamaCloudResponse,
+  LocomoHardStopError,
   newCostTracker,
 } from "../src/adapters/locomo-eval/answer-model.js"
 import { flattenTurns } from "../src/adapters/locomo-eval/dataset.js"
@@ -155,6 +157,17 @@ describe("locomo-eval answer-model: ollama-cloud failure classification", () => 
   it("other 4xx (e.g. a malformed request) is a plain, non-systemic failure", () => {
     const result = classifyOllamaCloudResponse({ status: 400, body: "bad request", attempt: 1, maxAttempts: 4 })
     expect(result).toEqual({ kind: "fail" })
+  })
+
+  it("answerFailureAction: a local ollama failure aborts the run instead of scoring an empty prediction", () => {
+    expect(answerFailureAction("ollama", new Error('Ollama /api/chat error 404 for model "llama3.1:8b"'))).toBe("abort")
+    expect(answerFailureAction("ollama", new DOMException("timed out", "TimeoutError"))).toBe("abort")
+  })
+
+  it("answerFailureAction: cloud hard-stops stay hard-stops; other backends keep the empty prediction", () => {
+    expect(answerFailureAction("ollama-cloud", new LocomoHardStopError("auth", "bad key"))).toBe("hard-stop")
+    expect(answerFailureAction("ollama-cloud", new Error("400 malformed"))).toBe("score-empty")
+    expect(answerFailureAction("anthropic", new Error("boom"))).toBe("score-empty")
   })
 
   it("backoffDelayMs grows exponentially and is capped", () => {
