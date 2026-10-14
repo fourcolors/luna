@@ -940,7 +940,7 @@ const WebSocketEngine = {
           State.reconnectAttempts = 0;
           this.updateStatus(
             'disconnected',
-            storeUnreadable ? 'Credential store unreadable' : notPaired ? 'Route not paired' : 'Route unavailable',
+            storeUnreadable ? 'Credentials unreadable' : notPaired ? 'Route not paired' : 'Route unavailable',
           );
         }
         return;

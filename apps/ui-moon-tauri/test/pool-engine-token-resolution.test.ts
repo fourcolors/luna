@@ -214,7 +214,7 @@ describe('PoolEngine token resolution against a migrated route (#528, #529)', ()
     expect(FakeWebSocket.instances.length).toBe(0)
     const pill = document.getElementById('connection-status')!
     expect(pill.className).toBe('disconnected')
-    expect(pill.textContent).toBe('Credential store unreadable')
+    expect(pill.textContent).toBe('Credentials unreadable')
   })
 
   it('a real literal token resolve_route_token returns passes through unchanged', async () => {

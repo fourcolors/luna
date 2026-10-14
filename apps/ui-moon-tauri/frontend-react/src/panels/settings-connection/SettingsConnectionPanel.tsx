@@ -350,7 +350,7 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
         store.dispatch({
           type: "pairing-prompted",
           message: storeUnreadable
-            ? `The saved credentials file is unreadable - saving a token for "${next}" resets every channel (the old file is kept as moon-connection.json.corrupt-*)`
+            ? `Saved credentials can't be read - saving a token for "${next}" resets every channel (a backup of the old file is kept)`
             : `"${next}" is not paired yet - paste a token and save to pair it`,
           wsUrl: routeEndpoint,
         })

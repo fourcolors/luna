@@ -979,7 +979,8 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
     expect(channelSelect().value).toBe('canary')
     expect(channelError().hidden).toBe(false)
     expect(channelError().textContent).toContain('resets every channel')
-    expect(channelError().textContent).toContain('moon-connection.json.corrupt-')
+    expect(channelError().textContent).toContain('canary')
+    expect(channelError().textContent).toContain('backup')
     expect(channelError().textContent).not.toContain('is not paired yet')
   })
 
