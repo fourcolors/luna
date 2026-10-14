@@ -1516,6 +1516,9 @@ tokenRef = "legacy"
             let err = result.expect_err("a malformed moon-connection.json means nothing is paired");
             assert!(err.starts_with("not-paired:"), "got {err:?}");
             assert!(err.contains("stable"), "the error must name the route key, got {err:?}");
+            // wire.ts and SettingsConnectionPanel.tsx key the "re-pairing resets
+            // every channel" warning on this phrase (#532).
+            assert!(err.contains("credential store is unreadable"), "got {err:?}");
         });
     }
 

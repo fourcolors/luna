@@ -956,6 +956,33 @@ describe('SettingsConnectionPanel - Step 1a: the guarded route switch', () => {
     expect(tokenInput().value).toBe('')
   })
 
+  it('#532: an unreadable credential store prompts pairing but warns that saving resets every channel', async () => {
+    ;(window as any).MoonSession = {
+      ...stubRoutes([{ key: 'stable', label: 'Stable' }, { key: 'canary', label: 'Canary' }], 'stable'),
+      setDefaultRoute: vi.fn().mockResolvedValue(true),
+    }
+    const { ctx } = makeCtx((cmd) => {
+      if (cmd === 'load_route') return { key: 'canary', endpoints: ['ws://canary:4753/ui'] }
+      if (cmd === 'resolve_route_token') {
+        throw new Error('not-paired: route "canary"\'s credential store is unreadable (expected value at line 1) - pairing will rewrite it')
+      }
+      return null
+    })
+    renderPanel(ctx)
+    await flush()
+    await flush()
+
+    selectValue(channelSelect(), 'canary')
+    await flush()
+    await flush()
+
+    expect(channelSelect().value).toBe('canary')
+    expect(channelError().hidden).toBe(false)
+    expect(channelError().textContent).toContain('resets every channel')
+    expect(channelError().textContent).toContain('moon-connection.json.corrupt-')
+    expect(channelError().textContent).not.toContain('is not paired yet')
+  })
+
   it('#F4: a BARE STRING rejection from resolve_route_token (real Tauri Err(String) shape, not an Error wrapper) still routes to the pairing prompt', async () => {
     const setDefaultRoute = vi.fn().mockResolvedValue(true)
     ;(window as any).MoonSession = {

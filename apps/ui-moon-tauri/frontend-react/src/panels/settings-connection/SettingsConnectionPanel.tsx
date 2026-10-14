@@ -344,9 +344,14 @@ export function SettingsConnectionPanel({ ctx }: { ctx: PanelCtx }) {
         // dispatched above); the fields shown are the TARGET route's real
         // endpoint and an EMPTY token - never the previous channel's creds,
         // which would describe the wrong server under the new channel's name.
+        // #532: a garbled moon-connection.json is also a not-paired refusal,
+        // but saving then rewrites the store with only this channel.
+        const storeUnreadable = reason.includes("credential store is unreadable")
         store.dispatch({
           type: "pairing-prompted",
-          message: `"${next}" is not paired yet - paste a token and save to pair it`,
+          message: storeUnreadable
+            ? `The saved credentials file is unreadable - saving a token for "${next}" resets every channel (the old file is kept as moon-connection.json.corrupt-*)`
+            : `"${next}" is not paired yet - paste a token and save to pair it`,
           wsUrl: routeEndpoint,
         })
       } else {
