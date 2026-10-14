@@ -220,9 +220,11 @@ export function forgetRecent(
  * "compare with the other computer" check possible at all.
  */
 export async function fingerprintOf(key: Uint8Array): Promise<string> {
-  // Copy into a fresh ArrayBuffer: subtle.digest wants a plain BufferSource.
+  // Copy into a fresh ArrayBuffer-backed view: subtle.digest wants a plain
+  // BufferSource. Pass the view, not `.buffer`: Node's WebCrypto rejects an
+  // ArrayBuffer from another realm (jsdom), while a typed-array view passes.
   const bytes = new Uint8Array(key.byteLength)
   bytes.set(key)
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", bytes.buffer))
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-1", bytes))
   return Array.from(digest.slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("-")
 }

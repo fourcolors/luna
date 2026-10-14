@@ -40,6 +40,15 @@ function makeTestAdapter(
   }
 }
 
+/** Poll until the adapter has seen `n` responses (bounded at ~5s) instead of a fixed sleep that loses under load. */
+const awaitResponses = (ref: Ref.Ref<GatewayResponse[]>, n: number) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < 500; i++) {
+      if ((yield* Ref.get(ref)).length >= n) return
+      yield* Effect.sleep(Duration.millis(10))
+    }
+  })
+
 const makeTestRuntime = () =>
   GatewayService.makeLayer({ logMessages: false }).pipe(
     Layer.provide(Clock.Default),
@@ -76,7 +85,7 @@ describe("GatewayService", () => {
             ts: new Date().toISOString(),
           })
 
-          yield* Effect.sleep(Duration.millis(50))
+          yield* awaitResponses(responsesRef, 1)
 
           const captured = yield* Ref.get(responsesRef)
           responses.push(...captured)
@@ -120,7 +129,8 @@ describe("GatewayService", () => {
             id: "m-2", transport: "transport-2", channelId: "ch", senderId: "u",
             text: "from-2", metadata: {}, ts: new Date().toISOString(),
           })
-          yield* Effect.sleep(Duration.millis(60))
+          yield* awaitResponses(resp1Ref, 1)
+          yield* awaitResponses(resp2Ref, 1)
 
           const r1 = yield* Ref.get(resp1Ref)
           const r2 = yield* Ref.get(resp2Ref)
@@ -156,7 +166,7 @@ describe("GatewayService", () => {
             id: "c-1", transport: "crash-transport", channelId: "ch", senderId: "u",
             text: "trigger-crash", metadata: {}, ts: new Date().toISOString(),
           })
-          yield* Effect.sleep(Duration.millis(50))
+          yield* awaitResponses(responsesRef, 1)
 
           const captured = yield* Ref.get(responsesRef)
           responses.push(...captured)
@@ -221,7 +231,7 @@ describe("GatewayService", () => {
 
           // Push via gateway.send (not via adapter queue)
           yield* gateway.send("push-transport", "ch-1", "push message")
-          yield* Effect.sleep(Duration.millis(30))
+          yield* awaitResponses(responsesRef, 1)
 
           const captured = yield* Ref.get(responsesRef)
           responses.push(...captured)
