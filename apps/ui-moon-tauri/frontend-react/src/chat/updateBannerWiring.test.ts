@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * updateBannerWiring.test.ts — regression tests for the in-chat update banner
  * wiring in wiring.ts (PR #781).
