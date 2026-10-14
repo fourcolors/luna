@@ -110,6 +110,51 @@ fn panel_instance_label(kind: &str, params: &serde_json::Value) -> String {
     format!("{}-{:x}", panel_label(kind), djb2(&params.to_string()))
 }
 
+/// Kind-specific allowlist for widget-open params, applied BEFORE a param set
+/// becomes a URL, an instance label, or a row in ~/.luna/layout.json.
+///
+/// `vnc` (Screen Share) keeps only a plain `host` (a DNS name or IP, never a
+/// URL) and a valid `port`. Anything else (a password, a username, a ws://
+/// endpoint, whose path or query can carry a token) is dropped, so a secret
+/// passed by mistake or by a prompt-injected agent can never be written to
+/// the layout file in plain text. A ws:// endpoint can still be typed into
+/// the panel; it is just never pre-filled or persisted. An empty result means the base
+/// window. Other kinds pass through unchanged.
+pub(crate) fn sanitize_widget_params(kind: &str, params: serde_json::Value) -> serde_json::Value {
+    if kind != "vnc" {
+        return params;
+    }
+    let Some(obj) = params.as_object() else {
+        return serde_json::Value::Null;
+    };
+    let mut out = serde_json::Map::new();
+    if let Some(h) = obj.get("host").and_then(|v| v.as_str()) {
+        let h = h.trim();
+        let plain = !h.is_empty()
+            && h.len() <= 255
+            && !h.contains(['@', '?', '#', '/'])
+            && !h.chars().any(|c| c.is_control() || c.is_whitespace());
+        if plain {
+            out.insert("host".into(), serde_json::Value::String(h.to_string()));
+        }
+    }
+    let port = match obj.get("port") {
+        Some(serde_json::Value::Number(n)) => n.as_u64(),
+        Some(serde_json::Value::String(s)) if s.trim().chars().all(|c| c.is_ascii_digit()) => {
+            s.trim().parse::<u64>().ok()
+        }
+        _ => None,
+    };
+    if let Some(p) = port.filter(|p| (1..=65535).contains(p)) {
+        out.insert("port".into(), serde_json::Value::from(p));
+    }
+    if out.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::Value::Object(out)
+    }
+}
+
 /// Append registry params as query parameters onto a descriptor page URL
 /// (only scalar values; keys must be ASCII-alphanumeric — fail closed).
 fn panel_url_with_params(page: &str, params: &serde_json::Value) -> String {
@@ -360,7 +405,10 @@ pub(crate) fn spawn_panel_for_layout(
     width: Option<f64>,
     height: Option<f64>,
 ) -> Result<String, String> {
-    match params {
+    // Restored rows go through the same allowlist as a fresh open, so a
+    // layout file written by an older build cannot replay a secret.
+    let params = params.map(|p| sanitize_widget_params(&desc.kind, p.clone()));
+    match params.as_ref() {
         Some(p) if !p.is_null() => {
             let label = panel_instance_label(&desc.kind, p);
             let url = panel_url_with_params(&desc.page, p);
@@ -634,7 +682,7 @@ pub(crate) async fn open_widget(
     if desc.trust != "system" {
         return Err(format!("kind {kind} is not a system widget"));
     }
-    let params = params.unwrap_or(serde_json::Value::Null);
+    let params = sanitize_widget_params(&kind, params.unwrap_or(serde_json::Value::Null));
     // No params → the kind's base window (one per kind). WITH params → one
     // window per DISTINCT params-set (deterministic hash label), regardless
     // of the singleton flag: open_widget('chat') is the main line, while
@@ -3831,5 +3879,43 @@ mod tests {
         let w = r(102.0, 0.0, 100.0, 100.0);
         let plan = pl(vec![("panel-chat", chat), ("widget-w", w)]);
         assert_eq!(plan["widget-w"], Some("panel-chat".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod sanitize_widget_params_tests {
+    use super::sanitize_widget_params;
+    use serde_json::json;
+
+    #[test]
+    fn vnc_keeps_only_a_plain_host_and_a_valid_port() {
+        assert_eq!(
+            sanitize_widget_params("vnc", json!({"host": " 192.168.1.20 ", "port": "5901", "password": "hunter2", "username": "me"})),
+            json!({"host": "192.168.1.20", "port": 5901})
+        );
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "mac.local", "port": 5900})), json!({"host": "mac.local", "port": 5900}));
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "fe80::1"})), json!({"host": "fe80::1"}));
+    }
+
+    #[test]
+    fn vnc_drops_credentials_and_junk() {
+        // Credentials embedded in a URL or user@host never survive.
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "ws://user:pass@box:6080"})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "me@box", "port": 0})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!({"port": "59a0"})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!({"port": 70000})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!({"password": "x"})), json!(null));
+        // A token in a websockify URL is a secret too.
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "wss://box/websockify?token=abc"})), json!(null));
+        // Any ws:// endpoint is never persisted: a path can be a bearer secret.
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "wss://box/vnc/SECRET"})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!({"host": "ws://box:6080/websockify"})), json!(null));
+        assert_eq!(sanitize_widget_params("vnc", json!("str")), json!(null));
+    }
+
+    #[test]
+    fn other_kinds_pass_through_untouched() {
+        let p = json!({"thread": "thr_1", "redockTo": "main", "anything": 1});
+        assert_eq!(sanitize_widget_params("chat", p.clone()), p);
     }
 }

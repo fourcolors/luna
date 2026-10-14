@@ -32,6 +32,17 @@ describe("deriveTitleFromMessage — cheap title heuristic", () => {
     expect(deriveTitleFromMessage(exact)).toBe(exact)
   })
 
+  it("never splits an astral character at the 60-char boundary", () => {
+    const result = deriveTitleFromMessage("a".repeat(59) + "😀 more text")
+    expect(result).toBe("a".repeat(59) + "😀")
+    expect(result).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+  })
+
+  it("counts 60 code points, not UTF-16 units, before truncating", () => {
+    const exact = "😀".repeat(60)
+    expect(deriveTitleFromMessage(exact)).toBe(exact)
+  })
+
   it("returns null for an empty string", () => {
     expect(deriveTitleFromMessage("")).toBeNull()
   })

@@ -35,6 +35,36 @@ describe("markdownToTelegramHtml — inline styles", () => {
     )
   })
 
+  it("keeps balanced parentheses inside link URLs intact", () => {
+    expect(
+      markdownToTelegramHtml(
+        "[Disambiguation](https://en.wikipedia.org/wiki/Mercury_(disambiguation))",
+      ),
+    ).toBe(
+      '<a href="https://en.wikipedia.org/wiki/Mercury_(disambiguation)">Disambiguation</a>',
+    )
+  })
+
+  it("keeps multiple balanced paren groups inside link URLs intact", () => {
+    expect(markdownToTelegramHtml("[a](https://example.com/x_(y)_z)")).toBe(
+      '<a href="https://example.com/x_(y)_z">a</a>',
+    )
+  })
+
+  it("leaves unbalanced paren URLs as literal text instead of truncating", () => {
+    expect(markdownToTelegramHtml("[t](https://example.com/a_(b)")).toBe(
+      "[t](https://example.com/a_(b)",
+    )
+  })
+
+  it("leaves an incomplete (hostless) link destination as literal text", () => {
+    // Mid-stream partials can end right after the scheme; the old pattern
+    // required at least one character after "https://", and the balanced-
+    // paren rewrite must keep that so an incomplete destination is not
+    // emitted as a hostless anchor.
+    expect(markdownToTelegramHtml("[docs](https://)")).toBe("[docs](https://)")
+  })
+
   it("does NOT treat underscores as emphasis (tool names survive)", () => {
     expect(markdownToTelegramHtml("call mcp__web__search or snake_case_name")).toBe(
       "call mcp__web__search or snake_case_name",
@@ -171,8 +201,15 @@ describe("markdownToTelegramHtml — block structure", () => {
   })
 
   it("renders horizontal rules as a divider line, not a bullet", () => {
-    expect(markdownToTelegramHtml("---")).toBe("──────────")
-    expect(markdownToTelegramHtml("***")).toBe("──────────")
+    expect(markdownToTelegramHtml("---")).toBe("───")
+    expect(markdownToTelegramHtml("***")).toBe("───")
+  })
+
+  it("never expands text: a max-size chunk of horizontal rules stays under 4096", () => {
+    const md = Array(1024).fill("---").join("\n")
+    expect(md.length).toBe(4095)
+    const visible = markdownToTelegramHtml(md).replace(/<[^>]*>/g, "")
+    expect(visible.length).toBeLessThanOrEqual(4096)
   })
 
   it("applies inline styling inside headings, bullets, and quotes", () => {

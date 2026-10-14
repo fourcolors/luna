@@ -1,5 +1,5 @@
 import { Effect, Option, Stream } from "effect"
-import { MemoryRouterTag } from "@luna/memory"
+import { MemoryRouterTag, isExternalMemory } from "@luna/memory"
 import type { MemoryRecord } from "@luna/memory"
 import { Clock } from "../clock.js"
 import { SessionStore } from "../session/session-store.js"
@@ -40,6 +40,11 @@ const OP_KINDS = Object.keys(DREAM_OP_TRAITS) as ReadonlyArray<DreamOpKind>
 const MATERIALIZE_OPS: ReadonlySet<DreamOpKind> = new Set<DreamOpKind>(
   OP_KINDS.filter((k) => DREAM_OP_TRAITS[k].materialize),
 )
+
+const touchesExternal = (snapshot: unknown): boolean =>
+  snapshot !== null &&
+  typeof snapshot === "object" &&
+  isExternalMemory(snapshot as Parameters<typeof isExternalMemory>[0])
 
 export interface ApplyOpsOptions {
   /**
@@ -101,6 +106,29 @@ export const applyOps = (
         // before is null: the pinned dream-worker contract records every
         // materialized delete as applied.)
         if (op.before !== null && op.before === op.after) continue
+        // Never let a dream op rewrite or delete an external record, and never
+        // let it mint one: those stay exactly as the external tool reported.
+        // The op's own snapshots come from model output, so the live records
+        // the write would hit are checked too.
+        const afterId =
+          op.after !== null && typeof op.after === "object" && typeof (op.after as { id?: unknown }).id === "string"
+            ? (op.after as { id: string }).id
+            : null
+        const liveTarget = yield* mem.get(op.targetId)
+        const liveAfter = afterId !== null && afterId !== op.targetId ? yield* mem.get(afterId) : null
+        if (
+          touchesExternal(op.before) ||
+          touchesExternal(op.after) ||
+          touchesExternal(liveTarget) ||
+          touchesExternal(liveAfter)
+        ) {
+          yield* store.record({
+            dreamId, at: now, op: op.kind, targetId: op.targetId,
+            before: op.before, after: op.after, rationale: op.rationale,
+            status: "proposed", appliedAt: null,
+          })
+          continue
+        }
         // Idempotent state-set: null after = delete; else upsert to desired state.
         if (op.after === null) {
           yield* mem.delete(op.targetId)
@@ -245,9 +273,14 @@ export const gatherInputs = (
         ),
     )
 
+    // External records (e.g. Claude Code journals) are untrusted reports, not
+    // operator facts, so they never feed consolidation or belief proposals.
     const memories = yield* mem
       .query({ namespace: "operator" })
-      .pipe(Stream.runCollect, Effect.map((c) => Array.from(c)))
+      .pipe(
+        Stream.runCollect,
+        Effect.map((c) => Array.from(c).filter((r) => !isExternalMemory(r))),
+      )
 
     // Optional skill catalog for skill_improvement proposals. Bodies never
     // enter the dream prompt (cost + leak surface) — metadata only.

@@ -130,10 +130,14 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
 
   const cancelledRef = useRef(false)
 
-  function fetchVoices(): Promise<VoiceOption[] | null> {
+  function fetchVoices(expectedEngine: TtsEngine): Promise<VoiceOption[] | null> {
     return (ctx.invoke("voice_list_voices") as Promise<unknown>)
       .then((voices) => {
         if (cancelledRef.current || !Array.isArray(voices)) return null
+        // A second engine toggle landing while this fetch was in flight must
+        // win: drop the stale catalog instead of serving it to the wrong
+        // engine's picker.
+        if (store.getState().ttsEngine !== expectedEngine) return null
         return voices
           .filter((v): v is { id: string; name?: string; quality?: string } => {
             return !!v && typeof (v as { id?: unknown }).id === "string" && (v as { id: string }).id.length > 0
@@ -147,8 +151,8 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
       .catch(() => null)
   }
 
-  function populateVoices(): Promise<void> {
-    return fetchVoices().then((options) => {
+  function populateVoices(expectedEngine: TtsEngine): Promise<void> {
+    return fetchVoices(expectedEngine).then((options) => {
       if (options) dispatch({ type: "voices-loaded", voices: options })
     })
   }
@@ -228,7 +232,7 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
         // has settled (a fish id on the system engine becomes its voice).
         return engineChain
           .then(() => (savedVoiceId ? ctx.invoke("voice_set_voice", { id: savedVoiceId }) : null))
-          .then(() => populateVoices())
+          .then(() => populateVoices(ttsEngine))
           .catch(() => {})
       })
       .catch(() => {
@@ -272,7 +276,7 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
     // Switch, then refresh the voice list (it serves the active engine)
     // and re-apply the per-engine saved pick.
     ;(ctx.invoke("voice_set_tts_engine", { engine }) as Promise<unknown>)
-      .then(() => populateVoices())
+      .then(() => populateVoices(engine))
       .then(() => {
         // Read the store, not the render closure: a second toggle landing
         // while this chain was in flight must win.
@@ -291,7 +295,7 @@ export function VoicePanel({ ctx }: { ctx: PanelCtx }) {
       // whole save result: a second async dispatch can land while React is
       // mid-render of the first and trip a react-dom interrupted-render
       // crash (dev build).
-      .then(() => fetchVoices())
+      .then(() => fetchVoices("fish"))
       .then((voices) => {
         if (fishKeyRef.current) fishKeyRef.current.value = ""
         dispatch({

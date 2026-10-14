@@ -27,8 +27,14 @@
  *     completed turn would leave its dead agents pinned under the thread
  *     forever.
  */
-import { describe, it, expect } from "vitest"
-import { renderThreadStrip, type ThreadStripCtx } from "../frontend-react/src/chat/threadStrip"
+import { describe, it, expect, vi } from "vitest"
+import {
+  AGENT_PULSE_MS,
+  buildAgentRow,
+  renderAgentRowsInto,
+  renderThreadStrip,
+  type ThreadStripCtx,
+} from "../frontend-react/src/chat/threadStrip"
 import {
   liveAgentsForThread,
   MAX_AGENT_DEPTH,
@@ -319,5 +325,56 @@ describe("renderThreadStrip — nested agent rows", () => {
       }),
     )
     expect(document.querySelectorAll(".thread-row")).toHaveLength(1)
+  })
+})
+
+describe("background agents and the Main chat rows", () => {
+  it("keeps a running background agent and its finished sibling visible", () => {
+    // A background Agent stays `running` in the bridge across turn-complete,
+    // so this is the shape a client sees between turns.
+    const rows = liveAgentsForThread(
+      { main: [node({ id: "bg", status: "running" }), node({ id: "fg", status: "done" })] },
+      "main",
+    )
+    expect(rows.map((r) => [r.node.id, r.node.status])).toEqual([
+      ["bg", "running"],
+      ["fg", "done"],
+    ])
+  })
+
+  it("renderAgentRowsInto paints the Main chat's rows and hides the host when empty", () => {
+    document.body.innerHTML = '<div id="main-chat-agents" hidden></div>'
+    const host = document.getElementById("main-chat-agents") as HTMLElement
+    renderAgentRowsInto(host, liveAgentsForThread({ main: [node({ id: "a1" })] }, "main"))
+    expect(host.hidden).toBe(false)
+    const rows = host.querySelectorAll(".thread-agent-row")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.classList.contains("seen")).toBe(false)
+
+    // A repaint of the same agent must not replay its entrance animation.
+    renderAgentRowsInto(host, liveAgentsForThread({ main: [node({ id: "a1", toolCount: 3 })] }, "main"))
+    expect(host.querySelector(".thread-agent-row")!.classList.contains("seen")).toBe(true)
+
+    renderAgentRowsInto(host, [])
+    expect(host.hidden).toBe(true)
+    expect(host.children).toHaveLength(0)
+  })
+
+  it("renderAgentRowsInto tolerates a missing host", () => {
+    expect(() => renderAgentRowsInto(null, [])).not.toThrow()
+  })
+
+  it("anchors the running pulse to the wall clock so a rebuild keeps its phase", () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(10_000 * AGENT_PULSE_MS + 400)
+      const el = buildAgentRow({ node: node({ id: "a" }), depth: 0 })
+      const dot = el.querySelector(".thread-agent-dot") as HTMLElement
+      expect(dot.style.animationDelay).toBe("-400ms")
+      const done = buildAgentRow({ node: node({ id: "b", status: "done" }), depth: 0 })
+      expect((done.querySelector(".thread-agent-dot") as HTMLElement).style.animationDelay).toBe("")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

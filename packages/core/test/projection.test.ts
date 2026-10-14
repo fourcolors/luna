@@ -78,6 +78,12 @@ describe("extractTextPreview", () => {
     expect(out!.endsWith("…")).toBe(true)
   })
 
+  it("never splits an astral character at the truncation boundary", () => {
+    const out = extractTextPreview(userPayload("b".repeat(138) + "😀 tail"))
+    expect(out).toBe("b".repeat(138) + "😀…")
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+  })
+
   it("walks structured content blocks (assistant text)", () => {
     expect(extractTextPreview(assistantTextPayload("from blocks"))).toBe(
       "from blocks",

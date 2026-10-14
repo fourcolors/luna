@@ -455,6 +455,576 @@ describe("ChatService (Tier-2 sim)", () => {
     ])
   })
 
+  // --- Queue + Steer (recall path) ----------------------------------------
+  // A send that lands mid-turn WAITS and runs as its own turn with its own
+  // recall. Only chat.steer() pushes it into the running turn.
+  const gatedRecallHarness = () => {
+    const sdkUserTexts: string[] = []
+    const systemPrompts: string[] = []
+    const observed: Array<{
+      userText: string
+      assistantText: string
+      isError: boolean
+    }> = []
+    // Hold query 1's FIRST `result` until the test releases it, so later
+    // sends land while turn 1 is still running.
+    let releaseResult: () => void = () => {}
+    const resultGate = new Promise<void>((resolve) => {
+      releaseResult = resolve
+    })
+    let queries = 0
+    const fakeLayer = SDKClient.fake((p) => {
+      queries += 1
+      const q = queries
+      systemPrompts.push(String(p.options?.systemPrompt ?? ""))
+      let turnIdx = 0
+      async function* gen(): AsyncGenerator<SDKMessage, void> {
+        for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+          turnIdx += 1
+          const userText =
+            typeof u.message.content === "string"
+              ? u.message.content
+              : "(structured)"
+          sdkUserTexts.push(userText)
+          yield makeAssistantMessage(
+            "thr-steer",
+            `reply:${userText}`,
+            `assistant-${q}-${turnIdx}`,
+          )
+          if (q === 1 && turnIdx === 1) await resultGate
+          yield makeResultMessage("thr-steer", `result-${q}-${turnIdx}`)
+        }
+      }
+      const it = gen()
+      return Object.assign(it, {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+        applyFlagSettings: async () => {},
+        setMaxThinkingTokens: async () => {},
+        supplyToolPermissionResponse: async () => {},
+        mcpServerStatus: async () => ({}),
+      } as Partial<Query>) as Query
+    })
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        systemPrompt: "base identity",
+        onBound: () => {},
+        recallMemory: ({ userText }) =>
+          Effect.succeed(`<memory_context>${userText} memory</memory_context>`),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    const layer = Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          fakeLayer,
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+    return {
+      layer,
+      sdkUserTexts,
+      systemPrompts,
+      observed,
+      queries: () => queries,
+      release: () => releaseResult(),
+    }
+  }
+  const idOf = (m: Option.Option<{ readonly id: string }>): string =>
+    Option.getOrThrow(m).id
+  const pairs = (
+    o: ReadonlyArray<{ userText: string; assistantText: string }>,
+  ) => o.map((x) => [x.userText, x.assistantText])
+
+  it("queues a send that lands mid-turn; it runs after, with its own recall", async () => {
+    const h = gatedRecallHarness()
+    const queueFrames: string[][] = []
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.subscribe(thread.id).pipe(
+            Stream.runForEach((f) =>
+              Effect.sync(() => {
+                if (f.type === "queue-update") {
+                  queueFrames.push(f.queued.map((q) => q.text))
+                }
+              }),
+            ),
+            Effect.forkChild,
+          )
+          yield* chat.send(thread.id, "first user text")
+          yield* Effect.sleep("100 millis")
+          yield* chat.send(thread.id, "second user text")
+          yield* Effect.sleep("100 millis")
+          // Not steered: turn 1's query must not have seen it.
+          expect(h.sdkUserTexts).toEqual(["first user text"])
+          h.release()
+          yield* Effect.sleep("200 millis")
+        }),
+      ).pipe(Effect.provide(h.layer)),
+    )
+
+    expect(h.queries()).toBe(2)
+    expect(h.sdkUserTexts).toEqual(["first user text", "second user text"])
+    expect(h.systemPrompts[1]).toContain("second user text memory")
+    // Listed while waiting, cleared when it started.
+    expect(queueFrames).toEqual([["second user text"], []])
+    expect(pairs(h.observed)).toEqual([
+      ["first user text", "reply:first user text"],
+      ["second user text", "reply:second user text"],
+    ])
+  })
+
+  it("steer() pushes a waiting send into the same recall query", async () => {
+    const h = gatedRecallHarness()
+    const steered = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          yield* chat.send(thread.id, "first user text")
+          yield* Effect.sleep("100 millis")
+          const second = yield* chat.send(thread.id, "second user text")
+          const ok = yield* chat.steer(thread.id, idOf(second))
+          yield* Effect.sleep("100 millis")
+          h.release()
+          yield* Effect.sleep("200 millis")
+          return ok
+        }),
+      ).pipe(Effect.provide(h.layer)),
+    )
+
+    expect(steered).toBe(true)
+    // Both reached the SDK through ONE query, with turn 1's recall.
+    expect(h.queries()).toBe(1)
+    expect(h.sdkUserTexts).toEqual(["first user text", "second user text"])
+    expect(h.systemPrompts[0]).toContain("first user text memory")
+    expect(pairs(h.observed)).toEqual([
+      ["first user text", "reply:first user text"],
+      ["second user text", "reply:second user text"],
+    ])
+  })
+
+  it(
+    "steering the LATER of two waiting sends runs it first and keeps " +
+      "observeTurn pairing",
+    async () => {
+      const h = gatedRecallHarness()
+      const queueFrames: string[][] = []
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.subscribe(thread.id).pipe(
+              Stream.runForEach((f) =>
+                Effect.sync(() => {
+                  if (f.type === "queue-update") {
+                    queueFrames.push(f.queued.map((q) => q.text))
+                  }
+                }),
+              ),
+              Effect.forkChild,
+            )
+            yield* chat.send(thread.id, "A")
+            yield* Effect.sleep("100 millis")
+            yield* chat.send(thread.id, "B")
+            const c = yield* chat.send(thread.id, "C")
+            expect(yield* chat.steer(thread.id, idOf(c))).toBe(true)
+            yield* Effect.sleep("100 millis")
+            h.release()
+            yield* Effect.sleep("300 millis")
+          }),
+        ).pipe(Effect.provide(h.layer)),
+      )
+
+      // C joined query 1; B waited for its own query.
+      expect(h.sdkUserTexts).toEqual(["A", "C", "B"])
+      expect(h.queries()).toBe(2)
+      expect(queueFrames).toEqual([["B"], ["B", "C"], ["B"], []])
+      expect(pairs(h.observed)).toEqual([
+        ["A", "reply:A"],
+        ["C", "reply:C"],
+        ["B", "reply:B"],
+      ])
+    },
+  )
+
+  it("steer() is a no-op when no turn is running or the id is unknown", async () => {
+    const h = gatedRecallHarness()
+    h.release()
+    const out = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const chat = yield* ChatService
+          const thread = yield* chat.createThread({ model: "claude-test" })
+          const a = yield* chat.send(thread.id, "A")
+          yield* Effect.sleep("200 millis")
+          return {
+            idle: yield* chat.steer(thread.id, idOf(a)),
+            unknownThread: yield* chat.steer("thr-nope", "usr_nope"),
+          }
+        }),
+      ).pipe(Effect.provide(h.layer)),
+    )
+    expect(out).toEqual({ idle: false, unknownThread: false })
+    expect(pairs(h.observed)).toEqual([["A", "reply:A"]])
+  })
+
+  it(
+    "drains the observation seed of a steered send folded into the running " +
+      "turn, so the next turn's observeTurn stays paired",
+    async () => {
+      const observed: Array<{
+        userText: string
+        assistantText: string
+        isError: boolean
+      }> = []
+      let releaseResult: () => void = () => {}
+      const resultGate = new Promise<void>((resolve) => {
+        releaseResult = resolve
+      })
+      let queries = 0
+      const fakeLayer = SDKClient.fake((p) => {
+        queries += 1
+        const foldSecond = queries === 1
+        let turnIdx = 0
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            turnIdx += 1
+            const userText =
+              typeof u.message.content === "string"
+                ? u.message.content
+                : "(structured)"
+            // Query 1 folds its second prompt item into turn 1 (no output of
+            // its own) — Claude Code semantics for a steered message that
+            // lands before the tool round closes.
+            if (foldSecond && turnIdx === 2) continue
+            yield makeAssistantMessage(
+              "thr-fold",
+              `reply:${userText}`,
+              `assistant-${turnIdx}`,
+            )
+            if (foldSecond && turnIdx === 1) await resultGate
+            yield makeResultMessage("thr-fold", `result-${turnIdx}`)
+          }
+        }
+        const it = gen()
+        return Object.assign(it, {
+          interrupt: async () => {},
+          setPermissionMode: async () => {},
+          setModel: async () => {},
+          applyFlagSettings: async () => {},
+          setMaxThinkingTokens: async () => {},
+          supplyToolPermissionResponse: async () => {},
+          mcpServerStatus: async () => ({}),
+        } as Partial<Query>) as Query
+      })
+      const provider: ThreadToolsProvider = {
+        decorate: () => ({
+          mcpServers: {},
+          systemPrompt: "base identity",
+          onBound: () => {},
+          recallMemory: () => Effect.succeed(null),
+          observeTurn: ({ userText, assistantText, isError }) =>
+            Effect.sync(() =>
+              observed.push({ userText, assistantText, isError }),
+            ),
+        }),
+      }
+      const layer = Layer.provideMerge(
+        ChatService.Default,
+        Layer.provideMerge(
+          SDKAdapter.Default,
+          Layer.mergeAll(
+            fakeLayer,
+            baseLayer,
+            Layer.succeed(ThreadToolsProviderTag, provider),
+          ),
+        ),
+      )
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.send(thread.id, "first user text")
+            yield* Effect.sleep("100 millis")
+            // Steered into query 1, then folded — it leaves a pendingTurns
+            // seed with no `result` to consume it.
+            const second = yield* chat.send(thread.id, "second user text")
+            yield* chat.steer(thread.id, Option.getOrThrow(second).id)
+            yield* Effect.sleep("100 millis")
+            releaseResult()
+            yield* Effect.sleep("150 millis")
+            // Query 2: if the folded send's seed were still queued, this
+            // turn's result would pair with "second user text" instead.
+            yield* chat.send(thread.id, "third user text")
+            yield* Effect.sleep("150 millis")
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(queries).toBe(2)
+      expect(observed).toEqual([
+        {
+          userText: "first user text",
+          assistantText: "reply:first user text",
+          isError: false,
+        },
+        {
+          userText: "third user text",
+          assistantText: "reply:third user text",
+          isError: false,
+        },
+      ])
+    },
+  )
+
+  // --- Mid-turn steering regressions (recall path) -----------------------
+  // Shared harness: a recall-bound thread whose observeTurn is recorded.
+  const steeringHarness = (
+    factory: Parameters<typeof SDKClient.fake>[0],
+    observed: Array<{ userText: string; assistantText: string; isError: boolean }>,
+  ) => {
+    const provider: ThreadToolsProvider = {
+      decorate: () => ({
+        mcpServers: {},
+        systemPrompt: "base identity",
+        onBound: () => {},
+        recallMemory: () => Effect.succeed(null),
+        observeTurn: ({ userText, assistantText, isError }) =>
+          Effect.sync(() => observed.push({ userText, assistantText, isError })),
+      }),
+    }
+    return Layer.provideMerge(
+      ChatService.Default,
+      Layer.provideMerge(
+        SDKAdapter.Default,
+        Layer.mergeAll(
+          SDKClient.fake(factory),
+          baseLayer,
+          Layer.succeed(ThreadToolsProviderTag, provider),
+        ),
+      ),
+    )
+  }
+  const textOf = (u: SDKUserMessage): string =>
+    typeof u.message.content === "string" ? u.message.content : "(structured)"
+  const fakeQuery = (
+    it: AsyncGenerator<SDKMessage, void>,
+    extra: Partial<Query> = {},
+  ): Query =>
+    Object.assign(it, {
+      interrupt: async () => {},
+      setPermissionMode: async () => {},
+      setModel: async () => {},
+      applyFlagSettings: async () => {},
+      setMaxThinkingTokens: async () => {},
+      supplyToolPermissionResponse: async () => {},
+      mcpServerStatus: async () => ({}),
+      ...extra,
+    } as Partial<Query>) as Query
+
+  it(
+    "a finished recall turn does not leave its query handle registered or " +
+      "block interrupt / live effort switch on the idle thread",
+    async () => {
+      const observed: Array<{ userText: string; assistantText: string; isError: boolean }> = []
+      let queryDone = false
+      const layer = steeringHarness((p) => {
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            yield makeAssistantMessage("thr-idle", `reply:${textOf(u)}`, "a-1")
+            yield makeResultMessage("thr-idle", "r-1")
+          }
+          queryDone = true
+        }
+        return fakeQuery(gen(), {
+          // The real CLI is gone once its prompt ended: a control request
+          // issued after that rejects.
+          applyFlagSettings: async () => {
+            if (queryDone) throw new Error("process terminated")
+          },
+        })
+      }, observed)
+
+      const out = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const adapter = yield* SDKAdapter
+            const thread = yield* chat.createThread({ model: "claude-sonnet-4-6" })
+            yield* chat.send(thread.id, "A")
+            yield* Effect.sleep("300 millis")
+            const handle = yield* adapter.getQueryHandle(thread.id)
+            const interrupted = yield* chat
+              .interrupt(thread.id)
+              .pipe(Effect.timeoutOption("1 second"))
+            const config = yield* chat.setThreadConfig({
+              threadId: thread.id,
+              effort: "high",
+            })
+            // The idle interrupt must not have stolen the next send's seed.
+            yield* chat.send(thread.id, "B")
+            yield* Effect.sleep("300 millis")
+            return { handle, interrupted, config }
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(out.handle).toBeNull()
+      expect(Option.isSome(out.interrupted)).toBe(true)
+      expect(out.config.applied).toContain("effort")
+      expect(observed.map((o) => [o.userText, o.assistantText])).toEqual([
+        ["A", "reply:A"],
+        ["B", "reply:B"],
+      ])
+    },
+  )
+
+  it(
+    "sends that arrive while a finished query is shutting down keep their " +
+      "order and observation pairing",
+    async () => {
+      const observed: Array<{ userText: string; assistantText: string; isError: boolean }> = []
+      const delivered: string[] = []
+      let queries = 0
+      let release1: () => void = () => {}
+      const gate1 = new Promise<void>((r) => (release1 = r))
+      let release2: () => void = () => {}
+      const gate2 = new Promise<void>((r) => (release2 = r))
+      const layer = steeringHarness((p) => {
+        queries += 1
+        const q = queries
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          let n = 0
+          for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            n += 1
+            const text = textOf(u)
+            delivered.push(text)
+            yield makeAssistantMessage("thr-order", `reply:${text}`, `a-${q}-${n}`)
+            if (q === 1 && n === 1) await gate1
+            if (q === 2 && n === 1) await gate2
+            yield makeResultMessage("thr-order", `r-${q}-${n}`)
+          }
+          // The CLI takes a moment to exit once its prompt has ended.
+          await new Promise((r) => setTimeout(r, 150))
+        }
+        return fakeQuery(gen())
+      }, observed)
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.send(thread.id, "A")
+            yield* Effect.sleep("50 millis")
+            release1()
+            yield* Effect.sleep("30 millis")
+            // Two sends inside the settle -> exit window, then a third while
+            // the next query is mid-turn.
+            yield* chat.send(thread.id, "B")
+            yield* chat.send(thread.id, "C")
+            yield* Effect.sleep("250 millis")
+            yield* chat.send(thread.id, "D")
+            yield* Effect.sleep("50 millis")
+            release2()
+            yield* Effect.sleep("300 millis")
+            yield* chat.send(thread.id, "E")
+            yield* Effect.sleep("400 millis")
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(delivered).toEqual(["A", "B", "C", "D", "E"])
+      expect(observed.map((o) => [o.userText, o.assistantText])).toEqual([
+        ["A", "reply:A"],
+        ["B", "reply:B"],
+        ["C", "reply:C"],
+        ["D", "reply:D"],
+        ["E", "reply:E"],
+      ])
+    },
+  )
+
+  it(
+    "a steered send is re-run, not lost, when the query fails before it " +
+      "resolves",
+    async () => {
+      const observed: Array<{ userText: string; assistantText: string; isError: boolean }> = []
+      let queries = 0
+      const layer = steeringHarness((p) => {
+        queries += 1
+        if (queries === 1) {
+          // Mimics the real SDK's Query.streamInput: the prompt iterable is
+          // drained eagerly in the background; the output side dies once the
+          // second message has been written (the CLI crashed / watchdog).
+          const received: string[] = []
+          void (async () => {
+            for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+              received.push(textOf(u))
+            }
+          })()
+          async function* dying(): AsyncGenerator<SDKMessage, void> {
+            const start = Date.now()
+            while (received.length < 2 && Date.now() - start < 400) {
+              await new Promise((r) => setTimeout(r, 10))
+            }
+            throw new Error("cli crashed")
+          }
+          return fakeQuery(dying())
+        }
+        async function* gen(): AsyncGenerator<SDKMessage, void> {
+          for await (const u of p.prompt as AsyncIterable<SDKUserMessage>) {
+            yield makeAssistantMessage("thr-carry", `reply:${textOf(u)}`, `a-${queries}`)
+            yield makeResultMessage("thr-carry", `r-${queries}`)
+          }
+        }
+        return fakeQuery(gen())
+      }, observed)
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const chat = yield* ChatService
+            const thread = yield* chat.createThread({ model: "claude-test" })
+            yield* chat.send(thread.id, "first user text")
+            yield* Effect.sleep("50 millis")
+            const second = yield* chat.send(thread.id, "second user text")
+            // Steered into the query that is about to crash.
+            expect(
+              yield* chat.steer(thread.id, Option.getOrThrow(second).id),
+            ).toBe(true)
+            yield* Effect.sleep("600 millis")
+            yield* chat.send(thread.id, "third user text")
+            yield* Effect.sleep("300 millis")
+            yield* chat.send(thread.id, "fourth user text")
+            yield* Effect.sleep("300 millis")
+          }),
+        ).pipe(Effect.provide(layer)),
+      )
+
+      expect(observed.map((o) => [o.userText, o.assistantText, o.isError])).toEqual([
+        ["first user text", "", true],
+        ["second user text", "reply:second user text", false],
+        ["third user text", "reply:third user text", false],
+        ["fourth user text", "reply:fourth user text", false],
+      ])
+    },
+  )
+
   it(
     "an adapter stream failure AFTER a stream_event delta resets inFlightTurnId " +
       "so the next turn's deltas get their own turnId and no leaked dead text",

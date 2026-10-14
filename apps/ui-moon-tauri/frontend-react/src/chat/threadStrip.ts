@@ -55,6 +55,18 @@ export interface ThreadStripCtx {
   readonly insertAt: number
   /** True while a thread has work in flight - drives the row's busy dot. */
   readonly isBusy: (threadId: string) => boolean
+  /**
+   * Consumer-friendly unread dot (Main chat / Chats): true when the
+   * thread has activity newer than the user has seen. ABSENT = no unread
+   * dots, the exact pre-existing paint.
+   */
+  readonly isUnread?: (t: ThreadRow) => boolean
+  /**
+   * Empty-state wording overrides for the chat list. Absent = the
+   * pre-existing "No threads yet." / "No matching threads." text.
+   */
+  readonly emptyText?: string
+  readonly emptySearchText?: string
   /** Relative-time string for a row with no preview text. */
   readonly relTime: (t: ThreadRow) => string
   /** Attach the drag/click gesture to a freshly built row. Called BEFORE the
@@ -137,6 +149,9 @@ export function buildThreadRow(ctx: ThreadStripCtx, t: ThreadRow): HTMLElement {
   // A background thread with work in flight pulses; the ACTIVE one does not,
   // because the moon face already carries that state for the viewed thread.
   if (ctx.isBusy(t.id) && t.id !== ctx.activeThreadId) row.classList.add("busy")
+  // Unread: activity newer than the user has seen (the blue dot). The Main
+  // chat card never wears one — it is always in view by construction.
+  if (ctx.isUnread && ctx.isUnread(t)) row.classList.add("unread")
 
   row.innerHTML = ROW_SKELETON
   const titleEl = row.querySelector(".thread-row-title")
@@ -198,6 +213,9 @@ const AGENT_ROW_SKELETON =
  *  drawer cannot leak its ids. */
 const paintedAgentIds = new WeakMap<HTMLElement, Set<string>>()
 
+/** Must match the `thread-agent-pulse` duration in chat.html. */
+export const AGENT_PULSE_MS = 1250
+
 /** One live subagent, rendered as a sibling row under its thread.
  *
  *  NOT focusable and NOT wired for drag: a subagent is a live readout, not a
@@ -234,9 +252,37 @@ export function buildAgentRow(entry: LiveAgentRow, isNew = true): HTMLElement {
       running && node.toolCount > 1 ? `${label} · ${node.toolCount} tools` : label
   }
 
+  if (node.status === "running") {
+    // The strip is rebuilt on every subagent frame. Anchoring the pulse to
+    // the wall clock keeps its phase continuous across rebuilds instead of
+    // restarting it each time.
+    const dot = el.querySelector(".thread-agent-dot") as HTMLElement | null
+    if (dot) dot.style.animationDelay = `${-(Date.now() % AGENT_PULSE_MS)}ms`
+  }
+
   if (node.description) el.title = String(node.description)
   el.setAttribute("aria-label", `${node.name || "Agent"} — ${node.status}`)
   return el
+}
+
+/** Paint live subagent rows into a standalone container: the Main chat's
+ *  agent list, which sits under its card rather than in the thread strip.
+ *  Hidden when there is nothing in flight. */
+export function renderAgentRowsInto(
+  host: HTMLElement | null | undefined,
+  entries: readonly LiveAgentRow[],
+): void {
+  if (!host) return
+  const seen = paintedAgentIds.get(host) || new Set<string>()
+  const painted = new Set<string>()
+  host.textContent = ""
+  for (const entry of entries) {
+    if (!entry || !entry.node) continue
+    painted.add(entry.node.id)
+    host.appendChild(buildAgentRow(entry, !seen.has(entry.node.id)))
+  }
+  paintedAgentIds.set(host, painted)
+  host.hidden = painted.size === 0
 }
 
 /** Append a thread's live subagents directly after its row. No-op when the
@@ -309,7 +355,9 @@ export function renderThreadStrip(ctx: ThreadStripCtx): void {
   const hasContent = ctx.grouped ? ctx.grouped.sections.length > 0 : ctx.rows.length > 0
   if (ctx.emptyEl) {
     ctx.emptyEl.style.display = hasContent ? "none" : ""
-    ctx.emptyEl.textContent = (ctx.search || "").trim() ? "No matching threads." : "No threads yet."
+    ctx.emptyEl.textContent = (ctx.search || "").trim()
+      ? (ctx.emptySearchText ?? "No matching threads.")
+      : (ctx.emptyText ?? "No threads yet.")
   }
 
   const preview = ctx.preview

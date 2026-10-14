@@ -92,8 +92,11 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 const collapseWhitespace = (s: string): string =>
   s.replace(/\s+/g, " ").trim()
 
-const truncate = (s: string, n: number): string =>
-  s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…"
+// Cut on code points so an astral char (emoji) is never split into a lone surrogate.
+const truncate = (s: string, n: number): string => {
+  const chars = [...s]
+  return chars.length <= n ? s : chars.slice(0, n - 1).join("").trimEnd() + "…"
+}
 
 /**
  * Pull a one-line text excerpt out of a stored payload. Returns null when

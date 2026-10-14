@@ -481,9 +481,11 @@ import {
   ForkProposalStore,
   toForkProposalWire,
   FORK_CHILD_TAG,
+  AGENT_CREATED_TAG,
 } from "@luna/thread-tools"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
+import { makeJournalSink } from "./journal/journal-sink.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
 import type { PtyOutputFrame } from "@luna/ui-ws"
 
@@ -4433,13 +4435,19 @@ const buildServerLayer = (
               }
             }
 
+            // create_thread (mode "create") makes a FRESH chat: no resume, no
+            // parent agent section, no fork tag (so the new chat may itself
+            // create chats later), and no breadcrumb in the parent — the
+            // agent's own reply there already says what it did.
+            const isCreate = claimed.mode === "create"
+
             // Resume-fork: inherit parent SDK session when known, and the
             // parent's agent section (agent sidebar S2 — a fork child is a
             // continuation of the same conversation, so it files where its
             // parent lives; write-once at the child's own INSERT).
             let resumeFromSessionId: string | undefined
             let parentAgentName: string | undefined
-            if (Option.isSome(threadRegistryOption)) {
+            if (!isCreate && Option.isSome(threadRegistryOption)) {
               const row = yield* threadRegistryOption.value.get(input.threadId)
               if (row?.sdkSessionId) resumeFromSessionId = row.sdkSessionId
               if (row?.agentName) parentAgentName = row.agentName
@@ -4448,7 +4456,7 @@ const buildServerLayer = (
             const child = yield* chat.createThread({
               title: claimed.title,
               parentSessionId: input.threadId,
-              tags: [FORK_CHILD_TAG],
+              tags: [isCreate ? AGENT_CREATED_TAG : FORK_CHILD_TAG],
               ...(resumeFromSessionId !== undefined
                 ? { resumeFromSessionId }
                 : {}),
@@ -4456,6 +4464,17 @@ const buildServerLayer = (
                 ? { agentName: parentAgentName }
                 : {}),
             })
+
+            // Seed the sibling so the agent turn starts on the pivoted topic.
+            // Seed BEFORE finalizing: an accepted proposal always names a
+            // chat that already has its opening message. A rejected seed
+            // fails into the catchCause below, which releases the claim.
+            const seeded = yield* chat.send(child.id, claimed.seed)
+            if (Option.isNone(seeded)) {
+              // Archive the empty child so a retry never leaves orphans.
+              yield* chat.archiveThread(child.id)
+              return yield* Effect.fail(new Error(`seed rejected for ${child.id}`))
+            }
 
             const accepted = yield* forkStore.completeAccept(
               claimed.id,
@@ -4469,22 +4488,21 @@ const buildServerLayer = (
               }
             }
 
-            // Seed the sibling so the agent turn starts on the pivoted topic.
-            yield* chat.send(child.id, claimed.seed)
-
             // Parent breadcrumb: one-line note that the topic moved.
-            yield* chat.deliverResult({
-              threadId: input.threadId,
-              text: `↪ Moved "${claimed.title}" to a new thread.`,
-              source: "thread-fork",
-              label: claimed.title,
-            })
+            if (!isCreate) {
+              yield* chat.deliverResult({
+                threadId: input.threadId,
+                text: `↪ Moved "${claimed.title}" to a new thread.`,
+                source: "thread-fork",
+                label: claimed.title,
+              })
+            }
 
             // Telemetry for accept-rate gating of future auto-fork.
             // (EventSink is optional; best-effort via console when sparse.)
             writeSync(
               1,
-              `[luna/thread-fork] accepted "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
+              `[luna/thread-fork] ${isCreate ? "created" : "accepted"} "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
             )
 
             return {
@@ -4492,17 +4510,55 @@ const buildServerLayer = (
               childThreadId: child.id,
             }
           }).pipe(
-            // The E channel here is `never` (every yielded effect above is
-            // infallible) - this handler can't actually run, but catch
-            // still requires a total callback.
-            Effect.catch((e) =>
-              Effect.succeed({
-                ok: false as const,
-                message: String(e),
-              }),
+            // ANY failure after the claim (a typed error, a createThread
+            // defect, a rejected seed) releases the claim so the proposal is
+            // never stuck "accepting": a fork marker returns to pending, a
+            // create_thread request is closed. The result is always a value,
+            // so the create_thread observer's worker fibers cannot die.
+            Effect.catchCause((cause) =>
+              forkStore.release(input.proposalId, input.threadId).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    console.error(
+                      `[luna/thread-fork] accept ${input.proposalId} failed; claim released:`,
+                      String(cause),
+                    )
+                    return { ok: false as const, message: "fork accept failed" }
+                  }),
+                ),
+              ),
             ),
           ),
       }
+
+      // create_thread: the tool stages a mode "create" proposal; accept it here
+      // at once through the same claim → createThread → seed path the click
+      // uses, so there is one creation path. The claim is atomic, so a
+      // duplicate event can never create two chats. Each accept runs on its
+      // own fiber so a slow createThread never stalls later proposals.
+      yield* Effect.forkScoped(
+        forkStore.changes.pipe(
+          Stream.filter((p) => p.mode === "create" && p.status === "pending"),
+          Stream.runForEach((p) =>
+            Effect.forkScoped(
+              threadForksHandle
+                .respond({ threadId: p.parentThreadId, proposalId: p.id, decision: "accept" })
+                .pipe(
+                  Effect.tap((r) =>
+                    r.ok
+                      ? Effect.void
+                      : Effect.sync(() =>
+                          console.warn(`[luna/thread-fork] create_thread "${p.title}" failed: ${r.message ?? "unknown"}`),
+                        ),
+                  ),
+                ),
+            ),
+          ),
+          Effect.catchCause((c) =>
+            Effect.sync(() => console.error("[luna/thread-fork] create_thread observer died:", String(c))),
+          ),
+        ),
+      )
 
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
@@ -4685,6 +4741,22 @@ const buildServerLayer = (
               ),
             )
         },
+      }
+
+      // Claude Code session journals (POST /v1/journal). Writes one episodic
+      // memory with provenance 'external' plus one ledger row; never starts a
+      // job or turn. The route stays 503 unless LUNA_JOURNAL_TOKEN (>= 32
+      // chars, distinct from the ui-ws token) is set; read here rather than at
+      // module load so vault-hydrated env is visible.
+      const journalToken = process.env["LUNA_JOURNAL_TOKEN"]?.trim() || null
+      // Both bearers are scrubbed by exact value from anything a journal stores.
+      const journalSink = makeJournalSink({
+        mem,
+        agentNotes,
+        secrets: [journalToken, TOKEN].filter((t): t is string => typeof t === "string" && t.length > 0),
+      })
+      if (journalToken !== null && journalToken === TOKEN) {
+        console.warn("[luna/journal] LUNA_JOURNAL_TOKEN must differ from the ui-ws token; /v1/journal disabled")
       }
 
       // ── Model Routing Settings (PR 1) ───────────────────────────────────
@@ -4937,6 +5009,8 @@ const buildServerLayer = (
         },
         survey: surveyHandle, // Phase 3 D3: resolved handle
         feedbackSink, // point-at-the-UI feedback → agent_notes (kind='ui_feedback')
+        journalSink,
+        journalToken: journalToken !== TOKEN ? journalToken : null,
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         capabilityRegistry: capabilityWsHandle, // Capability layer: backend-advertised commands (static catalog)
         // 14-day auto-archive → broadcast `thread-archived` to live clients.

@@ -250,9 +250,18 @@ export function runBoundedQuery(
 
     // Inject the kill-switch while keeping the caller's prompt + every option
     // (maxTurns, model, allowedTools, pathToClaudeCodeExecutable, …).
+    //
+    // `permissionMode` defaults to "default" when the caller omits it. Since SDK
+    // 0.3.286 an omitted mode is left to Claude Code, which starts in "auto" mode
+    // when telemetry is off or the provider is third-party. These are unattended
+    // background turns, so they must not silently gain wider tool approval.
     const query = yield* sdk.query({
       ...params,
-      options: { ...(params.options ?? {}), abortController: abort },
+      options: {
+        permissionMode: "default",
+        ...(params.options ?? {}),
+        abortController: abort,
+      },
     })
 
     // Detached producer: the SDK's `for await` lives in a bare Promise, NOT an

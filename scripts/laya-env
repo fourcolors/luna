@@ -66,12 +66,91 @@ venv_python() {
   return 1
 }
 
+# The pidfile can go stale: the sidecar may die without removing it
+# (kill -9, crash, reboot) and the OS can later recycle the pid for an
+# unrelated process. Liveness alone is not enough - `stop` would signal an
+# innocent process - so verify the pid really is the sidecar and treat a
+# mismatch as stale (drop the pidfile, report not running). A substring match
+# on the raw command line is not enough: an editor, grep, or tail merely
+# mentioning the script path (or a spoofed argv[0]) would pass it. Require a
+# python interpreter whose script argument is exactly $SIDECAR (cmd_start
+# always launches it absolute, with no further arguments).
+
+# Does this argv[0] look like a python interpreter? Case-insensitive: a macOS
+# framework build (Homebrew python@3.x, python.org) re-execs itself, so ps
+# shows .../Python.app/Contents/MacOS/Python with a capital P.
+is_python_exe() {
+  local base lower
+  base="${1##*/}"
+  lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+  case "$lower" in
+    python*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Darwin: ps only gives one space-joined string, so a space inside the
+# interpreter or script path cannot be split back into arguments. Match the
+# whole string instead: it must end with " $SIDECAR", and what precedes that
+# is the interpreter path (spaces and all).
+command_is_sidecar() {
+  local cmd="$1" interp
+  cmd="${cmd%"${cmd##*[![:space:]]}"}"
+  [[ "$cmd" == *" $SIDECAR" ]] || return 1
+  interp="${cmd% "$SIDECAR"}"
+  is_python_exe "$interp"
+}
+
+# Linux: /proc/<pid>/cmdline is NUL-separated, so argv is exact.
+proc_is_sidecar() {
+  local exe script
+  { IFS= read -r exe && IFS= read -r script; } < <(tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null) || return 1
+  is_python_exe "$exe" || return 1
+  [ "$script" = "$SIDECAR" ]
+}
+
+pid_is_sidecar() {
+  case "$(uname -s)" in
+    Darwin) command_is_sidecar "$(ps -ww -p "$1" -o command= 2>/dev/null)" ;;
+    *) proc_is_sidecar "$1" ;;
+  esac
+}
+
+# Remove the pidfile only if it still names the pid we vetted - a concurrent
+# `start` in another shell may have replaced it between our read and now,
+# and deleting the fresh pidfile would orphan the new sidecar.
+drop_stale_pidfile() {
+  local pid="$1" current
+  current="$(cat "$PIDFILE" 2>/dev/null || true)"
+  # Must not fail closed: this script is `set -e`, and callers invoke us from
+  # a then-branch (not an `if` test). A mismatched/missing pidfile is the
+  # concurrent-start case we are supposed to leave alone, not an error.
+  if [ "$current" = "$pid" ]; then
+    rm -f "$PIDFILE"
+  fi
+}
+
 running_pid() {
   [ -f "$PIDFILE" ] || return 1
   local pid
   pid="$(cat "$PIDFILE" 2>/dev/null || true)"
   [ -n "$pid" ] || return 1
-  kill -0 "$pid" 2>/dev/null || return 1
+  if ! kill -0 "$pid" 2>/dev/null; then
+    drop_stale_pidfile "$pid"
+    return 1
+  fi
+  if ! pid_is_sidecar "$pid"; then
+    # The pid may belong to a sidecar that has not exec'd yet: cmd_start
+    # publishes the pidfile the moment the child is forked, so a concurrent
+    # status/stop can read it while the command line still shows the launcher.
+    # Wait a beat and recheck before declaring it stale - dropping a fresh
+    # pidfile would orphan the new sidecar (stop could never find it).
+    sleep 2
+    if ! pid_is_sidecar "$pid"; then
+      drop_stale_pidfile "$pid"
+      return 1
+    fi
+  fi
   printf '%s\n' "$pid"
 }
 
@@ -134,7 +213,10 @@ cmd_stop() {
   local pid
   if ! pid="$(running_pid)"; then
     printf 'not running.\n'
-    rm -f "$PIDFILE"
+    # No rm -f here: running_pid already dropped the pidfile when the pid it
+    # vetted was stale, and drop_stale_pidfile deliberately keeps a pidfile a
+    # concurrent `start` has since replaced - deleting it would orphan the
+    # new sidecar.
     return 0
   fi
   kill "$pid" 2>/dev/null || true
@@ -178,12 +260,15 @@ cmd_run() {
   exec "$py" "$SIDECAR"
 }
 
-case "${1:-}" in
-  install) cmd_install ;;
-  start) cmd_start ;;
-  stop) cmd_stop ;;
-  status) cmd_status ;;
-  restart) cmd_stop; cmd_start ;;
-  run) cmd_run ;;
-  *) usage ;;
-esac
+# Sourceable for tests: only dispatch when executed, not when sourced.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  case "${1:-}" in
+    install) cmd_install ;;
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    status) cmd_status ;;
+    restart) cmd_stop; cmd_start ;;
+    run) cmd_run ;;
+    *) usage ;;
+  esac
+fi

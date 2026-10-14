@@ -14,7 +14,15 @@
  * import time and node/vitest-safe.
  */
 
-import { chmodSync, existsSync, unlinkSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 
 /**
  * Derive the sidecar path from a sqlite DB path. Returns `null` for
@@ -59,6 +67,9 @@ export function secureSidecar(sidecarPath: string): void {
  */
 export function discardSidecar(sidecarPath: string | null): boolean {
   if (sidecarPath === null) return false
+  // A discarded sidecar can no longer be vouched for; drop its provenance
+  // record with it so a later file at the same path starts untrusted.
+  removeHnswMeta(sidecarPath)
   try {
     if (existsSync(sidecarPath)) {
       unlinkSync(sidecarPath)
@@ -68,4 +79,127 @@ export function discardSidecar(sidecarPath: string | null): boolean {
     /* best-effort */
   }
   return false
+}
+
+// --- Sidecar provenance ("meta") ---------------------------------------
+//
+// Vectorlite rewrites the sidecar from EVERY connection's in-memory graph
+// when that connection closes, even one that only read (a `luna memory
+// status` connection that closes after the server replaces the server's
+// graph with its own older snapshot). The file itself therefore cannot say
+// whether it matches memory_vectors, and no probe of the graph can either:
+// an edit is DELETE + INSERT, so the row count stays the same and, because
+// memory_vectors has no AUTOINCREMENT, the newest row's rowid is reused
+// with a different embedding.
+//
+// So the backend records WHO wrote the file it trusts. When it closes, it
+// stores a signature of the sidecar file it just flushed (size, mtime, inode)
+// next to a fingerprint of the memory_vectors rows that graph was built
+// from. On open the sidecar is trusted only if both still match: a
+// different file signature means another connection rewrote it, a different
+// source fingerprint means memory_vectors changed behind the graph. Any
+// doubt (no meta, unreadable meta, stat error) means untrusted and the
+// graph is rebuilt from memory_vectors, the canonical source of truth.
+
+const META_VERSION = 1
+
+export interface HnswSidecarMeta {
+  readonly v: number
+  readonly dimension: number
+  /** `statHnswSidecar` signature of the sidecar the backend flushed. */
+  readonly sidecar: string
+  /** `fingerprintHnswSource` of the rows the flushed graph was built from. */
+  readonly source: string
+}
+
+export function deriveHnswMetaPath(sidecarPath: string): string {
+  return `${sidecarPath}.meta.json`
+}
+
+/**
+ * Identity of the sidecar file as it is on disk right now, or null when it
+ * is missing or cannot be stat-ed. Nanosecond mtime plus size and inode: a
+ * rewrite by another connection changes at least one of them. ctime is
+ * deliberately left out - our own chmod to 0o600 bumps it without any
+ * change to the content.
+ */
+export function statHnswSidecar(sidecarPath: string): string | null {
+  try {
+    const st = statSync(sidecarPath, { bigint: true })
+    return `${st.size}:${st.mtimeNs}:${st.ino}`
+  } catch {
+    return null
+  }
+}
+
+export function readHnswMeta(sidecarPath: string): HnswSidecarMeta | null {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(deriveHnswMetaPath(sidecarPath), "utf8"),
+    ) as Partial<HnswSidecarMeta> | null
+    if (
+      parsed !== null &&
+      typeof parsed === "object" &&
+      parsed.v === META_VERSION &&
+      typeof parsed.dimension === "number" &&
+      typeof parsed.sidecar === "string" &&
+      typeof parsed.source === "string"
+    ) {
+      return parsed as HnswSidecarMeta
+    }
+  } catch {
+    /* missing or corrupt: untrusted */
+  }
+  return null
+}
+
+/** Atomic (tmp + rename), owner-only. Best-effort: a failed write only
+ *  costs a rebuild on the next open. */
+export function writeHnswMeta(
+  sidecarPath: string,
+  meta: Omit<HnswSidecarMeta, "v">,
+): void {
+  const metaPath = deriveHnswMetaPath(sidecarPath)
+  const tmpPath = `${metaPath}.${process.pid}.tmp`
+  try {
+    writeFileSync(tmpPath, JSON.stringify({ v: META_VERSION, ...meta }), {
+      mode: 0o600,
+    })
+    renameSync(tmpPath, metaPath)
+  } catch {
+    try {
+      unlinkSync(tmpPath)
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
+export function removeHnswMeta(sidecarPath: string): void {
+  try {
+    unlinkSync(deriveHnswMetaPath(sidecarPath))
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
+ * True only when the sidecar on disk is the exact file the backend last
+ * flushed AND memory_vectors still holds the rows that graph was built
+ * from. Every failure mode answers false (untrusted).
+ */
+export function isHnswSidecarTrusted(
+  sidecarPath: string,
+  dimension: number,
+  sourceFingerprint: string,
+): boolean {
+  const meta = readHnswMeta(sidecarPath)
+  if (meta === null) return false
+  const current = statHnswSidecar(sidecarPath)
+  return (
+    current !== null &&
+    meta.dimension === dimension &&
+    meta.sidecar === current &&
+    meta.source === sourceFingerprint
+  )
 }

@@ -264,6 +264,29 @@ function teardownOauth(
 }
 
 /**
+ * Whether a connector-status frame belongs to this panel's in-flight OAuth
+ * flow. A frame carrying a requestId is attributable only on id match; a
+ * requestId-less frame falls back to the instance's definitionId; a failure
+ * ack with neither is attributable only inside the redemption window
+ * (oauthCodeSent). Exported so the panel can apply the same attribution to
+ * its begin-timer watchdog: a superseded flow's late frame must not disarm
+ * the newer flow's timer.
+ */
+export function frameTargetsInFlightOauth(
+  state: ConnectorsPanelState,
+  frame: StatusFrame,
+): boolean {
+  return (
+    state.oauthRequestId !== null &&
+    ((!!frame.requestId && frame.requestId === state.oauthRequestId) ||
+      (!frame.requestId &&
+        !!frame.instance &&
+        frame.instance.definitionId === state.oauthDefinitionId) ||
+      (state.oauthCodeSent && !frame.ok && !frame.requestId && !frame.instance))
+  )
+}
+
+/**
  * Ported verbatim from the vanilla module's applyStatus - see that function's
  * doc comment for the full attribution rationale (plain connect ack vs our
  * in-flight OAuth flow vs an unrelated ack sharing this handler).
@@ -293,11 +316,12 @@ function applyStatusFrame(
   // that merely shares this handler - see the vanilla module's doc for the
   // full attribution rules (kept verbatim, including the redemption-window
   // phase gate on oauthCodeSent).
-  const attributableToOurOauth =
-    state.oauthRequestId !== null &&
-    ((!!frame.requestId && frame.requestId === state.oauthRequestId) ||
-      (!!frame.instance && frame.instance.definitionId === state.oauthDefinitionId) ||
-      (state.oauthCodeSent && !frame.ok && !frame.requestId && !frame.instance))
+  //
+  // A frame carrying a requestId is attributable to our flow only when the id
+  // matches: a superseded same-connector flow's completion frame must not tear
+  // down the newer flow (its redirect would then be ignored and the new flow
+  // left waiting on a dead listener).
+  const attributableToOurOauth = frameTargetsInFlightOauth(state, frame)
 
   let next = state
   if (attributableToOurOauth) {
@@ -314,9 +338,22 @@ function applyStatusFrame(
   }
 
   if (frame.instance) {
-    const busy = clearBusy(next.busy, frame.instance.definitionId)
+    // A superseded flow's frame must not clear the busy spinner of our
+    // in-flight same-connector flow: the stale frame carries the superseded
+    // flow's requestId, so its busy entry belongs to the new flow.
+    const staleForInFlightOauth =
+      state.oauthRequestId !== null &&
+      state.oauthDefinitionId === frame.instance.definitionId &&
+      !!frame.requestId &&
+      frame.requestId !== state.oauthRequestId
+    const busy = staleForInFlightOauth
+      ? next.busy
+      : clearBusy(next.busy, frame.instance.definitionId)
     const consentDraft = { ...next.consentDraft }
-    delete consentDraft[frame.instance.definitionId]
+    // The draft is keyed by definition, not by flow: a superseded flow's
+    // frame must not erase the in-flight flow's consent choices, or retrying
+    // the newer flow after a failure would open with blank inputs.
+    if (!staleForInFlightOauth) delete consentDraft[frame.instance.definitionId]
     next = { ...next, busy, consentDraft }
   }
 

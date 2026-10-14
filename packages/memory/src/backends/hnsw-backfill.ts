@@ -14,11 +14,16 @@
  *   - `probeHnswPopulation` — how many rows the graph recalls for a dimension.
  *   - `backfillHnswRows` — copy every source row at a dimension into the graph.
  * `backfillHnswIfEmpty` composes them for the common "rebuild if empty" case.
+ * `fingerprintHnswSource` and `readDataVersion` support the sidecar trust
+ * check (see hnsw-sidecar.ts): what the graph SHOULD contain, and whether
+ * another connection committed to the database in the meantime.
  *
  * `MinimalDb` is a deliberately small structural type: `hnsw-backfill` is
  * imported BY `sqlite-vector-maintenance`, so it cannot import that module's
  * `BunDatabase` type without creating a cycle.
  */
+
+import { createHash } from "node:crypto"
 
 interface MinimalDb {
   readonly run: (sql: string) => void
@@ -98,4 +103,48 @@ export function backfillHnswIfEmpty(db: MinimalDb, dimension: number): boolean {
   if (population > 0) return false
   backfillHnswRows(db, dimension)
   return true
+}
+
+/**
+ * Fingerprint of the rows an HNSW graph at `dimension` must hold: sha256
+ * over (rowid, embedding bytes) in rowid order. Those two values are exactly
+ * what `backfillHnswRows` copies into the graph, so any edit (DELETE +
+ * INSERT, with or without rowid reuse), delete or add changes it, even when
+ * the row count does not. Paged by rowid so a large table is never
+ * materialised at once.
+ */
+export function fingerprintHnswSource(db: MinimalDb, dimension: number): string {
+  const hash = createHash("sha256")
+  hash.update(`dim=${dimension};`)
+  const page = db.query(
+    `SELECT rowid AS rid, embedding FROM memory_vectors
+      WHERE dimension = ${dimension} AND rowid > ?
+      ORDER BY rowid LIMIT 512`,
+  )
+  let after = -1
+  for (;;) {
+    const rows = page.all(after) as Array<{
+      rid: number
+      embedding: Uint8Array
+    }>
+    if (rows.length === 0) break
+    for (const row of rows) {
+      hash.update(`${row.rid}:${row.embedding.byteLength};`)
+      hash.update(row.embedding)
+      after = row.rid
+    }
+  }
+  return hash.digest("hex")
+}
+
+/**
+ * SQLite `PRAGMA data_version`: unchanged for this connection's own commits,
+ * different after ANY other connection committed in the meantime. Lets the
+ * backend notice that memory_vectors changed behind its in-memory graph.
+ */
+export function readDataVersion(db: MinimalDb): number {
+  const row = db.query("PRAGMA data_version").get() as {
+    data_version: number
+  }
+  return row.data_version
 }

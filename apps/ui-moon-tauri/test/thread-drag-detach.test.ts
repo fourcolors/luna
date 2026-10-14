@@ -117,6 +117,8 @@ describe("thread row drag-out (S17 detach path)", () => {
 
   beforeEach(() => {
     ;({ invoke, tauriWindow } = bootChatWindow("panel-chat-owner"))
+    // Drag mechanics, not the Main chat card: keep every thread in the list.
+    vi.spyOn(M().ThreadDrawerEngine, "_mainThreadId").mockReturnValue(null)
   })
 
   afterEach(teardownChatWindow)

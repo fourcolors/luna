@@ -14,11 +14,17 @@ export type SendLocalShellFrame = (
  * Thread tags that mark a thread as UNATTENDED — nobody is watching it in a UI.
  * A non-sandbox client (a desktop/CLI shell on someone's actual machine) is
  * never resolvable from these, because an inbound channel message is an
- * injection surface and a forked child runs without anyone present.
+ * injection surface, and a forked child or an agent-created chat
+ * (create_thread) runs its first turn without anyone present.
+ *
+ * The single source of truth: local-shell-tools reads this list too. The
+ * strings match FORK_CHILD_TAG / AGENT_CREATED_TAG in @luna/thread-tools
+ * (thread-tools test pins that).
  */
 export const UNATTENDED_THREAD_TAGS: ReadonlyArray<string> = [
   "forked-from-parent",
   "channel",
+  "agent-created",
 ]
 
 const isUnattended = (tags: ReadonlyArray<string> | undefined): boolean =>

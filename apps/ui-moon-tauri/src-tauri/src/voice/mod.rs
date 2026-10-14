@@ -328,10 +328,26 @@ impl VoiceController {
         }
 
         if mode == VoiceMode::Off {
+            // VOICE.md: off means "no TTS" - stop any in-flight utterance,
+            // not just the mic pipeline. Previously a long utterance kept
+            // playing after the UI showed voice off (the frontend had to
+            // call voice_stop_speaking separately); the mode contract now
+            // enforces it.
+            //
+            // The stop runs LAST and OUTSIDE the pipeline lock: only the
+            // pipeline thread was joined above, so Tauri command threads
+            // (list_voices, set_voice, speak_text, stop_speaking) can still
+            // hold the tts lock - a Fish list_voices round trip for several
+            // seconds. Publishing off first means a slow tts lock can never
+            // delay the off state, the PTT unregister, or later mode changes,
+            // and a concurrent speak_text is already a no-op before the stop.
             lock_unpoisoned(&self.shared).mode = VoiceMode::Off;
             set_state_emit(&self.shared, &self.sink, VoiceState::Off);
             sync(VoiceMode::Off);
-            return Ok(self.status());
+            let status = self.status();
+            drop(pipe);
+            lock_unpoisoned(&self.tts).stop();
+            return Ok(status);
         }
 
         if !(self.deps.model_present)() {
@@ -1061,6 +1077,24 @@ mod tests {
     }
 
     #[test]
+    fn off_mode_stops_in_flight_tts() {
+        // VOICE.md documents `off` as "no TTS": toggling voice off while an
+        // utterance is playing must stop the audio, not just the mic
+        // pipeline. Regression: the Off arm used to skip tts.stop(), so a
+        // long utterance kept playing after the UI showed voice off.
+        let r = rig(true, "hello");
+        r.controller.set_mode_with_sync("auto", |_| {}).unwrap();
+        // Simulate an in-flight utterance (e.g. a long Fish-streamed paragraph).
+        r.speaking.store(true, Ordering::SeqCst);
+        r.controller.set_mode_with_sync("off", |_| {}).unwrap();
+        assert!(
+            !r.speaking.load(Ordering::SeqCst),
+            "voice off must stop in-flight TTS"
+        );
+        assert_eq!(r.controller.status().state, "off");
+    }
+
+    #[test]
     fn ptt_flow_captures_only_between_down_and_up() {
         let r = rig(true, "ptt works");
         // Frames present BEFORE the hold must be discarded.
@@ -1305,6 +1339,59 @@ mod tests {
         cv.notify_all();
         lister.join().unwrap();
         controller.set_mode_with_sync("off", |_| {}).unwrap();
+    }
+
+    /// Voice-off must publish off (state event + shortcut sync) even while a
+    /// slow list_voices holds the tts Mutex; only the trailing TTS stop may
+    /// wait for it, and it must not hold the pipeline lock while waiting.
+    #[test]
+    fn off_mode_publishes_off_while_list_voices_blocks_the_tts_mutex() {
+        let speaking = Arc::new(AtomicBool::new(false));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let tts = BlockingListTts {
+            speaking: speaking.clone(),
+            release: release.clone(),
+        };
+        let (sink, _queue, controller) = rig_parts(
+            true,
+            Box::new(|| Ok(Box::new(FixedStt("hi".into())) as Box<dyn SttEngine>)),
+            Box::new(tts),
+        );
+        let controller = Arc::new(controller);
+        controller.set_mode_with_sync("auto", |_| {}).unwrap();
+        sink.wait_for("listening", |e| state_is(e, "listening"));
+
+        // list_voices blocks, holding the tts Mutex.
+        let c2 = controller.clone();
+        let lister = std::thread::spawn(move || c2.list_voices());
+        std::thread::sleep(Duration::from_millis(50));
+
+        let n = sink.events().len();
+        let synced = Arc::new(AtomicBool::new(false));
+        let c3 = controller.clone();
+        let synced2 = synced.clone();
+        let off = std::thread::spawn(move || {
+            c3.set_mode_with_sync("off", |m| {
+                synced2.store(m == VoiceMode::Off, Ordering::SeqCst);
+            })
+        });
+
+        // wait_for_after panics at 3s - well before the 5s blocked-list
+        // release below - so this fails if the off state waits on the tts lock.
+        sink.wait_for_after(n, "off published while list_voices is blocked", |e| {
+            state_is(e, "off")
+        });
+        assert!(synced.load(Ordering::SeqCst), "shortcut sync must run before the tts stop");
+        assert!(!off.is_finished(), "the trailing tts stop waits for the tts lock");
+        // The pipeline lock was released before the stop: a further mode
+        // change is not stuck behind it (idempotent off re-set returns).
+        controller.set_mode_with_sync("off", |_| {}).unwrap();
+
+        let (m, cv) = &*release;
+        *m.lock().unwrap() = true;
+        cv.notify_all();
+        lister.join().unwrap();
+        off.join().unwrap().unwrap();
     }
 
     /// Finding 4 (TOCTOU): the PTT-shortcut sync callback runs INSIDE the

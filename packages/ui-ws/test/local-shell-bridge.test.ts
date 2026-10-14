@@ -204,6 +204,13 @@ describe("local shell bridge", () => {
       ])
     })
 
+    it("treats an agent-created chat (create_thread) as unattended too", () => {
+      const bridge = createLocalShellBridge()
+      bridge.setCapability(cap(), () => undefined)
+      bridge.setCapability(sandboxCap(), () => undefined)
+      expect(bridge.listTargets(["agent-created"]).map((t) => t.label)).toEqual(["stable"])
+    })
+
     it("refuses a personal machine to an unattended thread even by name", async () => {
       const bridge = createLocalShellBridge()
       const sent: unknown[] = []

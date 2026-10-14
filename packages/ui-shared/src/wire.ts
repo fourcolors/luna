@@ -265,6 +265,17 @@ export interface UserAcceptedFrame {
   readonly seq: number
   readonly message: ChatMessage
 }
+/** One message waiting behind the running turn. Mirrors protocol.ts. */
+export interface QueuedMessage {
+  readonly userMessageId: string
+  readonly text: string
+}
+/** Messages waiting behind the running turn. Mirrors protocol.ts. */
+export interface QueueUpdateFrame {
+  readonly type: "queue-update"
+  readonly threadId: string
+  readonly queued: ReadonlyArray<QueuedMessage>
+}
 export interface AssistantDeltaFrame {
   readonly type: "assistant-delta"
   readonly threadId: string
@@ -732,6 +743,9 @@ export interface ForkProposalWire {
   readonly status: ForkProposalStatus
   readonly createdAt: number
   readonly childThreadId?: string
+  /** Agent-created chat (create_thread): the client viewing the parent
+   *  thread switches to `childThreadId` once accepted. */
+  readonly autoOpen?: boolean
 }
 export interface ForkProposalSetFrame {
   readonly type: "fork-proposal-set"
@@ -1086,6 +1100,7 @@ export type ServerFrame =
   | ThreadCreateErrorFrame
   | ThreadSnapshotFrame
   | UserAcceptedFrame
+  | QueueUpdateFrame
   | AssistantDeltaFrame
   | AssistantDoneFrame
   | AssistantErrorFrame
@@ -1222,6 +1237,12 @@ export interface InterruptFrame {
   readonly type: "interrupt"
   readonly threadId: string
 }
+/** Push a waiting message into the running turn. Mirrors protocol.ts. */
+export interface SteerFrame {
+  readonly type: "steer"
+  readonly threadId: string
+  readonly userMessageId: string
+}
 
 /**
  * Client→server: flip one skill from the Skills settings section (PRD Part
@@ -1243,6 +1264,7 @@ export type ClientFrame =
   | NewThreadFrame
   | UserMessageFrame
   | InterruptFrame
+  | SteerFrame
   | SkillToggleFrame
   | ConnectorOauthBeginFrame
   | ConnectorOauthCodeFrame

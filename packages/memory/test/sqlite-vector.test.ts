@@ -1213,6 +1213,436 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
+  it("Scenario 7n: stale sidecar snapshot is discarded and rebuilt from memory_vectors", async () => {
+    // Stale-snapshot guarantee. A second connection (e.g. `luna memory
+    // status`) populates its own in-memory graph from a T1 snapshot, and
+    // vectorlite rewrites the sidecar from whichever connection closes
+    // last. If the second connection closes after the server, its stale
+    // snapshot wins; the server's AFTER INSERT triggers only fire for new
+    // writes, so under the old k=1 "non-empty" open probe the missing rows
+    // were never re-added — silent and permanent index loss. The backend
+    // must not trust a sidecar it did not flush itself (no provenance
+    // record here) and, as a second line, rebuilds when the graph recalls
+    // fewer rows than memory_vectors holds. Equal-count staleness is 7o.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-stale] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-stale-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    const sidecar = `${dbPath}.hnsw.bin`
+
+    const bunSqlite = (await import("bun:sqlite" as string)) as {
+      Database: new (p: string) => {
+        run: (sql: string) => void
+        query: (sql: string) => { get: (...p: unknown[]) => unknown }
+        loadExtension: (p: string) => void
+        close: () => void
+      }
+    }
+    // Plant a stale sidecar: a graph holding only the first 3 of the 5
+    // source rows, as if a second connection had closed last with its T1
+    // snapshot. (Planted manually — the close-time flush is best-effort
+    // and may not have materialised a file.)
+    const plantStaleSidecar = () => {
+      try {
+        fs.rmSync(sidecar, { force: true })
+      } catch {
+        /* ignore */
+      }
+      const plant = new bunSqlite.Database(dbPath)
+      plant.loadExtension(probe.path)
+      plant.run("DROP TABLE IF EXISTS memory_vectors_hnsw")
+      plant.run(
+        `CREATE VIRTUAL TABLE memory_vectors_hnsw
+           USING vectorlite(embedding float32[64], hnsw(max_elements=100000), '${sidecar.replace(/'/g, "''")}')`,
+      )
+      plant.run(
+        `INSERT INTO memory_vectors_hnsw(rowid, embedding)
+           SELECT rowid, embedding FROM memory_vectors LIMIT 3`,
+      )
+      plant.close()
+    }
+
+    try {
+      // Phase 1: populate 5 rows via the backend.
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            for (let i = 0; i < 5; i++) {
+              yield* b.put(
+                makeRecord({
+                  id: `stale-${i}`,
+                  namespace: "st",
+                  kind: "note",
+                  content: { text: `staleness ${i} marker` },
+                }),
+              )
+            }
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+
+      // Phase 2: plant the stale 3-row snapshot.
+      plantStaleSidecar()
+      expect(fs.existsSync(sidecar)).toBe(true)
+
+      // Phase 3: reopen via the backend. The completeness probe must
+      // detect the shortfall (3 < 5), discard the stale sidecar, and
+      // rebuild from memory_vectors — vec search must recall all five.
+      const layer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "staleness 0 marker",
+                namespace: "st",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((r) => r.record.id).sort()
+          }),
+        ).pipe(Effect.provide(layer2)),
+      )
+      expect(ids).toEqual([
+        "stale-0",
+        "stale-1",
+        "stale-2",
+        "stale-3",
+        "stale-4",
+      ])
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
+  // Scenario 7o: an edit is DELETE + INSERT, so memory_vectors keeps the same
+  // ROW COUNT while the rowids (middle edit: the edited row moves to a NEW
+  // rowid) or the embedding behind a REUSED rowid (edit of the newest row: no
+  // AUTOINCREMENT, so the re-insert takes the max rowid back) change. A stale
+  // snapshot written by a second connection that closed last holds the same
+  // number of rows, so a count-only completeness probe trusts it and the
+  // edited row silently drops out of (or is mis-scored by) HNSW search.
+  // The backend must detect a foreign sidecar rewrite via its fingerprint.
+  for (const [label, editIndex] of [
+    ["middle row (new rowid)", 2],
+    ["newest row (reused rowid)", 4],
+  ] as const) {
+    it(`Scenario 7o: equal-count stale sidecar after an edit of the ${label} is rebuilt`, async () => {
+      const initMod = await import("../src/backends/vectorlite-init.js")
+      const probe = initMod.initVectorlite()
+      if (!probe.ok) {
+        // eslint-disable-next-line no-console
+        console.log(`[hnsw-stale-eq] skipping - vectorlite unavailable: ${probe.reason}`)
+        return
+      }
+
+      const fs = await import("node:fs")
+      const os = await import("node:os")
+      const path = await import("node:path")
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-stale-eq-"))
+      const dbPath = path.join(tmp, "vectors.db")
+
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            get: (...p: unknown[]) => unknown
+            all: (...p: unknown[]) => unknown[]
+          }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const backendLayer = () =>
+        Layer.provideMerge(
+          SqliteVectorBackend.fromPath(dbPath),
+          Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+        )
+      const textOf = (i: number) => `staleness ${i} marker`
+      const editedText = "completely rewritten edited memory about zebras"
+
+      try {
+        // Phase 1: five rows through the backend.
+        await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const b = yield* SqliteVectorBackend
+              for (let i = 0; i < 5; i++) {
+                yield* b.put(
+                  makeRecord({
+                    id: `eq-${i}`,
+                    namespace: "st",
+                    kind: "note",
+                    content: { text: textOf(i) },
+                  }),
+                )
+              }
+            }),
+          ).pipe(Effect.provide(backendLayer())),
+        )
+
+        // Phase 2: a status-like second connection loads the graph at T1
+        // (all five rows) and stays open.
+        const status = new bunSqlite.Database(dbPath)
+        status.loadExtension(probe.path)
+        const sample = status
+          .query(`SELECT embedding FROM memory_vectors LIMIT 1`)
+          .get() as { embedding: Uint8Array }
+        const loaded = (
+          status
+            .query(
+              `SELECT rowid FROM memory_vectors_hnsw
+                WHERE knn_search(embedding, knn_param(?, 10))`,
+            )
+            .all(sample.embedding) as unknown[]
+        ).length
+        if (loaded === 0) {
+          status.run(
+            `INSERT INTO memory_vectors_hnsw(rowid, embedding)
+               SELECT rowid, embedding FROM memory_vectors`,
+          )
+        }
+
+        // Phase 3: the server edits one memory (DELETE + INSERT, count stays
+        // 5) while the status connection is still open.
+        await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const b = yield* SqliteVectorBackend
+              yield* b.put(
+                makeRecord({
+                  id: `eq-${editIndex}`,
+                  namespace: "st",
+                  kind: "note",
+                  content: { text: editedText },
+                }),
+              )
+            }),
+          ).pipe(Effect.provide(backendLayer())),
+        )
+
+        // Phase 4: the status connection closes LAST, so its stale T1 graph
+        // is what ends up in the sidecar.
+        status.close()
+
+        // Phase 5: reopen. The edited row must be searchable with its NEW
+        // content and rank first for its own text (a stale graph either
+        // lacks the row or still holds the OLD embedding for it).
+        const hits = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const b = yield* SqliteVectorBackend
+              const arr = yield* Stream.runCollect(
+                b.search({
+                  queryText: editedText,
+                  namespace: "st",
+                  topK: 10,
+                  mode: "vec",
+                }),
+              )
+              return Array.from(arr)
+            }),
+          ).pipe(Effect.provide(backendLayer())),
+        )
+        expect(hits.map((h) => h.record.id).sort()).toEqual([
+          "eq-0",
+          "eq-1",
+          "eq-2",
+          "eq-3",
+          "eq-4",
+        ])
+        expect(hits[0]!.record.id).toBe(`eq-${editIndex}`)
+      } finally {
+        try {
+          fs.rmSync(tmp, { recursive: true, force: true })
+        } catch {
+          /* ignore */
+        }
+      }
+    })
+  }
+
+  // Scenario 7p: the positive side of the provenance check. A sidecar the
+  // backend vouches for (meta matches both the file signature and the
+  // memory_vectors fingerprint) must be KEPT, and one whose file signature
+  // changed since (as when a second connection rewrote it) must be discarded.
+  // Backend close does not reliably flush a sidecar (see the NOTE where the
+  // finalizer is registered), so the flushed sidecar + meta are planted the
+  // way a successful close would leave them.
+  it("Scenario 7p: a vouched sidecar is kept, a rewritten one is discarded", async () => {
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-vouch] skipping - vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+    const sidecarMod = await import("../src/backends/hnsw-sidecar.js")
+    const backfillMod = await import("../src/backends/hnsw-backfill.js")
+
+    const fs = await import("node:fs")
+    const os = await import("node:os")
+    const path = await import("node:path")
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-vouch-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    const sidecar = `${dbPath}.hnsw.bin`
+
+    const bunSqlite = (await import("bun:sqlite" as string)) as {
+      Database: new (p: string) => {
+        run: (sql: string) => void
+        query: (sql: string) => {
+          get: (...p: unknown[]) => unknown
+          all: (...p: unknown[]) => unknown[]
+        }
+        loadExtension: (p: string) => void
+        close: () => void
+      }
+    }
+    const backendLayer = () =>
+      Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+    const session = <A>(
+      body: (b: SqliteVectorBackend["Service"]) => Effect.Effect<A, unknown, never>,
+    ) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            return yield* body(b)
+          }),
+        ).pipe(Effect.provide(backendLayer())) as Effect.Effect<A, unknown, never>,
+      )
+    const plantFlushedSidecar = () => {
+      const plant = new bunSqlite.Database(dbPath)
+      plant.loadExtension(probe.path)
+      plant.run("DROP TABLE IF EXISTS memory_vectors_hnsw")
+      plant.run(
+        `CREATE VIRTUAL TABLE memory_vectors_hnsw
+           USING vectorlite(embedding float32[64], hnsw(max_elements=100000), '${sidecar.replace(/'/g, "''")}')`,
+      )
+      plant.run(
+        `INSERT INTO memory_vectors_hnsw(rowid, embedding)
+           SELECT rowid, embedding FROM memory_vectors`,
+      )
+      const source = backfillMod.fingerprintHnswSource(plant, 64)
+      plant.close()
+      const stat = sidecarMod.statHnswSidecar(sidecar)
+      expect(stat).not.toBeNull()
+      sidecarMod.writeHnswMeta(sidecar, {
+        dimension: 64,
+        sidecar: stat!,
+        source,
+      })
+    }
+
+    try {
+      await session((b) =>
+        Effect.gen(function* () {
+          for (let i = 0; i < 4; i++) {
+            yield* b.put(
+              makeRecord({
+                id: `vouch-${i}`,
+                namespace: "vo",
+                kind: "note",
+                content: { text: `vouched ${i} marker` },
+              }),
+            )
+          }
+        }),
+      )
+      const searchIds = () =>
+        session((b) =>
+          Stream.runCollect(
+            b.search({
+              queryText: "vouched 1 marker",
+              namespace: "vo",
+              topK: 10,
+              mode: "vec",
+            }),
+          ).pipe(
+            Effect.map((arr) => Array.from(arr).map((r) => r.record.id).sort()),
+          ),
+        )
+      const all = ["vouch-0", "vouch-1", "vouch-2", "vouch-3"]
+
+      // Vouched: the sidecar is trusted, not discarded. Do not assert the
+      // file signature is unchanged: whether close rewrites the sidecar
+      // depends on vectorlite (see the NOTE at the finalizer). What matters
+      // is that after close the recorded signature matches the file on disk
+      // and the source fingerprint still describes the rows behind it.
+      plantFlushedSidecar()
+      const plantedMeta = sidecarMod.readHnswMeta(sidecar)
+      expect(plantedMeta).not.toBeNull()
+      expect(await searchIds()).toEqual(all)
+      const signature = sidecarMod.statHnswSidecar(sidecar)
+      expect(signature).not.toBeNull()
+      const keptMeta = sidecarMod.readHnswMeta(sidecar)
+      expect(keptMeta).not.toBeNull()
+      expect(keptMeta!.sidecar).toBe(signature)
+      expect(keptMeta!.source).toBe(plantedMeta!.source)
+
+      // Rewritten by "someone else" (signature changed): discarded.
+      const later = new Date(Date.now() + 5_000)
+      fs.utimesSync(sidecar, later, later)
+      expect(sidecarMod.statHnswSidecar(sidecar)).not.toBe(signature)
+      expect(await searchIds()).toEqual(all)
+      expect(fs.existsSync(sidecar)).toBe(false)
+      expect(sidecarMod.readHnswMeta(sidecar)).toBeNull()
+
+      // Source changed behind a vouched sidecar: discarded.
+      plantFlushedSidecar()
+      const vouchedSource = sidecarMod.readHnswMeta(sidecar)!.source
+      const direct = new bunSqlite.Database(dbPath)
+      direct.loadExtension(probe.path)
+      direct.run(
+        `UPDATE memory_vectors
+            SET embedding = (SELECT embedding FROM memory_vectors WHERE id = 'vouch-3')
+          WHERE id = 'vouch-0'`,
+      )
+      direct.close()
+      // That close rewrote the sidecar as well. Re-vouch the NEW file with
+      // the OLD source fingerprint so only the source mismatch is in play.
+      sidecarMod.writeHnswMeta(sidecar, {
+        dimension: 64,
+        sidecar: sidecarMod.statHnswSidecar(sidecar)!,
+        source: vouchedSource,
+      })
+      expect(await searchIds()).toEqual(all)
+      expect(fs.existsSync(sidecar)).toBe(false)
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
   // ───────────────────────── Enrichment (Experiment A) ─────────────────
   // SIRA-style corpus enrichment: LLM-generated alias phrases carried at
   // content.enrichmentPhrases are joined into memory_vectors.enrichment and

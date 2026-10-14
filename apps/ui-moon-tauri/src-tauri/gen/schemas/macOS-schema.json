@@ -555,6 +555,12 @@
           "markdownDescription": "Allows SYSTEM windows to participate in the staged self-update flow (the steps are split across the main, chat, and settings windows): check for an update, download/verify/stage it, read the current update state, apply (install + relaunch) a staged build, and consume the one-shot post-restart reopen marker."
         },
         {
+          "description": "Allows the Screen Share panel to open and close a loopback WebSocket-to-TCP bridge to a VNC host (vnc_connect validates the host and binds only 127.0.0.1; vnc_disconnect aborts a live bridge task).",
+          "type": "string",
+          "const": "allow-vnc",
+          "markdownDescription": "Allows the Screen Share panel to open and close a loopback WebSocket-to-TCP bridge to a VNC host (vnc_connect validates the host and binds only 127.0.0.1; vnc_disconnect aborts a live bridge task)."
+        },
+        {
           "description": "Allows discarding in-flight voice capture/transcription",
           "type": "string",
           "const": "allow-voice-cancel",

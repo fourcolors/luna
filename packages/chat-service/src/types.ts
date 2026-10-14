@@ -130,6 +130,38 @@ export interface ChatToolResult {
   /** Mirror of ChatToolCall.parentToolUseId for results produced inside a
    *  subagent. Absent for top-level results. */
   readonly parentToolUseId?: string
+  /** Set when this result is only the launch acknowledgement of a background
+   *  Agent: the subagent keeps running after it, and its real end arrives
+   *  later as a `subagent-settled` frame. Absent for ordinary results. */
+  readonly async?: boolean
+}
+
+/**
+ * A background subagent finished (SDK `system/task_notification`).
+ * `toolCallId` is the spawning Agent call's tool_use id. The SDK's
+ * `completed` and `stopped` both map to `done`; `failed` maps to `error`.
+ */
+export interface ChatSubagentSettled {
+  readonly type: "subagent-settled"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly status: "done" | "error"
+}
+
+/**
+ * Progress from a background subagent (SDK `system/task_progress`). Carries
+ * what the parent stream may no longer forward once the parent turn ended:
+ * the subagent's last tool and its running tool count.
+ */
+export interface ChatSubagentProgress {
+  readonly type: "subagent-progress"
+  readonly threadId: string
+  readonly toolCallId: string
+  readonly tool?: string
+  readonly toolCount?: number
+  /** The subagent runs in the background (SDK task_started or task_updated
+   *  `is_backgrounded`): its tool-result is not its end. */
+  readonly async?: boolean
 }
 
 /**
@@ -163,11 +195,34 @@ export interface ChatSuggestedActionUpdate {
   readonly action: SuggestedActionView
 }
 
+/** One message waiting behind a running turn. */
+export interface QueuedMessageView {
+  /** SessionStore id of the user message (the `user-accepted` message id). */
+  readonly userMessageId: string
+  /** Preview of the message text, capped at QUEUED_PREVIEW_MAX. */
+  readonly text: string
+}
+
+/**
+ * The full list of messages waiting behind the running turn, oldest first.
+ * Published whenever it changes so a client can
+ * replace its view wholesale. A snapshot carries it only when non-empty, so
+ * clients clear their view on every snapshot. A
+ * client can push a waiting message into the running turn with a `steer`
+ * request.
+ */
+export interface ChatQueueUpdate {
+  readonly type: "queue-update"
+  readonly threadId: string
+  readonly queued: ReadonlyArray<QueuedMessageView>
+}
+
 /**
  * Union of every frame the per-thread subscribe Stream emits. ui-ws maps
  * this 1:1 to its ServerFrame chat variants.
  */
 export type ChatFrame =
+  | ChatQueueUpdate
   | ChatSnapshot
   | ChatAssistantDelta
   | ChatAssistantDone
@@ -176,6 +231,8 @@ export type ChatFrame =
   | ChatArtifactsExtracted
   | ChatToolCall
   | ChatToolResult
+  | ChatSubagentSettled
+  | ChatSubagentProgress
   | ChatTurnComplete
   | ChatSuggestedActionSet
   | ChatSuggestedActionUpdate

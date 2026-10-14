@@ -200,6 +200,11 @@ export const ChannelServiceLayer: Layer.Layer<
                 .pipe(Effect.catchCause(() => Effect.void))
             }
           }
+          // The command was fully handled here (its session effects already
+          // applied; the reply above is best-effort like every other
+          // deliver). Mark it seen so an at-least-once redelivery does not
+          // re-execute the command.
+          yield* dedupStore.markSeen(msg.transport, msg.platformMessageId, nowMs)
           return true
         }
 

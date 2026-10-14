@@ -135,3 +135,41 @@ describe("Feature: only the chat kind may inherit the shell-granted panel-chat-*
     expect(offenders).toEqual([])
   })
 })
+
+const VNC_PERMISSION = "allow-vnc"
+
+// Same ACL replay, for the Screen Share bridge commands (capabilities/vnc.json).
+// allow-vnc is an arbitrary host:port TCP proxy, so it must reach ONLY the
+// panel-vnc label family - the shared panels.json panel-* glob must not carry it.
+function aclGrantsVnc(label: string): boolean {
+  return capNames().some((name) => {
+    const cap = readCap(name)
+    if (!(cap.permissions || []).includes(VNC_PERMISSION)) return false
+    return (cap.windows || []).some((w) => windowGlobMatches(w, label))
+  })
+}
+
+describe("Feature: vnc bridge ACL covers only Screen Share panels", () => {
+  it("C1 [green guard] the vnc panel and its parameterized instances can open a bridge", () => {
+    expect(aclGrantsVnc("panel-vnc")).toBe(true)
+    expect(aclGrantsVnc("panel-vnc-1f4e9c")).toBe(true)
+  })
+
+  it("C2 [least privilege] the bridge is denied to the hub and every other panel kind", () => {
+    expect(aclGrantsVnc("main")).toBe(false)
+    expect(aclGrantsVnc("panel-settings")).toBe(false)
+    expect(aclGrantsVnc("panel-chat")).toBe(false)
+    expect(aclGrantsVnc("panel-chat-1f4e9c")).toBe(false)
+    expect(aclGrantsVnc("panel-flow-1a2b3c")).toBe(false)
+    expect(aclGrantsVnc("widget-abc123")).toBe(false)
+  })
+
+  it("C3 [least-privilege foot-gun guard] no non-vnc registry kind produces a label matching panel-vnc-*", () => {
+    // Same hazard as B6: a future vnc.* kind (panel-vnc-export) would inherit
+    // the bridge ACL via the glob. Pin 'vnc' as the only kind in its namespace.
+    const offenders = registryKinds().filter(
+      (kind) => kind !== "vnc" && windowGlobMatches("panel-vnc-*", panelLabel(kind)),
+    )
+    expect(offenders).toEqual([])
+  })
+})

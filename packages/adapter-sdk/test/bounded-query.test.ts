@@ -231,4 +231,28 @@ describe("runBoundedQuery — terminal outcomes", () => {
     )
     expect(seen).toEqual({ maxTurns: 7, model: "claude-sonnet-4-5", hasAbort: true })
   })
+
+  // SDK >=0.3.286 leaves an omitted permissionMode to Claude Code, which can
+  // start in "auto". Unattended turns must keep manual-approval semantics.
+  it("defaults permissionMode to 'default' when the caller omits it", async () => {
+    let seenMode: unknown
+    const sdkLayer = SDKClient.fake((params) => {
+      seenMode = params.options?.permissionMode
+      return makeFakeQuery({ messages: [resultMsg("ok")] }).query
+    })
+    await runWith(sdkLayer, (sdk) => runBoundedQuery(sdk, { prompt: "x", options: { maxTurns: 1 } }))
+    expect(seenMode).toBe("default")
+  })
+
+  it("keeps a caller-supplied permissionMode", async () => {
+    let seenMode: unknown
+    const sdkLayer = SDKClient.fake((params) => {
+      seenMode = params.options?.permissionMode
+      return makeFakeQuery({ messages: [resultMsg("ok")] }).query
+    })
+    await runWith(sdkLayer, (sdk) =>
+      runBoundedQuery(sdk, { prompt: "x", options: { permissionMode: "plan" } }),
+    )
+    expect(seenMode).toBe("plan")
+  })
 })
