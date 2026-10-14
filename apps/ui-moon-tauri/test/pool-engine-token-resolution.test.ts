@@ -201,6 +201,22 @@ describe('PoolEngine token resolution against a migrated route (#528, #529)', ()
     expect(pill.textContent).toBe('Route not paired')
   })
 
+  it('#532: an unreadable credential store says so instead of "Route not paired"', async () => {
+    ;(window as any).__TAURI__.core.invoke = makeInvokeStub({
+      loadConnection: { wsUrl: 'ws://migrated.host:4753/ui', wsToken: REAL_TOKEN },
+      resolveToken: {
+        err: 'not-paired: route "stable"\'s credential store is unreadable (expected value at line 1) - pairing will rewrite it',
+      },
+    })
+    evalChatInlineScriptWithBridge()
+    await settle()
+
+    expect(FakeWebSocket.instances.length).toBe(0)
+    const pill = document.getElementById('connection-status')!
+    expect(pill.className).toBe('disconnected')
+    expect(pill.textContent).toBe('Credentials unreadable')
+  })
+
   it('a real literal token resolve_route_token returns passes through unchanged', async () => {
     ;(window as any).__TAURI__.core.invoke = makeInvokeStub({
       loadConnection: { wsUrl: 'ws://migrated.host:4753/ui', wsToken: REAL_TOKEN },

@@ -915,6 +915,10 @@ const WebSocketEngine = {
         // bare retry cannot fix - the user (or Settings) has to act first.
         const retryable = tokenResolveError.startsWith('store-read:');
         const notPaired = tokenResolveError.startsWith('not-paired:');
+        // #532: connection.rs words a garbled moon-connection.json as a
+        // not-paired refusal, but re-pairing then resets EVERY channel, so
+        // the pill must not read like a single unpaired route.
+        const storeUnreadable = notPaired && tokenResolveError.includes('credential store is unreadable');
         Logger.error(
           '[PoolEngine] route token resolution failed; refusing to dial - '
             + (retryable ? 'will retry' : 'pair this route in Settings'),
@@ -934,7 +938,10 @@ const WebSocketEngine = {
           this._scheduleRetry();
         } else {
           State.reconnectAttempts = 0;
-          this.updateStatus('disconnected', notPaired ? 'Route not paired' : 'Route unavailable');
+          this.updateStatus(
+            'disconnected',
+            storeUnreadable ? 'Credentials unreadable' : notPaired ? 'Route not paired' : 'Route unavailable',
+          );
         }
         return;
       }
