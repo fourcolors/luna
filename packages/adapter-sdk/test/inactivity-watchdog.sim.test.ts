@@ -383,7 +383,7 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
             prompt: p.prompt,
             sessionId: sid,
             frames: 5, // 5 deltas + 1 result
-            gapMs: 60, // each gap < the 150ms window
+            gapMs: 100, // each gap < the 400ms window, with CI-load headroom
           })) as never,
         spy,
         twoAccounts,
@@ -402,9 +402,9 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
               sessionOptions: {
                 model: "m",
                 disableIdleTimeout: true,
-                // Total turn ≈ 6×60 = 360ms > the 150ms window, but each gap is
+                // Total turn ≈ 6×100 = 600ms > the 400ms window, but each gap is
                 // < window, so per-frame activity keeps it alive.
-                turnInactivityTimeoutMs: 150,
+                turnInactivityTimeoutMs: 400,
                 sdkOptions: { model: "m" },
               },
             })
@@ -450,7 +450,7 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
               sessionOptions: {
                 model: "m",
                 disableIdleTimeout: true,
-                turnInactivityTimeoutMs: 120,
+                turnInactivityTimeoutMs: 400,
                 sdkOptions: { model: "m" },
               },
             })
@@ -460,7 +460,7 @@ describe("SDKAdapter inactivity watchdog (chat threads)", () => {
               yield* Queue.offer(inbox, userMsg("first"))
               // Pause between turns far longer than the window — must NOT trip,
               // because the result frame DISARMS the watchdog.
-              yield* Effect.sleep("300 millis")
+              yield* Effect.sleep("1000 millis")
               yield* Queue.offer(inbox, userMsg("second"))
               yield* Effect.sleep("50 millis")
               yield* Queue.end(inbox)
