@@ -4,7 +4,7 @@
     "types": ["node"],
     "jsx": "react-jsx",
     "jsxImportSource": "@opentui/solid",
-    "preserveSymlinks": true,
+    "preserveSymlinks": false,
     "exactOptionalPropertyTypes": false
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
