@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * server-update-check.test.ts - regression tests for the update panel's
  * version comparison.
