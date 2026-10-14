@@ -371,6 +371,75 @@ describe("ConnectorsPanel (React port of panels/settings-connectors.js)", () => 
     expect(codeFrames[0].state).toBe("state_2")
   })
 
+  // 6b'. Same race, success side: the superseded flow's wait RESOLVES (consent
+  // landed just before the newer flow retired the listener). Its code must be
+  // dropped, never sent as a connector-oauth-code under the newer flow.
+  it("a superseded OAuth flow's wait resolution sends no code for the retired flow", async () => {
+    let resolveWait1: ((v: unknown) => void) | null = null
+    let resolveWait2: ((v: unknown) => void) | null = null
+    const conn = mountEnabled({
+      invoke: (cmd) => {
+        if (cmd === "oauth_loopback_start") return 54321
+        if (cmd === "open_external_url") return null
+        if (cmd === "oauth_loopback_wait") {
+          return new Promise((resolve) => {
+            if (resolveWait1 === null) resolveWait1 = resolve
+            else resolveWait2 = resolve
+          })
+        }
+        return null
+      },
+    })
+    const OAUTH_DEF_2 = { ...OAUTH_DEF, id: "discord", name: "Discord" }
+    act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF, OAUTH_DEF_2] }))
+
+    act(() => connectBtn("gws").click())
+    act(() => goBtn("gws").click())
+    await flush()
+    const begin1 = conn.sentFrames().find((f) => f.type === "connector-oauth-begin")!
+    act(() =>
+      conn.fireFrame({
+        type: "connector-oauth-redirect",
+        requestId: begin1.requestId,
+        authUrl: "https://accounts.google.com/oauth?state=one",
+        pendingId: "pend_1",
+      }),
+    )
+    await flush()
+    expect(resolveWait1).not.toBeNull()
+
+    act(() => connectBtn("discord").click())
+    act(() => goBtn("discord").click())
+    await flush()
+    const begins = conn.sentFrames().filter((f) => f.type === "connector-oauth-begin")
+    expect(begins).toHaveLength(2)
+    act(() =>
+      conn.fireFrame({
+        type: "connector-oauth-redirect",
+        requestId: begins[1].requestId,
+        authUrl: "https://discord.com/oauth?state=two",
+        pendingId: "pend_2",
+      }),
+    )
+    await flush()
+    expect(resolveWait2).not.toBeNull()
+
+    act(() => {
+      resolveWait1!({ code: "code_1", state: "state_1" })
+    })
+    await flush()
+    expect(conn.sentFrames().filter((f) => f.type === "connector-oauth-code")).toHaveLength(0)
+
+    act(() => {
+      resolveWait2!({ code: "code_2", state: "state_2" })
+    })
+    await flush()
+    const codeFrames = conn.sentFrames().filter((f) => f.type === "connector-oauth-code")
+    expect(codeFrames).toHaveLength(1)
+    expect(codeFrames[0].pendingId).toBe("pend_2")
+    expect(codeFrames[0].code).toBe("code_2")
+  })
+
   // 6c. Supersede-before-begin: a flow retired while still between
   // oauth-authorizing-start and oauth-begin-set (its oauth_loopback_start
   // never resolves, so oauthDefinitionId stays null) must not leave its
