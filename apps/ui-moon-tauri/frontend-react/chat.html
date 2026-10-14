@@ -2374,6 +2374,11 @@
       outline: none;
       transition: border-color 0.2s, background 0.2s;
     }
+    /* The voice cluster only exists once the probe lands — reserve its
+       width only then, or voice-less builds wrap text ~76px early. */
+    .composer-input-wrap:has(.voice-cluster:not([hidden])) .chat-input {
+      padding-right: 120px;
+    }
 
     /* Grok-style + on the LEFT inside the input shell. type=button required
        (lives in the form). Opens a one-item Attachment menu — not a direct
@@ -2479,6 +2484,211 @@
       stroke-linecap: round;
       stroke-linejoin: round;
       filter: url(#wc-wobble-soft);
+    }
+
+    /* ── Voice cluster (dictate + conversation + menu) ─────────────────────
+       Same ghost chips as .attach-plus-btn / .send-btn, tucked left of send.
+       Live state is a quiet accent wash — no glow, no LED. */
+    .voice-cluster {
+      position: absolute;
+      right: 38px;
+      bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 0;
+      /* Above .voice-menu (80): if the popover ever overlaps the cluster
+         the caret stays clickable — the menu must be toggle-able away. */
+      z-index: 81;
+    }
+    /* `hidden` loses to `display: flex` by cascade (the UA [hidden] rule is
+       non-important) — without this the dead cluster renders in every
+       voice-less build. Same trap as .user-ask-panel / the old .mic-btn. */
+    .voice-cluster[hidden] { display: none !important; }
+    .mic-btn,
+    .voice-mode-btn {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      background: transparent;
+      border: none;
+      border-radius: 9px;
+      color: var(--ink-soft);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.18s, color 0.18s, opacity 0.15s ease;
+    }
+    .mic-btn:hover,
+    .voice-mode-btn:hover {
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      color: var(--ink);
+    }
+    .mic-btn svg,
+    .voice-mode-btn svg { width: 16px; height: 16px; }
+    .mic-btn.voice-mode-off { opacity: 0.45; }
+    /* Armed dictate (ptt): the mic reads "on" even before a capture starts. */
+    .mic-btn.armed { color: var(--accent); opacity: 1; }
+    .voice-mode-btn.active { color: var(--accent); }
+    .mic-btn[data-voice-state="listening"],
+    .voice-mode-btn[data-voice-state="listening"] {
+      color: var(--accent);
+      background: color-mix(in oklab, var(--accent) 14%, transparent);
+    }
+    .mic-btn[data-voice-state="transcribing"],
+    .voice-mode-btn[data-voice-state="transcribing"] {
+      color: var(--ink);
+      animation: mic-transcribing-breathe 0.9s ease-in-out infinite;
+    }
+    @keyframes mic-transcribing-breathe {
+      0%, 100% { opacity: 0.55; }
+      50%      { opacity: 1; }
+    }
+    .mic-btn[data-voice-state="speaking"],
+    .voice-mode-btn[data-voice-state="speaking"] { color: var(--ink-soft); }
+    .mic-btn[data-voice-state="error"],
+    .voice-mode-btn[data-voice-state="error"] { color: #f87171; }
+    .voice-menu-btn {
+      width: 16px;
+      height: 30px;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: var(--ink-soft);
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.18s, color 0.18s;
+    }
+    .voice-menu-btn:hover {
+      background: color-mix(in oklab, var(--ink) 8%, transparent);
+      color: var(--ink);
+    }
+    .voice-menu-btn svg { width: 10px; height: 10px; }
+
+    /* ── Voice menu — the quick setup popover above the mic cluster ──────────
+       Same popover chrome as .attach-menu/.scope-menu (paper, faint border,
+       radius, shadow, z 80), anchored bottom-RIGHT. */
+    .voice-menu {
+      position: absolute;
+      right: 12px;
+      /* Anchored to the form's bottom padding edge: 104 sits the popover
+         just above the voice cluster row (≈66..102 from the form's bottom
+         edge) so an open menu never swallows its own trigger — the caret
+         click can close it and the buttons stay reachable. */
+      bottom: 104px;
+      width: 220px;
+      background: var(--paper);
+      border: 1.3px solid var(--ink-faint);
+      border-radius: 12px;
+      padding: 8px;
+      box-shadow: 0 10px 26px -10px rgba(0, 0, 0, 0.25);
+      z-index: 80;
+      display: none;
+    }
+    .voice-menu.open { display: block; }
+    .voice-menu-title {
+      padding: 2px 6px 6px;
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--ink-soft);
+    }
+    .voice-menu-label {
+      padding: 8px 6px 4px;
+      font-size: 0.66rem;
+      color: var(--ink-soft);
+    }
+    /* Segmented control for mode + engine (same ink-wash vocabulary). */
+    .voice-seg {
+      display: flex;
+      gap: 2px;
+      background: color-mix(in oklab, var(--ink) 6%, transparent);
+      border-radius: 8px;
+      padding: 2px;
+    }
+    .voice-seg-btn {
+      flex: 1;
+      border: none;
+      background: transparent;
+      border-radius: 6px;
+      padding: 5px 4px;
+      font-size: 0.74rem;
+      font-family: var(--font-chat);
+      color: var(--ink-soft);
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s;
+    }
+    .voice-seg-btn:hover { color: var(--ink); }
+    .voice-seg-btn.active {
+      background: var(--paper);
+      color: var(--ink);
+    }
+    .voice-fish { padding-top: 2px; }
+    .voice-fish-row { display: flex; align-items: center; gap: 6px; }
+    .voice-fish-input {
+      flex: 1;
+      min-width: 0;
+      background: var(--paper);
+      border: 1.2px solid var(--ink-faint);
+      border-radius: 8px;
+      padding: 6px 8px;
+      font-family: var(--font-chat);
+      font-size: 0.78rem;
+      color: var(--ink);
+      outline: none;
+    }
+    .voice-fish-input:focus { border-color: var(--accent); }
+    .voice-mini-btn {
+      border: 1.2px solid var(--ink-faint);
+      background: transparent;
+      border-radius: 8px;
+      padding: 5px 10px;
+      font-size: 0.76rem;
+      font-family: var(--font-chat);
+      color: var(--ink);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .voice-mini-btn:hover { background: color-mix(in oklab, var(--ink) 7%, transparent); }
+    .voice-mini-btn:disabled { opacity: 0.45; cursor: default; }
+    .voice-fish-status {
+      padding: 4px 2px 0;
+      font-size: 0.68rem;
+      color: var(--ink-soft);
+    }
+    .voice-fish-status.ok { color: var(--ink); }
+    .voice-fish-status.err { color: #f87171; }
+    .voice-link-btn {
+      border: none;
+      background: none;
+      padding: 4px 2px 0;
+      font-size: 0.72rem;
+      font-family: var(--font-chat);
+      color: var(--accent);
+      cursor: pointer;
+      text-align: left;
+    }
+    .voice-link-btn:hover { text-decoration: underline; }
+    .voice-model-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding-top: 8px;
+    }
+    .voice-model-row[hidden] { display: none !important; }
+    .voice-model-text { font-size: 0.72rem; color: var(--ink-soft); }
+    .voice-menu-footer {
+      display: block;
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid var(--ink-faint);
+      width: 100%;
     }
 
     /* Strip of pending-attachment chips above the input row. */
@@ -3072,6 +3282,40 @@
           <span class="scope-menu-check" aria-hidden="true">✓</span>
         </div>
       </div>
+      <!-- Voice menu — the quick talk/voice setup surface, anchored like
+           scope/attach (position:relative on .chat-input-area) but to the
+           RIGHT, opening upward above the mic cluster. Carries the talk mode,
+           the reply-voice engine pick, the inline Fish API key entry (the
+           "get started" path), and the speech-model download nudge. Settings →
+           Voice keeps the full controls; this is the fast lane. -->
+      <div class="voice-menu" id="voice-menu" role="menu" aria-label="Voice" aria-hidden="true">
+        <div class="voice-menu-title">Voice</div>
+        <div class="voice-seg" role="group" aria-label="Mode">
+          <button type="button" class="voice-seg-btn" data-voice-mode="off">Off</button>
+          <button type="button" class="voice-seg-btn" data-voice-mode="ptt" title="Hold the mic to talk">Hold</button>
+          <button type="button" class="voice-seg-btn" data-voice-mode="auto">Hands-free</button>
+        </div>
+        <div class="voice-menu-label">Reply</div>
+        <div class="voice-seg" role="group" aria-label="Reply">
+          <button type="button" class="voice-seg-btn" data-voice-engine="system">System</button>
+          <button type="button" class="voice-seg-btn" data-voice-engine="fish">Fish</button>
+        </div>
+        <div class="voice-fish" id="voice-fish-section" hidden>
+          <label class="voice-menu-label" for="voice-fish-key">Fish key</label>
+          <div class="voice-fish-row">
+            <input class="voice-fish-input" id="voice-fish-key" type="password" autocomplete="off" placeholder="API key">
+            <button type="button" class="voice-mini-btn" id="voice-fish-save">Save</button>
+            <button type="button" class="voice-mini-btn" id="voice-fish-clear" hidden>Clear</button>
+          </div>
+          <div class="voice-fish-status" id="voice-fish-status"></div>
+          <button type="button" class="voice-link-btn" id="voice-fish-link">Get a key</button>
+        </div>
+        <div class="voice-model-row" id="voice-model-row" hidden>
+          <span class="voice-model-text" id="voice-model-text">Speech model required</span>
+          <button type="button" class="voice-mini-btn" id="voice-model-download">Download</button>
+        </div>
+        <button type="button" class="voice-link-btn voice-menu-footer" id="voice-settings-link">Voice settings</button>
+      </div>
       <!-- Smart Bar: context-aware info pills, server-assembled and pushed as
            a smart-bar frame. Hidden when the item list is empty (v1: info only).
            Sits inside the flex-column form ABOVE the composer row.
@@ -3120,6 +3364,36 @@
           </svg>
         </button>
         <textarea class="chat-input" id="message-input" placeholder="Message Luna…" rows="1" autocomplete="off" aria-haspopup="listbox" aria-autocomplete="list" aria-controls="slash-menu mention-menu" aria-expanded="false"></textarea>
+        <!-- Voice cluster — sits immediately left of send, inside the input
+             shell, mirroring ChatGPT's composer pair: the mic is Dictate
+             (tap to dictate, or press-and-hold while armed) and the
+             waveform is the one-click voice conversation (hands-free
+             auto mode). The caret opens #voice-menu (mode, engine, Fish
+             key, model download). Hidden until VoiceEngine's probe
+             confirms the Rust voice pipeline. -->
+        <span class="voice-cluster" id="voice-cluster" hidden>
+          <button type="button" class="mic-btn" id="voice-mic-btn" data-voice-state="" aria-label="Dictate" title="Dictate">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v1a7 7 0 0 1-14 0v-1"></path>
+              <line x1="12" y1="18" x2="12" y2="22"></line>
+            </svg>
+          </button>
+          <button type="button" class="voice-mode-btn" id="voice-mode-btn" data-voice-state="" aria-label="Voice" title="Voice">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <line x1="4"  y1="10" x2="4"  y2="14"></line>
+              <line x1="8"  y1="7"  x2="8"  y2="17"></line>
+              <line x1="12" y1="4"  x2="12" y2="20"></line>
+              <line x1="16" y1="7"  x2="16" y2="17"></line>
+              <line x1="20" y1="10" x2="20" y2="14"></line>
+            </svg>
+          </button>
+          <button type="button" class="voice-menu-btn" id="voice-menu-btn" aria-label="Voice options" title="Voice options" aria-haspopup="menu" aria-expanded="false" aria-controls="voice-menu">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 4.5 L6 8 L9 4.5"/>
+            </svg>
+          </button>
+        </span>
         <button type="submit" class="send-btn" aria-label="Send message" title="Send (Enter)">
           <!-- ↵ return/enter glyph: vertical down-then-left + a left arrowhead. -->
           <svg viewBox="0 0 24 24" aria-hidden="true">
