@@ -140,10 +140,14 @@ export function createLocalShell(ctx: LocalShellCtx) {
       // Defence in depth. The server already refuses to resolve a personal
       // machine for an unattended thread, but this client owns the actual
       // machine, so it makes the same judgement itself rather than trusting
-      // the server alone. A forked child or a thread created from an inbound
-      // channel message has nobody watching it.
+      // the server alone. A forked child, a thread created from an inbound
+      // channel message, or an agent-created chat has nobody watching it.
       const tags = Array.isArray(frame.threadTags) ? frame.threadTags : [];
-      if (tags.includes('forked-from-parent') || tags.includes('channel')) {
+      if (
+        tags.includes('forked-from-parent') ||
+        tags.includes('channel') ||
+        tags.includes('agent-created')
+      ) {
         Logger.warn(`local-shell refused an unattended-origin request (tags=${tags.join(',')})`);
         return denied('refused: unattended thread may not run commands on this machine');
       }
