@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createState } from '../frontend-react/src/chat/state'
 import { createLocalShell } from '../frontend-react/src/chat/localShell'
+import { UNATTENDED_THREAD_TAGS } from '../../../packages/ui-ws/src/local-shell-bridge'
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -275,6 +276,52 @@ describe('Feature: handleRequest() cwd defaulting', () => {
     expect(f?.approved).toBe(true)
     expect(f?.exitCode).toBeNull()
     expect(String(f?.stderr)).toMatch(/exec failed/)
+  })
+})
+
+// ── Feature: handleRequest() refuses unattended-origin threads ────────────────
+
+describe('Feature: handleRequest() refuses unattended threads', () => {
+  const invokeMock = vi.fn()
+
+  beforeEach(() => {
+    localStorage.clear()
+    invokeMock.mockReset()
+    invokeMock.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '', durationMs: 1, timedOut: false })
+    ;(window as any).__TAURI__ = { core: { invoke: invokeMock } }
+  })
+
+  afterEach(() => {
+    delete (window as any).__TAURI__
+  })
+
+  const resultFrame = (ctx: ReturnType<typeof makeCtx>['ctx']) =>
+    (ctx.WebSocketEngine.send as ReturnType<typeof vi.fn>).mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .find((f) => f.type === 'local-shell-result')
+
+  // Iterates the server's own list so this client-side copy cannot drift from it again.
+  it.each([...UNATTENDED_THREAD_TAGS])('Scenario: a "%s" thread is refused without running anything', async (tag) => {
+    const { ctx, state } = makeCtx()
+    state.localShell.fullAccess = true
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'u1', threadId: 't1', command: 'pwd', threadTags: [tag] })
+
+    expect(invokeMock).not.toHaveBeenCalled()
+    expect(resultFrame(ctx)?.approved).toBe(false)
+    expect(String(resultFrame(ctx)?.stderr)).toMatch(/unattended/)
+  })
+
+  it('Scenario: an attended thread with unrelated tags still runs', async () => {
+    const { ctx, state } = makeCtx()
+    state.localShell.fullAccess = true
+    const ls = createLocalShell(ctx)
+
+    await ls.handleRequest({ requestId: 'u2', threadId: 't1', command: 'pwd', threadTags: ['pinned'] })
+
+    expect(invokeMock).toHaveBeenCalledWith('local_shell_exec', expect.objectContaining({ command: 'pwd' }))
+    expect(resultFrame(ctx)?.approved).toBe(true)
   })
 })
 
