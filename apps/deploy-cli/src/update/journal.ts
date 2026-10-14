@@ -53,7 +53,7 @@ import { dirname, join } from "node:path"
 import { allKeyValuesLastWins, atomicWriteFileSync, ensureStateDir, removeFileIfPresent } from "./atomic-file.js"
 
 /** Every phase write_transaction accepts (the TX_PHASE regex at scripts/luna-update-server:1040). */
-export const TX_PHASES = [
+const TX_PHASES = [
   "prepared",
   "checkout",
   "applied",

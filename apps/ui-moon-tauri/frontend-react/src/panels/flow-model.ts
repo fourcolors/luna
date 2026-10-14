@@ -22,8 +22,7 @@
  */
 import type { WorkflowGalleryItem, WorkflowRunItem } from "@luna/ui-shared/core"
 
-export const MAX_RUNS = 500
-export const MAX_ERROR_CHARS = 120
+const MAX_RUNS = 500
 
 /** Past → "2h ago"; unset/invalid → "-". */
 export function fmtRelative(epochMs: number | null | undefined): string {
@@ -83,7 +82,7 @@ export function boundRuns(raw: unknown): ReadonlyArray<WorkflowRunItem> {
     .sort((a, b) => Number(b.startedAt) - Number(a.startedAt))
 }
 
-export interface SubtitleBadge {
+interface SubtitleBadge {
   readonly kind: "scheduled" | "paused" | "on-demand"
   readonly text: string
 }

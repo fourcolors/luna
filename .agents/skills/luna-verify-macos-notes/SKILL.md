@@ -25,6 +25,27 @@ via CDP") and `read_dom` both fail. Options:
   recording (good evidence). The globals (`Attachments`, `WebSocketEngine`,
   `ChatLoop`, …) are reachable there.
 - Or relaunch Chrome with `--remote-debugging-port=9222` if CDP is needed.
+
+### What actually works against a manually launched Chrome (verified)
+
+`open -na "Google Chrome" --args --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-devin`
+(a non-default user-data-dir is required by Chrome 136+). Then:
+
+- The computer tool's **browser target DOES attach**: pass `target:"browser"`,
+  `cdp_port:9222` — `inspect`, `query`, and `act` (press, set_text) all work
+  even though `capabilities` reports the browser target as "unavailable".
+  Page refs are usable for real clicks (e.g. pressing a seed button).
+- `browser_console` still REFUSES ("Chrome is not in the foreground") even
+  with Chrome focused — it only talks to the tool's own managed browser.
+  For JS evaluation use a ~20-line bun script: `fetch
+  http://127.0.0.1:9222/json`, pick the page target by URL substring, open
+  its `webSocketDebuggerUrl` with `new WebSocket`, send
+  `Runtime.evaluate` `{expression, returnByValue:true, awaitPromise:true}`.
+  That drives `WebSocketEngine.handleFrame(...)`, `ChatLoop.flush()`, and
+  DOM reads reliably.
+- `location.href='panel.html?type=…'` via that script navigates the tab —
+  the same page target stays valid on the new URL (match by substring, not
+  equality).
 - Expected noise: with no chat server running, the console fills with
   `WebSocket connection to 'ws://127.0.0.1:4753/ui' failed:
   net::ERR_CONNECTION_REFUSED` retries — unrelated to UI features that are
@@ -231,3 +252,33 @@ then `set position of window X to {20, 120}` on the foreign process or
 `tell application "X" to quit`. Also note: card-panel miniaturize is a NO-OP
 (yellow button and Cmd+M do nothing) — re-show isn't a reachable reset path
 for these windows, so don't burn time trying to test it.
+
+
+## Verifying the Screen Share (VNC) widget live
+
+The `vnc` widget ("Screen Share", `panel.html?type=vnc`) opens via the Cmd+K
+launcher like any panel — typing `screen` filters to it as the unique row-0
+match, so Enter activates it deterministically. A python RFB fixture makes the
+whole path verifiable without a real VNC host:
+
+- Fixture: `python3 .agents/skills/luna-verify-macos-notes/vnc-test-server.py` — raw RFB 3.8 security-None on
+  `127.0.0.1:5900` (the path the Rust `vnc_connect` WS↔TCP bridge exercises)
+  plus a ws front on :5910. Draws an animated 640x480 checkerboard, desktop
+  name `luna-test-vnc`, and a magenta cross at the last pointer position
+  (GREEN while a button is held). Logs `rfb:`/`ws:` lines to
+  `/tmp/vnc-test-server.log`.
+- Which connection proved what: a panel connect through the Rust bridge logs
+  `rfb: connection from …` + `rfb: session init complete` with NO `ws:` line —
+  a `ws:` line means a client used python's own 5910 front instead (i.e. the
+  bridge wasn't exercised).
+- Pointer truth: take the screenshot WHILE `left_mouse_down` is held (cross is
+  green; magenta after release). `left_mouse_down` takes no coordinate — it
+  presses at the current cursor position, so click first, then hold.
+- Server log is the ground truth for input round-trip: `PointerEvent …
+  mask=0x1` during drags, `KeyEvent keysym=0x… down=1/0` for keys. Use a key
+  not already in the log so the new lines are unambiguous.
+- Closed-port negative: `vnc_connect` dials TCP first, so `127.0.0.1:5999`
+  surfaces `can't reach 127.0.0.1:5999 - Connection refused (os error 61)` on
+  the card and flips the button to `Try again`; no server log line appears.
+- `scaleViewport = true`: shrinking the window rescales the whole remote —
+  verify the full checkerboard stays visible rather than clipping.

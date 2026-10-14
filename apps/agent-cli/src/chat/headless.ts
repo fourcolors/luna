@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events"
-import type { ClientFrame, ServerFrame, MemorySearchResultFrame, MemorySearchErrorFrame, ClientInfo } from "@luna/ui-ws"
+import type { ServerFrame, MemorySearchResultFrame, MemorySearchErrorFrame, ClientInfo } from "@luna/ui-ws"
 import type { LunaWsClient } from "./ws-client.js"
 import { parseSlashCommand, type SlashCommand } from "./slash.js"
 import type { PendingSurvey, SurveyItem, SurveyVerdict } from "@luna/core"
@@ -110,7 +110,6 @@ export type LunaHeadlessConfig = {
 
 export class LunaHeadlessSession extends EventEmitter {
   private readonly client: LunaWsClient
-  private readonly profileName: string
   private readonly model: string
   private currentThreadId: string | null
   private pendingAutoResumedThreadId: string | null
@@ -125,7 +124,6 @@ export class LunaHeadlessSession extends EventEmitter {
   constructor(cfg: LunaHeadlessConfig) {
     super()
     this.client = cfg.client
-    this.profileName = cfg.profileName
     this.model = cfg.model
     this.currentThreadId = cfg.initialThreadId ?? null
     this.pendingAutoResumedThreadId = cfg.autoResumedThreadId ?? null

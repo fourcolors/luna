@@ -120,8 +120,10 @@ function parseAnswer(
         throw new Error(`jev: missing or malformed choice answer ${id}`)
       }
       // The winner must be one of the declared option ids — an out-of-set
-      // label would route to a destination that doesn't exist.
-      if (!(a["choice"] in question.criteria)) {
+      // label would route to a destination that doesn't exist. Own-property
+      // check, not `in`: `in` walks the prototype chain, so "toString" /
+      // "constructor" would pass on ANY criteria object.
+      if (!Object.hasOwn(question.criteria, a["choice"])) {
         throw new Error(`jev: choice answer ${id} picked an undeclared option "${a["choice"]}"`)
       }
       checkConfidenceAndProbabilities(id, a)

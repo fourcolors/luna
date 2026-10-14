@@ -37,20 +37,6 @@ export interface MoonStore<S = UIState, A = Action> {
 export type MoonSelector<S, T> = (state: S) => T
 export type MoonEquality<T> = (previous: T, next: T) => boolean
 
-export function shallowEqual<T>(previous: T, next: T): boolean {
-  if (Object.is(previous, next)) return true
-  if (
-    previous === null || next === null ||
-    typeof previous !== "object" || typeof next !== "object"
-  ) return false
-  const previousKeys = Object.keys(previous)
-  const nextKeys = Object.keys(next)
-  return previousKeys.length === nextKeys.length && previousKeys.every(
-    (key) => Object.prototype.hasOwnProperty.call(next, key) &&
-      Object.is(previous[key as keyof T], next[key as keyof T]),
-  )
-}
-
 /**
  * Generic external-store factory: wraps any pure `(state, action) => state`
  * reducer in the getState/dispatch/subscribe shape useSyncExternalStore

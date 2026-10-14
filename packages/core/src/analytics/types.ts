@@ -9,8 +9,6 @@
 import type { Effect } from "effect"
 import type { DuckDbError } from "../db/duckdb-service.js"
 
-export type { DuckDbError }
-
 export interface SessionTelemetryJoin {
   // Session fields
   readonly sessionId: string

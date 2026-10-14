@@ -59,7 +59,6 @@ import { stripTrailingNewlines } from "./session-guard.js"
 import type { CommandResult } from "./target.js"
 
 /** The env key the re-pin's degrade check reads back (scripts/luna-update-server:1248). */
-const CLAUDE_PIN_KEY = "LUNA_CLAUDE_CODE_EXECUTABLE"
 
 /** The sentinel the in-container re-pin payload exits with when it found no usable claude (:1237, :1239). */
 const REPIN_NO_CLAUDE = 9

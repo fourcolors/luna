@@ -52,13 +52,20 @@ import {
   MAX_TURN_RAW_BYTES,
   MAX_ATTACHMENTS_PER_TURN,
 } from "@luna/core"
-import type { ObsEvent } from "@luna/core"
 import type {
   ChatService,
   ChatFrame,
   DeliveryNotification,
 } from "@luna/chat-service"
 import type { LocalShellBridge } from "./local-shell-bridge.js"
+import {
+  JOURNAL_PATH,
+  JournalInFlight,
+  JournalRateLimiter,
+  handleJournalRequest,
+  resolveJournalToken,
+  type JournalSink,
+} from "./journal-route.js"
 import type { SecretRequestBridge } from "./secret-request-bridge.js"
 import {
   UI_WS_PROTOCOL_VERSION,
@@ -614,6 +621,19 @@ export interface UIWebSocketServerConfig {
     }) => import("effect").Effect.Effect<{ readonly ok: boolean; readonly message?: string }>
   } | null
   /**
+   * Optional sink for `POST /v1/journal` (luna-journal Claude Code mod). The
+   * route answers 503 unless BOTH this and `journalToken` are set. Pass it
+   * only to the normal-mode server.
+   */
+  readonly journalSink?: JournalSink | null
+  /**
+   * Dedicated bearer for `/v1/journal` (LUNA_JOURNAL_TOKEN), at least 32
+   * chars; shorter values disable the route. Never the main ui-ws token.
+   */
+  readonly journalToken?: string | null
+  /** Test hook: overrides the 15 s absolute deadline per journal request. */
+  readonly journalDeadlineMs?: number
+  /**
    * Optional setup-mode pty factory. When provided:
    *   - The server registers an inbound message handler even when chat /
    *     localShellBridge / survey are all null (setup-mode), so the client can
@@ -775,9 +795,18 @@ export interface UIWebSocketServerConfig {
       readonly roleBindings: ReadonlyArray<import("./protocol.js").RoleBindingItem>
       /** Absent = keep the stored memory reranker choice. */
       readonly memoryReranker?: import("./protocol.js").MemoryRerankerSettingsItem
+      /** Absent = keep the stored classifier engine choice. */
+      readonly classifierEngine?: import("./protocol.js").ClassifierEngineSettingsItem
     }) => { readonly ok: boolean; readonly message: string }
     /** Called after a successful save so activation (restart) is scheduled. */
     readonly scheduleRestart?: () => void
+    /**
+     * Out-of-band list changes (e.g. the laya sidecar probe flipping
+     * up/down) — the implementation registers `notify`, then the server
+     * broadcasts a fresh `model-routing-list` on each call. Absent on
+     * older/mocked services.
+     */
+    readonly changes?: (notify: () => void) => void
   } | null
 }
 
@@ -936,6 +965,24 @@ export const startUIWebSocketServer = (
     // and graceful degradation from the WebSocket routing Implementation.
     const smartBarContext = createSmartBarContextModule()
 
+    // Constant-time string compare for the auth check. The token is short
+    // (≥16 chars) and the listener is 127.0.0.1-bound, so timing-attack
+    // exposure is small — but free to add and avoids the early-exit `===`
+    // pattern in case of future remote-binding mistakes.
+    const tokenEq = (a: string, b: string): boolean => {
+      if (a.length !== b.length) return false
+      let diff = 0
+      for (let i = 0; i < a.length; i++) {
+        diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+      }
+      return diff === 0
+    }
+
+    const journalSink = config.journalSink ?? null
+    const journalToken = resolveJournalToken(config.journalToken)
+    const journalRateLimiter = new JournalRateLimiter()
+    const journalInFlight = new JournalInFlight()
+
     const httpServer = http.createServer((req, res) => {
       // Match on the pathname only — req.url includes the query string, so an
       // exact `=== "/healthz"` would miss `/healthz?x`.
@@ -991,6 +1038,20 @@ export const startUIWebSocketServer = (
         res.end("upgrade required")
         return
       }
+      if (reqPath === JOURNAL_PATH) {
+        void handleJournalRequest(req, res, {
+          token: journalToken,
+          sink: journalSink,
+          tokenEq,
+          rateLimiter: journalRateLimiter,
+          inFlight: journalInFlight,
+          ...(config.journalDeadlineMs !== undefined ? { deadlineMs: config.journalDeadlineMs } : {}),
+        }).catch(() => {
+          if (!res.headersSent) res.writeHead(500)
+          res.end()
+        })
+        return
+      }
       res.writeHead(404)
       res.end()
     })
@@ -1002,19 +1063,6 @@ export const startUIWebSocketServer = (
     // real gate). Still below the ws default (100MB). Oversize frames close
     // with 1009; the UI validates pre-flight so hitting this is exceptional.
     const wss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 })
-
-    // Constant-time string compare for the auth check. The token is short
-    // (≥16 chars) and the listener is 127.0.0.1-bound, so timing-attack
-    // exposure is small — but free to add and avoids the early-exit `===`
-    // pattern in case of future remote-binding mistakes.
-    const tokenEq = (a: string, b: string): boolean => {
-      if (a.length !== b.length) return false
-      let diff = 0
-      for (let i = 0; i < a.length; i++) {
-        diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
-      }
-      return diff === 0
-    }
 
     // Auth + upgrade gate.
     // Browsers can't set custom headers on WebSocket upgrades, so we accept
@@ -1166,6 +1214,31 @@ export const startUIWebSocketServer = (
                 ...(sync !== null ? { sync } : {}),
                 ...(storage !== null ? { storage } : {}),
               })
+            }
+          }).pipe(Effect.catchCause(() => Effect.void)),
+        )
+      })
+    }
+
+    // Laya sidecar probe flips (chat-server's /health poll) → broadcast a
+    // fresh model-routing-list so the Models panel's install indicator
+    // updates live without a reconnect or save. Same changes-hook pattern
+    // as the skill-catalog / vault-list broadcasts above; `list()` is the
+    // same wire-safe projection the hello and post-save paths send.
+    if (
+      modelRoutingService !== null &&
+      modelRoutingService !== undefined &&
+      modelRoutingService.changes !== undefined
+    ) {
+      const mrSvc = modelRoutingService
+      const registerMrChanges = modelRoutingService.changes
+      registerMrChanges(() => {
+        Effect.runForkWith(runtime)(
+          Effect.gen(function* () {
+            const frame = mrSvc.list()
+            const sockets = yield* Ref.get(activeSockets)
+            for (const sock of sockets) {
+              send(sock, frame)
             }
           }).pipe(Effect.catchCause(() => Effect.void)),
         )
@@ -2416,6 +2489,17 @@ export const startUIWebSocketServer = (
                     yield* chat.interrupt(frame.threadId)
                     return
                   }
+                  case "steer": {
+                    if (chat === null) return
+                    if (
+                      typeof frame.threadId !== "string" ||
+                      typeof frame.userMessageId !== "string"
+                    ) return
+                    // The queue-update this publishes is the ack; a false
+                    // result means the message already runs on its own.
+                    yield* chat.steer(frame.threadId, frame.userMessageId)
+                    return
+                  }
                   case "set-thread-config": {
                     // Model + effort switcher. Gated on chat being bound (which
                     // implies effortSelection: true in capabilities). The ack
@@ -3540,6 +3624,7 @@ export const startUIWebSocketServer = (
                       providers: mrFrame.providers ?? [],
                       roleBindings: mrFrame.roleBindings ?? [],
                       ...(mrFrame.memoryReranker !== undefined ? { memoryReranker: mrFrame.memoryReranker } : {}),
+                      ...(mrFrame.classifierEngine !== undefined ? { classifierEngine: mrFrame.classifierEngine } : {}),
                     })
                     send(ws, {
                       type: "model-routing-status",

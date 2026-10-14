@@ -42,13 +42,13 @@ export interface ChannelOption {
   readonly label: string
 }
 
-export interface ModelEntry {
+interface ModelEntry {
   readonly id: string
   readonly label: string
   readonly efforts: readonly string[]
 }
 
-export interface SaveStatus {
+interface SaveStatus {
   readonly text: string
   readonly kind: "ok" | "warn" | null
 }
@@ -259,7 +259,7 @@ export type ConnectionPanelAction =
   | { readonly type: "save-error"; readonly message: string }
   | { readonly type: "save-settled" }
 
-export const FALLBACK_CHANNEL_OPTIONS: readonly ChannelOption[] = [
+const FALLBACK_CHANNEL_OPTIONS: readonly ChannelOption[] = [
   { value: "stable", label: "Stable" },
   { value: "dev", label: "Dev" },
 ]

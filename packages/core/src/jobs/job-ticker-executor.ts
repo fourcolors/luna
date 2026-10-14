@@ -136,7 +136,7 @@ const MIN_RESOLVED_TIMEOUT_MS = 1_000
  * callers gate on `newFailStreak >= threshold` before using the bucket, so
  * 0 is never fingerprinted into a real note.
  */
-export const computeFailStreakBucket = (
+const computeFailStreakBucket = (
   streak: number,
   threshold: number,
 ): number => {

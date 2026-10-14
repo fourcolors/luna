@@ -1,7 +1,7 @@
 import { Effect } from "effect"
 import { z } from "zod"
 import { defineTool, ToolError } from "@luna/tools"
-import type { LocalShellBridge } from "@luna/ui-ws"
+import { UNATTENDED_THREAD_TAGS, type LocalShellBridge } from "@luna/ui-ws"
 
 const DEFAULT_TIMEOUT_MS = 120_000
 const MAX_TIMEOUT_MS = 120_000
@@ -150,11 +150,12 @@ export const makeLocalShellTools = (
           /** True when `target` must be supplied on every local_shell_run call. */
           targetRequired: targets.length > 1,
           /**
-           * Unattended threads (forked children, channel-originated) can only
-           * ever reach the server's own sandbox, never a personal machine.
+           * Unattended threads (forked children, channel-originated,
+           * agent-created) can only ever reach the server's own sandbox,
+           * never a personal machine.
            */
-          unattendedThread: session.threadTags.some(
-            (t) => t === "forked-from-parent" || t === "channel",
+          unattendedThread: session.threadTags.some((t) =>
+            UNATTENDED_THREAD_TAGS.includes(t),
           ),
         } as const
       }),

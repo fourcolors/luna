@@ -82,13 +82,16 @@ const applyInline = (escaped: string): string => {
   })
   out = out.replace(/`([^`\n]+)`/g, (_m, code: string) => put(`<code>${code}</code>`))
 
-  // Links: [text](http…). The whole anchor is stashed — emphasis inside link
+  // Links: [text](http…). The URL pattern allows one level of balanced
+  // parentheses (e.g. Wikipedia disambiguation links) so they are not cut at
+  // the first ")"; deeper nesting degrades to literal text rather than a
+  // truncated href. The whole anchor is stashed — emphasis inside link
   // text is sacrificed for the guarantee that URLs are never rewritten, and
   // any code span already stashed inside the text is resolved to plain text
   // (nesting <code> inside <a> is not reliably accepted by Telegram, and
   // one-pass restoration could never reach it anyway).
   out = out.replace(
-    /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    /\[([^\]\n]+)\]\((https?:\/\/[^\s()]+(?:\([^\s()]*\)[^\s()]*)*)\)/g,
     (_m, text: string, url: string) =>
       put(`<a href="${url.replace(/"/g, "&quot;")}">${resolvePlain(text)}</a>`),
   )
@@ -160,9 +163,16 @@ export const markdownToTelegramHtml = (md: string): string => {
     if (fence !== null) {
       const marker = (fence[1] ?? "```").slice(0, 3)
       const lang = fenceLang(fence[2] ?? "")
+      // A closing fence is a marker run of the SAME char with NO info string
+      // (CommonMark). The old trim().startsWith(marker) scan treated a
+      // "```typescript" line inside an open block as a closer, mangling
+      // "markdown about markdown" (which the agent writes constantly when
+      // explaining code). Matches scanFences' rule 2 in delivery.ts, which
+      // already enforces this for chunk repair.
+      const closerRe = marker[0] === "~" ? /^\s*~{3,}\s*$/ : /^\s*`{3,}\s*$/
       const buf: string[] = []
       i++
-      while (i < lines.length && !(lines[i] ?? "").trim().startsWith(marker)) {
+      while (i < lines.length && !closerRe.test(lines[i] ?? "")) {
         buf.push(lines[i] ?? "")
         i++
       }
@@ -205,8 +215,11 @@ export const markdownToTelegramHtml = (md: string): string => {
     }
 
     // Horizontal rule BEFORE bullets: "---"/"***" are rules, not list items.
+    // Emit 3 box-drawing chars, matching the input length, so the converter
+    // never grows the text: the header invariant ("a <=4096-char markdown
+    // chunk can never overflow") breaks if any transform expands its input.
     if (HR_RE.test(line)) {
-      out.push("──────────")
+      out.push("───")
       i++
       continue
     }

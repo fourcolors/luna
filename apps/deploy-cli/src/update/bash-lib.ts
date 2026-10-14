@@ -111,7 +111,7 @@ export interface BashCall {
   readonly env: Readonly<Record<string, string>>
 }
 
-export interface BashResult {
+interface BashResult {
   /** 127 is reserved for "the source itself failed" - see `SOURCE_FAILED`. */
   readonly status: number
   readonly stdout: string
@@ -228,11 +228,11 @@ export function resolveBashLib(options: ResolveBashLibOptions): ResolveBashLibRe
 // --- the four delegated functions ---------------------------------------------
 
 /** `luna_validate_profile` refuses through `luna_die`, so a failure is exit 1 plus one `error: ` line. */
-export type ValidateProfileResult =
+type ValidateProfileResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly exitCode: number; readonly stderr: string }
 
-export type FindBunResult =
+type FindBunResult =
   | { readonly ok: true; readonly path: string }
   | { readonly ok: false; readonly exitCode: number; readonly stderr: string }
 

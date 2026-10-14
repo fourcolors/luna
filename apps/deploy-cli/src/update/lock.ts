@@ -105,7 +105,7 @@ export const OWNERSHIP_UNRECORDABLE_LINE = "cannot record update-lock ownership;
 export const updateLockDirPath = (stateDir: string, profile: string): string => join(stateDir, `lock-${profile}`)
 
 /** The single file inside the lock dir (scripts/luna-update-server:962, :997). */
-export const OWNER_FILE_NAME = "owner"
+const OWNER_FILE_NAME = "owner"
 
 /** `$UPDATE_LOCK_DIR/owner`. */
 export const ownerFilePath = (lockDir: string): string => join(lockDir, OWNER_FILE_NAME)
@@ -155,7 +155,7 @@ export const parseOwnerRecord = (contents: string): OwnerRecord => {
 
 // --- the two real probes (production defaults for the seams) ------------------
 
-export type FingerprintSource = "proc" | "ps"
+type FingerprintSource = "proc" | "ps"
 
 export interface FingerprintReading {
   readonly fingerprint: string

@@ -35,6 +35,36 @@ describe("markdownToTelegramHtml — inline styles", () => {
     )
   })
 
+  it("keeps balanced parentheses inside link URLs intact", () => {
+    expect(
+      markdownToTelegramHtml(
+        "[Disambiguation](https://en.wikipedia.org/wiki/Mercury_(disambiguation))",
+      ),
+    ).toBe(
+      '<a href="https://en.wikipedia.org/wiki/Mercury_(disambiguation)">Disambiguation</a>',
+    )
+  })
+
+  it("keeps multiple balanced paren groups inside link URLs intact", () => {
+    expect(markdownToTelegramHtml("[a](https://example.com/x_(y)_z)")).toBe(
+      '<a href="https://example.com/x_(y)_z">a</a>',
+    )
+  })
+
+  it("leaves unbalanced paren URLs as literal text instead of truncating", () => {
+    expect(markdownToTelegramHtml("[t](https://example.com/a_(b)")).toBe(
+      "[t](https://example.com/a_(b)",
+    )
+  })
+
+  it("leaves an incomplete (hostless) link destination as literal text", () => {
+    // Mid-stream partials can end right after the scheme; the old pattern
+    // required at least one character after "https://", and the balanced-
+    // paren rewrite must keep that so an incomplete destination is not
+    // emitted as a hostless anchor.
+    expect(markdownToTelegramHtml("[docs](https://)")).toBe("[docs](https://)")
+  })
+
   it("does NOT treat underscores as emphasis (tool names survive)", () => {
     expect(markdownToTelegramHtml("call mcp__web__search or snake_case_name")).toBe(
       "call mcp__web__search or snake_case_name",
@@ -122,6 +152,30 @@ describe("markdownToTelegramHtml — block structure", () => {
     )
   })
 
+  it("treats an info-string fence line inside a block as content, not a closer", () => {
+    // CommonMark: a closing fence carries no info string. The agent writes
+    // "markdown about markdown" constantly when explaining code, so an inner
+    // "```typescript" line must not split the block early.
+    expect(
+      markdownToTelegramHtml(
+        "Write fences like this:\n```\n```typescript\nconst x = 1;\n```\ndone",
+      ),
+    ).toBe("Write fences like this:\n<pre>```typescript\nconst x = 1;</pre>\ndone")
+  })
+
+  it("closes fences on bare, indented, and trailing-space closers only", () => {
+    // Boundary cases of the closing-fence rule: a closer is a same-char
+    // marker run with no info string. Wrong-char runs and info-string lines
+    // stay content.
+    expect(markdownToTelegramHtml("```\ncode\n```   ")).toBe("<pre>code</pre>")
+    expect(markdownToTelegramHtml("```\ncode\n  ```")).toBe("<pre>code</pre>")
+    expect(markdownToTelegramHtml("```\ncode\n``````")).toBe("<pre>code</pre>")
+    expect(markdownToTelegramHtml("```\n~~~\n```")).toBe("<pre>~~~</pre>")
+    expect(markdownToTelegramHtml("~~~\n```js\nx\n~~~\nafter")).toBe(
+      "<pre>```js\nx</pre>\nafter",
+    )
+  })
+
   it("groups consecutive quote lines into one blockquote", () => {
     expect(markdownToTelegramHtml("> line one\n> line two")).toBe(
       "<blockquote>line one\nline two</blockquote>",
@@ -147,8 +201,15 @@ describe("markdownToTelegramHtml — block structure", () => {
   })
 
   it("renders horizontal rules as a divider line, not a bullet", () => {
-    expect(markdownToTelegramHtml("---")).toBe("──────────")
-    expect(markdownToTelegramHtml("***")).toBe("──────────")
+    expect(markdownToTelegramHtml("---")).toBe("───")
+    expect(markdownToTelegramHtml("***")).toBe("───")
+  })
+
+  it("never expands text: a max-size chunk of horizontal rules stays under 4096", () => {
+    const md = Array(1024).fill("---").join("\n")
+    expect(md.length).toBe(4095)
+    const visible = markdownToTelegramHtml(md).replace(/<[^>]*>/g, "")
+    expect(visible.length).toBeLessThanOrEqual(4096)
   })
 
   it("applies inline styling inside headings, bullets, and quotes", () => {

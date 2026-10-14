@@ -123,7 +123,7 @@ import {
 } from "node:fs"
 import { hostname, userInfo } from "node:os"
 import { execFileSync, spawn } from "node:child_process"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   applyRuntimePathEnvDefaults,
@@ -203,7 +203,6 @@ import {
   JobsStoreService,
   JobTicker,
   JobTickerLayer,
-  WorkerRegistry,
   makeWorkerRegistry,
   WorkspaceRegistryService,
   AlignmentStore,
@@ -270,7 +269,6 @@ import {
   ThreadRegistryService,
   importJsonMap,
   runAutoArchive,
-  AUTO_ARCHIVE_IDLE_MS,
   MCPRegistry,
   openUiFeedbackStatusStore,
   UI_FEEDBACK_SENTINEL_SESSION,
@@ -278,7 +276,6 @@ import {
   feedbackAutoJobEnabled,
   FeedbackJobObserverLayer,
   runFeedbackCreateJobNoThrow,
-  type FeedbackListRow,
   type FeedbackJobsDep,
   type FeedbackSetStatusDep,
   MemoryReranker,
@@ -296,7 +293,7 @@ import {
   type ValidationError,
 } from "@luna/core"
 import { McpServerStore, syncMcpMounts, RESERVED_SLUGS } from "@luna/mcp-servers"
-import { createDnaLoader, loadDna } from "./dna-loader.js"
+import { createDnaLoader } from "./dna-loader.js"
 import { loadSystem } from "./system-loader.js"
 import { loadWorkspaces } from "./workspaces-loader.js"
 import {
@@ -323,14 +320,6 @@ import {
   type DiscoveredOpToken,
   type RoutedOpAccountLayer,
 } from "./secret-chain.js"
-export { createDnaLoader, loadDna } from "./dna-loader.js"
-export { loadSystem } from "./system-loader.js"
-export { loadWorkspaces } from "./workspaces-loader.js"
-export {
-  buildMainMemoryBlock,
-  loadMainMemory,
-  resolveMainMemoryPath,
-} from "./agent-memory-loader.js"
 import {
   DreamReasonerDefault,
   SDKAdapter,
@@ -343,6 +332,9 @@ import {
   CrossEncoderRerankerLayer,
   JevRerankerLayer,
   JevClassifierLayer,
+  LayaRerankerLayer,
+  layaHealthUp,
+  layaUrl,
   BulletinWriterDefault,
   loadAgents,
 } from "@luna/adapter-sdk"
@@ -489,9 +481,11 @@ import {
   ForkProposalStore,
   toForkProposalWire,
   FORK_CHILD_TAG,
+  AGENT_CREATED_TAG,
 } from "@luna/thread-tools"
 import { decideMode, probeCredentialReadiness, probeAuthLoggedIn } from "./credential-readiness.js"
 import { spawnSetupPty } from "./setup-pty.js"
+import { makeJournalSink } from "./journal/journal-sink.js"
 import { onLoginAttemptComplete } from "./setup-login.js"
 import type { PtyOutputFrame } from "@luna/ui-ws"
 
@@ -592,8 +586,6 @@ export {
   effortsForModel,
   EFFORT_LEVELS as ALL_EFFORTS,
 } from "@luna/chat-service"
-export type { EffortLevel as Effort } from "@luna/chat-service"
-
 /** A single selectable model entry (with server-computed effort matrix). */
 export interface UiModelEntry {
   readonly id: string
@@ -728,6 +720,16 @@ let notifyThreadsArchived: ((threadIds: ReadonlyArray<string>) => void) | null =
 // list to every client. Null until a WS server registers.
 let notifyVaultListChanged: (() => void) | null = null
 
+// Laya sidecar readiness bridge (same late-binding pattern as
+// notifySkillCatalogChanged): the layaSidecarProbeL fiber in buildBaseLayer
+// owns the fetch loop — `layaSidecarUp` is the last probe verdict
+// (undefined = not probed yet, true = /health reachable, false = down), and
+// on a state flip it pings `notifyModelRoutingChanged` so ui-ws broadcasts a
+// fresh model-routing-list. list() reads `layaSidecarUp` synchronously so the
+// Models panel can render an install indicator for the local classifier.
+let layaSidecarUp: boolean | undefined = undefined
+let notifyModelRoutingChanged: (() => void) | null = null
+
 // Slice C - MCP tool gate policy holder.
 // Slice S11b (issue #445): a registered server that FAILS TO MOUNT (e.g. an
 // unresolved secret-ref) must fail CLOSED at the gate, not defer. Populated
@@ -790,7 +792,7 @@ const BELIEF_REFRESH_INTERVAL_MS = 30_000
  *   places. Default undefined: byte-identical to before this param existed -
  *   no reranker in context, both gates are no-ops regardless of env.
  */
-export const ThreadToolsProviderLayer = (
+const ThreadToolsProviderLayer = (
   refreshIntervalMs: number = BELIEF_REFRESH_INTERVAL_MS,
   memoryRerankerL?: Layer.Layer<MemoryReranker, never, never>,
   // Hot-tier bulletin (BULLETIN.md): decorate() reads holder.current
@@ -2024,7 +2026,7 @@ const secretRequestBridge = createSecretRequestBridge({
 // MemoryRouter while keeping the real Survey.Default so the real dep graph is
 // proven composable. `as never` on the Memory double sidesteps the param-type
 // narrowing.
-export interface BuildSurveyLayerOpts {
+interface BuildSurveyLayerOpts {
   readonly alignmentStoreL: Layer.Layer<AlignmentStore, ConfigError, Clock | LunaSqliteBootstrap>
   readonly beliefWriterL: Layer.Layer<
     BeliefWriter,
@@ -2039,7 +2041,7 @@ export interface BuildSurveyLayerOpts {
   readonly clockL: Layer.Layer<Clock>
 }
 
-export const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
+const buildSurveyLayer = (opts: BuildSurveyLayerOpts) =>
   Survey.Default.pipe(
     Layer.provide(opts.alignmentStoreL),
     Layer.provide(opts.beliefWriterL),
@@ -2195,7 +2197,7 @@ const buildRoutedOpAccountLayers = (
     }).pipe(Layer.provide(clockL)),
   }))
 
-export const buildBaseLayer = (
+const buildBaseLayer = (
   opAccountLayers: ReadonlyArray<RoutedOpAccountLayer>,
   /** The server's secret resolver (vault / Keychain / env by mode); absent in tests, where env alone is read. */
   resolveEnvSecret?: (name: string) => Promise<Redacted.Redacted<string> | undefined>,
@@ -2516,6 +2518,10 @@ export const buildBaseLayer = (
   //     Configuring it is the opt-in: both lanes rerank at depth 40 unless
   //     their flag is "0". Best measured judge (packages/adapter-sdk/src/
   //     jev-reranker.ts has the evidence).
+  //   laya - the local Jev-style classifier: the same held-out request replayed
+  //     to the laya sidecar (scripts/laya-rerank-server, LUNA_LAYA_URL) instead
+  //     of api.typesafe.ai, so memory text never leaves the machine. Same
+  //     opt-in semantics as jev (both lanes, depth 40).
   const rerankEngine = process.env["LUNA_RERANK_ENGINE"]?.trim() || "cross-encoder"
   if (!(MEMORY_RERANKER_ENGINES as ReadonlyArray<string>).includes(rerankEngine)) {
     console.warn(`[chat-server] unknown LUNA_RERANK_ENGINE="${rerankEngine}" (${MEMORY_RERANKER_ENGINES.join(" | ")}); using cross-encoder`)
@@ -2534,7 +2540,9 @@ export const buildBaseLayer = (
             return JevRerankerLayer({ apiKey: apiKey ?? "" })
           }),
         )
-      : CrossEncoderRerankerLayer()
+      : rerankEngine === "laya"
+        ? LayaRerankerLayer()
+        : CrossEncoderRerankerLayer()
 
   // Classifier decision engine — which engine serves the Classifier service
   // (packages/core/src/classifier). LUNA_CLASSIFIER_ENGINE:
@@ -2578,6 +2586,37 @@ export const buildBaseLayer = (
       return Layer.empty as Layer.Layer<Classifier>
     }),
   )
+
+  // Laya sidecar health probe — feeds the Models panel's install indicator.
+  // Runs unconditionally (not just when engine=laya) so the indicator is live
+  // when Laya is only the DRAFT engine too: the operator gets "sidecar down →
+  // run scripts/laya-env" guidance BEFORE saving the engine choice. The probe
+  // fiber publishes into `layaSidecarUp`, which modelRoutingService.list()
+  // projects onto the frame's additive `layaSidecar` field, and pings
+  // notifyModelRoutingChanged on a flip so ui-ws broadcasts a fresh list
+  // (same late-binding pattern as notifySkillCatalogChanged). Reachability is
+  // the whole signal — a failed probe means "not answering at the configured
+  // URL" (not installed, not started, or wrong port), nothing finer.
+  const layaSidecarUrl = layaUrl()
+  const layaSidecarProbeL = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const tick = layaHealthUp(layaSidecarUrl).pipe(
+        Effect.flatMap((up) =>
+          Effect.sync(() => {
+            if (up !== layaSidecarUp) {
+              layaSidecarUp = up
+              notifyModelRoutingChanged?.()
+            }
+          }),
+        ),
+      )
+      yield* tick
+      yield* Effect.forkScoped(
+        Effect.forever(Effect.sleep(15_000).pipe(Effect.andThen(tick))),
+      )
+    }),
+  )
+
   // Hot-tier bulletin (BULLETIN.md): a plain mutable holder read
   // synchronously by decorate() (same doctrine as the beliefs holder), a
   // digest file next to luna.db for warm restarts, and a refresh loop that
@@ -3077,6 +3116,7 @@ export const buildBaseLayer = (
     channelServiceL, // Communication channels (Telegram, …): adapters registered + started in buildMain
     bulletinRefresherL, // Hot-tier bulletin (BULLETIN.md): Layer.empty unless LUNA_BULLETIN=1
     classifierL, // Classifier service: JevClassifierLayer when the classifier engine resolves jev, else empty (call sites see serviceOption = none)
+    layaSidecarProbeL, // Laya install indicator: 15 s /health poll → layaSidecarUp + model-routing-list broadcast
   )
 }
 
@@ -3159,7 +3199,7 @@ const installShutdown = (rt: { dispose: () => Promise<unknown> }): void => {
 // (undefined) → the real factory built from CLAUDE_EXE + paths.lunaDbPath is
 // used. Pass an explicit factory in tests/smokes to avoid spawning real
 // `claude` / calling real process.exit; pass `null` to wire no pty at all.
-export const buildSetupServerLayer = (
+const buildSetupServerLayer = (
   wsPort: number = SETUP_WS_PORT,
   controlPort: number = 4754,
   setupPtyFactory?: {
@@ -4395,13 +4435,19 @@ const buildServerLayer = (
               }
             }
 
+            // create_thread (mode "create") makes a FRESH chat: no resume, no
+            // parent agent section, no fork tag (so the new chat may itself
+            // create chats later), and no breadcrumb in the parent — the
+            // agent's own reply there already says what it did.
+            const isCreate = claimed.mode === "create"
+
             // Resume-fork: inherit parent SDK session when known, and the
             // parent's agent section (agent sidebar S2 — a fork child is a
             // continuation of the same conversation, so it files where its
             // parent lives; write-once at the child's own INSERT).
             let resumeFromSessionId: string | undefined
             let parentAgentName: string | undefined
-            if (Option.isSome(threadRegistryOption)) {
+            if (!isCreate && Option.isSome(threadRegistryOption)) {
               const row = yield* threadRegistryOption.value.get(input.threadId)
               if (row?.sdkSessionId) resumeFromSessionId = row.sdkSessionId
               if (row?.agentName) parentAgentName = row.agentName
@@ -4410,7 +4456,7 @@ const buildServerLayer = (
             const child = yield* chat.createThread({
               title: claimed.title,
               parentSessionId: input.threadId,
-              tags: [FORK_CHILD_TAG],
+              tags: [isCreate ? AGENT_CREATED_TAG : FORK_CHILD_TAG],
               ...(resumeFromSessionId !== undefined
                 ? { resumeFromSessionId }
                 : {}),
@@ -4418,6 +4464,17 @@ const buildServerLayer = (
                 ? { agentName: parentAgentName }
                 : {}),
             })
+
+            // Seed the sibling so the agent turn starts on the pivoted topic.
+            // Seed BEFORE finalizing: an accepted proposal always names a
+            // chat that already has its opening message. A rejected seed
+            // fails into the catchCause below, which releases the claim.
+            const seeded = yield* chat.send(child.id, claimed.seed)
+            if (Option.isNone(seeded)) {
+              // Archive the empty child so a retry never leaves orphans.
+              yield* chat.archiveThread(child.id)
+              return yield* Effect.fail(new Error(`seed rejected for ${child.id}`))
+            }
 
             const accepted = yield* forkStore.completeAccept(
               claimed.id,
@@ -4431,22 +4488,21 @@ const buildServerLayer = (
               }
             }
 
-            // Seed the sibling so the agent turn starts on the pivoted topic.
-            yield* chat.send(child.id, claimed.seed)
-
             // Parent breadcrumb: one-line note that the topic moved.
-            yield* chat.deliverResult({
-              threadId: input.threadId,
-              text: `↪ Moved "${claimed.title}" to a new thread.`,
-              source: "thread-fork",
-              label: claimed.title,
-            })
+            if (!isCreate) {
+              yield* chat.deliverResult({
+                threadId: input.threadId,
+                text: `↪ Moved "${claimed.title}" to a new thread.`,
+                source: "thread-fork",
+                label: claimed.title,
+              })
+            }
 
             // Telemetry for accept-rate gating of future auto-fork.
             // (EventSink is optional; best-effort via console when sparse.)
             writeSync(
               1,
-              `[luna/thread-fork] accepted "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
+              `[luna/thread-fork] ${isCreate ? "created" : "accepted"} "${claimed.title}" → ${child.id} (from ${input.threadId})\n`,
             )
 
             return {
@@ -4454,17 +4510,55 @@ const buildServerLayer = (
               childThreadId: child.id,
             }
           }).pipe(
-            // The E channel here is `never` (every yielded effect above is
-            // infallible) - this handler can't actually run, but catch
-            // still requires a total callback.
-            Effect.catch((e) =>
-              Effect.succeed({
-                ok: false as const,
-                message: String(e),
-              }),
+            // ANY failure after the claim (a typed error, a createThread
+            // defect, a rejected seed) releases the claim so the proposal is
+            // never stuck "accepting": a fork marker returns to pending, a
+            // create_thread request is closed. The result is always a value,
+            // so the create_thread observer's worker fibers cannot die.
+            Effect.catchCause((cause) =>
+              forkStore.release(input.proposalId, input.threadId).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    console.error(
+                      `[luna/thread-fork] accept ${input.proposalId} failed; claim released:`,
+                      String(cause),
+                    )
+                    return { ok: false as const, message: "fork accept failed" }
+                  }),
+                ),
+              ),
             ),
           ),
       }
+
+      // create_thread: the tool stages a mode "create" proposal; accept it here
+      // at once through the same claim → createThread → seed path the click
+      // uses, so there is one creation path. The claim is atomic, so a
+      // duplicate event can never create two chats. Each accept runs on its
+      // own fiber so a slow createThread never stalls later proposals.
+      yield* Effect.forkScoped(
+        forkStore.changes.pipe(
+          Stream.filter((p) => p.mode === "create" && p.status === "pending"),
+          Stream.runForEach((p) =>
+            Effect.forkScoped(
+              threadForksHandle
+                .respond({ threadId: p.parentThreadId, proposalId: p.id, decision: "accept" })
+                .pipe(
+                  Effect.tap((r) =>
+                    r.ok
+                      ? Effect.void
+                      : Effect.sync(() =>
+                          console.warn(`[luna/thread-fork] create_thread "${p.title}" failed: ${r.message ?? "unknown"}`),
+                        ),
+                  ),
+                ),
+            ),
+          ),
+          Effect.catchCause((c) =>
+            Effect.sync(() => console.error("[luna/thread-fork] create_thread observer died:", String(c))),
+          ),
+        ),
+      )
 
       // Wire-safety adapter (PRD §12): the ui-ws handle receives catalog
       // entries with the `body` ALREADY stripped. Bodies are prompt content
@@ -4649,6 +4743,22 @@ const buildServerLayer = (
         },
       }
 
+      // Claude Code session journals (POST /v1/journal). Writes one episodic
+      // memory with provenance 'external' plus one ledger row; never starts a
+      // job or turn. The route stays 503 unless LUNA_JOURNAL_TOKEN (>= 32
+      // chars, distinct from the ui-ws token) is set; read here rather than at
+      // module load so vault-hydrated env is visible.
+      const journalToken = process.env["LUNA_JOURNAL_TOKEN"]?.trim() || null
+      // Both bearers are scrubbed by exact value from anything a journal stores.
+      const journalSink = makeJournalSink({
+        mem,
+        agentNotes,
+        secrets: [journalToken, TOKEN].filter((t): t is string => typeof t === "string" && t.length > 0),
+      })
+      if (journalToken !== null && journalToken === TOKEN) {
+        console.warn("[luna/journal] LUNA_JOURNAL_TOKEN must differ from the ui-ws token; /v1/journal disabled")
+      }
+
       // ── Model Routing Settings (PR 1) ───────────────────────────────────
       // Wire the ProviderSettingsStore to a modelRoutingService handle so the
       // WS server advertises capabilities.modelRouting, pushes model-routing-list
@@ -4694,7 +4804,15 @@ const buildServerLayer = (
                 // else the environment, else the default. Never the Jev key.
                 // engine: what runs after the next start (saved choice, else today's);
                 // active: what this running server bound. They differ until a restart.
-                memoryReranker: { engine: resolveMemoryRerankerEngine(cfg), active: boundMemoryRerankerEngine() },
+                memoryReranker: {
+                  engine: resolveMemoryRerankerEngine(cfg),
+                  active: boundMemoryRerankerEngine(),
+                  // Additive + optional: absent until the first probe lands so
+                  // older clients / pre-probe frames carry no misleading state.
+                  ...(layaSidecarUp !== undefined
+                    ? { layaSidecar: layaSidecarUp ? ("up" as const) : ("down" as const) }
+                    : {}),
+                },
                 // engine: what runs after the next start (saved choice, else env,
                 // else "auto"); active: what this running server bound ("model"
                 // when auto didn't pick jev — no key or an explicit model).
@@ -4762,6 +4880,12 @@ const buildServerLayer = (
               }
             },
             scheduleRestart: scheduleServerRestart,
+            // Out-of-band list changes (the layaSidecar probe flipping
+            // up/down) → ui-ws broadcasts a fresh model-routing-list to every
+            // client. Same late-binding hook as the skill-catalog changes.
+            changes: (notify: () => void) => {
+              notifyModelRoutingChanged = notify
+            },
           }
         } catch (err) {
           writeSync(
@@ -4885,6 +5009,8 @@ const buildServerLayer = (
         },
         survey: surveyHandle, // Phase 3 D3: resolved handle
         feedbackSink, // point-at-the-UI feedback → agent_notes (kind='ui_feedback')
+        journalSink,
+        journalToken: journalToken !== TOKEN ? journalToken : null,
         skillRegistry: skillsWsHandle, // PRD Part B: bodies pre-stripped
         capabilityRegistry: capabilityWsHandle, // Capability layer: backend-advertised commands (static catalog)
         // 14-day auto-archive → broadcast `thread-archived` to live clients.
@@ -4945,10 +5071,6 @@ const buildServerLayer = (
     Layer.provide(LunaSqliteBootstrapLive),
   ) as Layer.Layer<ServerHandle>
 
-const SEED_HINT =
-  "  bun run --filter '@luna/agent-cli' luna-account add \\\n" +
-  "    --id default --label \"Default\" --kind anthropic \\\n" +
-  "    --secret-ref claude-code:login"
 
 const buildMain = (
   resolveEnvSecret: (

@@ -14,7 +14,7 @@ import { mountReactPanel } from "./panel-mount"
 import { SettingsSkillsPanel, SETTINGS_SKILLS_TITLE } from "./settings-skills/SettingsSkillsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_SKILLS_PANEL_TYPES = ["settings.skills"] as const
+const SETTINGS_SKILLS_PANEL_TYPES = ["settings.skills"] as const
 
 export function isSettingsSkillsPanelType(type: string): boolean {
   return (SETTINGS_SKILLS_PANEL_TYPES as readonly string[]).includes(type)

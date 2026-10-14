@@ -291,7 +291,7 @@ export interface ThreadRegistryApi {
 }
 
 /** One (thread, agent) involvement row — see SCHEMA_V4. */
-export interface ThreadAgentRow {
+interface ThreadAgentRow {
   readonly threadId: string
   readonly agentName: string
   readonly firstInvolvedAt: number

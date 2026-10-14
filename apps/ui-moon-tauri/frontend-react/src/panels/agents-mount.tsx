@@ -18,7 +18,7 @@ import { mountReactPanel } from "./panel-mount"
 import { AgentsPanel } from "./agents/AgentsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const AGENTS_PANEL_TITLE = "Agents"
+const AGENTS_PANEL_TITLE = "Agents"
 const AGENTS_PANEL_TYPES = ["agents"] as const
 
 export function isAgentsPanelType(type: string): boolean {

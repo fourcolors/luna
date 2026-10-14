@@ -6,4 +6,3 @@
  * to work without changes.
  */
 export { projectLunaDescriptor } from "@luna/server-registry"
-export type { LunaDescriptorInputs } from "@luna/server-registry"

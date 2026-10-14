@@ -1,6 +1,5 @@
 import type {
   AttachResult,
-  ChatFrame,
   ChatInput,
   ChatSession,
   ClientTransportAdapter,

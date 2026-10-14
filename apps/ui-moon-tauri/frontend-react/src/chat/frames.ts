@@ -27,6 +27,9 @@
  */
 // @ts-nocheck
 
+import { createQueueTray } from './queueTray'
+import { createForkTray } from './forkTray'
+
 export interface FramesCtx {
   readonly Logger: {
     info: (m?: unknown, ...a: unknown[]) => void
@@ -53,6 +56,50 @@ export function createFrames(ctx: FramesCtx) {
   } = ctx.engines
 
   const MoonFrames = LunaWS.createFrameRegistry();
+
+  // Queue + Steer tray above the composer. The host is looked up at render
+  // time so this factory does not depend on DOM order.
+  const QueueTray = createQueueTray({
+    get host() { return document.getElementById('queue-tray'); },
+    getActiveThreadId: () => State.activeThreadId,
+    send: (f) => WebSocketEngine.send(f),
+  });
+
+  // New-chat suggestions (fork_thread) above the composer, and the switch to
+  // a chat the agent created (create_thread). See src/chat/forkTray.ts.
+  const ForkTray = createForkTray({
+    get host() { return document.getElementById('fork-tray'); },
+    getActiveThreadId: () => State.activeThreadId,
+    send: (f) => WebSocketEngine.send(f),
+    openThread: (threadId, title, reason) => {
+      const now = Date.now();
+      ThreadDrawerEngine.upsertThread({ id: threadId, title, createdAt: now, lastMessageAt: now });
+      // A window pinned to one thread never changes thread: open the new
+      // chat in its own window instead (only on an explicit click).
+      if (State.pinnedThread) {
+        if (reason === 'auto') return false;
+        // Resolves the new window's label, or null on failure.
+        return Promise.resolve(ThreadDrawerEngine.openInNewWindow(threadId))
+          .then((label) => !!label, () => false);
+      }
+      // Never move a draft. A switch carries the composer text to the new
+      // chat, so with text in the box (or, for an agent-created chat, when
+      // this window is not focused) decline and let the tray show Open.
+      const input = document.getElementById('message-input');
+      const attachments = (window as unknown as { Attachments?: { hasAny?: () => boolean } }).Attachments;
+      const hasDraft =
+        !!(input && typeof input.value === 'string' && input.value.trim()) ||
+        !!(attachments && typeof attachments.hasAny === 'function' && attachments.hasAny());
+      if (reason !== 'open' && hasDraft) return false;
+      if (reason === 'auto' && typeof document.hasFocus === 'function' && !document.hasFocus()) return false;
+      ThreadDrawerEngine.onRowClick(threadId);
+      ForkTray.render();
+      return true;
+    },
+  });
+
+  MoonFrames.register('fork-proposal-set', (frame) => ForkTray.applySet(frame));
+  MoonFrames.register('fork-proposal-update', (frame) => ForkTray.applyUpdate(frame));
 
   // CHAT frame set only (Phase 4): skill-*/connector-*/vault-*/
   // register-op-token-status ride the settings PANELS' own connections, and
@@ -361,7 +408,14 @@ export function createFrames(ctx: FramesCtx) {
   //
   // Clear-after-send (Copilot review): the stash is only cleared once the
   // frame has been handed to an OPEN socket; if send fails, restore it.
-  function flushPendingUserMessage(threadId) {
+  //
+  // `opts.background`: deliver for a mint the user already navigated away
+  // from. The minted thread is never made active (and the server hides it from
+  // thread-list until it has a user message), so the viewed-thread gate below
+  // would strand the message forever. The server's user-message handler sends
+  // to the thread without a prior subscribe, and the thread then appears in
+  // thread-list by itself once it has a message.
+  function flushPendingUserMessage(threadId, opts?) {
     if (!State.pendingUserMessage) return;
     if (!threadId) return;
     const pending = State.pendingUserMessage;
@@ -380,7 +434,7 @@ export function createFrames(ctx: FramesCtx) {
       return;
     }
     // Still require the bound thread to be the viewed one (user didn't leave).
-    if (threadId !== State.activeThreadId) return;
+    if (!(opts && opts.background) && threadId !== State.activeThreadId) return;
     // ENGINE-AWARE ONLY (#500). This used to re-check `State.ws` on top of
     // the predicate, which PoolEngine never assigns - so under the default
     // engine the second clause was always false and a stashed message could
@@ -459,9 +513,13 @@ export function createFrames(ctx: FramesCtx) {
       bindPendingUserMessage(createdThreadId);
       flushPendingUserMessage(createdThreadId);
     } else if (frame && frame.thread && frame.thread.id) {
-      // User already moved on, but still bind so a later intentional open of
-      // this thread can flush (and never into a stranger).
+      // User already moved on. Bind the stash to THIS mint and deliver it to
+      // the minted thread directly: nothing can ever open that thread (it has
+      // no message yet, so the server hides it from the drawer), so waiting for
+      // a "later intentional open" would drop the message. If the socket is
+      // down the stash stays bound to this thread (never misdelivered).
       bindPendingUserMessage(frame.thread.id);
+      flushPendingUserMessage(frame.thread.id, { background: true });
     }
   });
 
@@ -482,6 +540,11 @@ export function createFrames(ctx: FramesCtx) {
   });
 
   MoonFrames.register('thread-snapshot', (frame) => {
+    // A snapshot replaces the thread's state, queue included: the server
+    // re-sends `queue-update` right after it when anything is waiting. The
+    // redraw also swaps the tray to the newly active thread on a switch.
+    QueueTray.clearThread(frame && frame.threadId);
+    ForkTray.render();
     // Always refresh the per-thread cache — even a late snapshot for a
     // non-active thread keeps switch-back instant (and correct after a
     // background turn finished while we were elsewhere).
@@ -610,6 +673,10 @@ export function createFrames(ctx: FramesCtx) {
         WebSocketEngine.clearTurnTimeout();
         State.activeTurnId = null;
         ChatState.appendDelivered(frame.message);
+        // Keep the active thread's cache converged too: a switch-away and
+        // back paints from this cache, and without the append it would show
+        // a stale, shorter transcript until the re-subscribe snapshot lands.
+        if (frame.threadId) ThreadCache.appendMessage(frame.threadId, frame.message);
         ChatLoop.flush();
         // A delivered background result IS a complete turn, so the face stops
         // here rather than waiting for a turn-complete that never comes.
@@ -648,6 +715,12 @@ export function createFrames(ctx: FramesCtx) {
       frame.message ? frame.message.text : null,
       frame.message ? frame.message.ts : undefined,
     );
+    // Same cache-convergence rule as the background branches above: the
+    // active thread's completed message enters the per-thread cache so an
+    // instant paint on switch-back is converged. No-op when there is no
+    // cached entry or no message; the re-subscribe snapshot's put()
+    // wholesale-replaces the entry, so there is no duplication risk.
+    if (frame.threadId && frame.message) ThreadCache.appendMessage(frame.threadId, frame.message);
     ChatLoop.flush();
     // Spoken replies: this message ended — flush its sentence
     // remainder (per message, so intermediate agentic steps speak too).
@@ -739,8 +812,21 @@ export function createFrames(ctx: FramesCtx) {
     SurveyEngine.show(frame);
   });
 
+  MoonFrames.register('queue-update', (frame) => {
+    // Messages waiting behind the running turn (Queue + Steer).
+    QueueTray.applyUpdate(frame);
+  });
+
   MoonFrames.register('user-accepted', (frame) => {
-    // The user message was accepted by the server. Remove typing indicator when streaming starts
+    // The server persisted a user message. Moon already drew the bubble
+    // optimistically, so the only job here is the per-thread cache: without
+    // this, a switch-away-and-back painted the reply (appended on
+    // assistant-done) without the prompt that produced it until the
+    // re-subscribe snapshot landed. appendMessage skips seqs the snapshot
+    // already covers.
+    if (frame && frame.threadId && frame.message) {
+      ThreadCache.appendMessage(frame.threadId, frame.message);
+    }
   });
 
 
@@ -806,5 +892,7 @@ export function createFrames(ctx: FramesCtx) {
     ),
     /** Test hook only. */
     MoonFrames,
+    /** Test hook only. */
+    QueueTray,
   }
 }

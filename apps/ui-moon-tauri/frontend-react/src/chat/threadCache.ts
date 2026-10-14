@@ -112,7 +112,8 @@ export function clear(ctx: ThreadCacheCtx, threadId: string | null | undefined):
  * cache converged with the live stream, so the instant paint is never stale.
  *
  * No-op when there is no cached entry (nothing to converge with — the next
- * snapshot will populate it) or when the message is not an object. The
+ * snapshot will populate it), when the message is not an object, or when its
+ * seq is already covered by the entry's throughSeq. The
  * entry's array is replaced, never mutated in place, so a `paint()` that
  * already handed out the old array keeps a stable view.
  */
@@ -126,6 +127,10 @@ export function appendMessage(
   const entry = ctx.state.threadCache[threadId]
   if (!entry) return
   const seq = (message as { seq?: unknown }).seq
+  // A live frame can overlap the snapshot it follows (the server subscribes
+  // first, then reads the snapshot). The snapshot already holds anything at
+  // or below its throughSeq, so appending it again would duplicate it.
+  if (Number.isFinite(seq) && (seq as number) <= entry.throughSeq) return
   ctx.state.threadCache[threadId] = {
     messages: [...entry.messages, message],
     throughSeq:

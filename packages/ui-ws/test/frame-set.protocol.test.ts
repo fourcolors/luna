@@ -73,12 +73,19 @@ const EXPECTED_SERVER_FRAME_TYPES = [
   "thread-create-error",
   "thread-snapshot",
   "user-accepted",
+  // Queue + Steer: messages waiting behind the running turn.
+  "queue-update",
   "assistant-delta",
   "assistant-done",
   "assistant-error",
   "artifacts-extracted",
   "tool-call",
   "tool-result",
+  // Background Agent lifecycle (SDK task_notification / task_progress).
+  // Additive: older clients ignore unknown types, and the subagent-tree
+  // bridge reads them server-side before the wire.
+  "subagent-settled",
+  "subagent-progress",
   "turn-complete",
   "result-delivered",
   "account-list",
@@ -143,6 +150,8 @@ const EXPECTED_CLIENT_FRAME_TYPES = [
   "new-thread",
   "user-message",
   "interrupt",
+  // Queue + Steer: push a waiting message into the running turn.
+  "steer",
   "local-shell-capability",
   "local-shell-result",
   "memory-search-request",
@@ -326,9 +335,14 @@ describe("VERSION-SKEW: wire frame-type set is pinned (forces a conscious versio
     // (server) and fork-proposal-respond (client) → 61 server / 44 client.
     // Agent sidebar S1 adds agent-list (server only). The Moon account manager
     // adds account-status (server) and account-add + account-rm (client).
-    // Base 61/44 -> 63 server / 46 client.
-    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(63)
-    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(46)
+    // Base 61/44 -> 63 server / 46 client. Queue + Steer adds queue-update
+    // (server) and steer (client) -> 64 server / 47 client. Additive and
+    // self-gating: a client only sends steer for an id it got in a
+    // queue-update, which an older server never sends. Background Agent
+    // lifecycle adds subagent-settled + subagent-progress (server) -> 66
+    // server / 47 client.
+    expect(literalsForUnion(src, "ServerFrame")).toHaveLength(66)
+    expect(literalsForUnion(src, "ClientFrame")).toHaveLength(47)
   })
 
   // VERSION-SKEW (client half): nothing else pins the ui-shared wire.ts mirror

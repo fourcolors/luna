@@ -74,7 +74,7 @@ export interface AppearanceState {
 type AppearanceKey = keyof AppearanceState
 
 /** Mirrors window.LunaAppearance's public surface (frontend/vendor/moon-appearance.js). */
-export interface LunaAppearanceGlobal {
+interface LunaAppearanceGlobal {
   get(): AppearanceState
   set(name: AppearanceKey, value: string): void
   apply(): void

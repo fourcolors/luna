@@ -29,7 +29,7 @@ export type UpdatePhase = "idle" | "checking" | "available" | "downloading" | "v
 // Mirrors UpdateStateDto.phase in the Rust UpdateManager. "verifying" is an
 // optional transient between download-finish and ready; treated as a
 // downloading-tail so the bar/labels stay coherent (see phaseShowsProgress).
-export const UPDATE_PHASES: readonly UpdatePhase[] = [
+const UPDATE_PHASES: readonly UpdatePhase[] = [
   "idle",
   "checking",
   "available",
@@ -39,7 +39,7 @@ export const UPDATE_PHASES: readonly UpdatePhase[] = [
   "error",
 ]
 
-export function isUpdatePhase(value: string): value is UpdatePhase {
+function isUpdatePhase(value: string): value is UpdatePhase {
   return (UPDATE_PHASES as readonly string[]).includes(value)
 }
 
@@ -89,7 +89,7 @@ export const UPDATE_EVENT_NAMES = [
 export type UpdateEventName = (typeof UPDATE_EVENT_NAMES)[number]
 
 /** Shape of the Rust UpdateManager's replay-on-open snapshot (`update_state`). */
-export interface UpdateStateDto {
+interface UpdateStateDto {
   readonly current?: string | null
   readonly phase?: string | null
   readonly version?: string | null

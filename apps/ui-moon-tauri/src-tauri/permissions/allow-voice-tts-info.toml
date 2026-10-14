@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-tts-info"
+description = "Allows reading TTS engine inventory and Fish key presence"
+
+[permission.commands]
+allow = [
+  "voice_tts_info"
+]

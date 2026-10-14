@@ -1,0 +1,8 @@
+[[permission]]
+identifier = "allow-voice-fish-set-key"
+description = "Allows storing or clearing the Fish Audio API key"
+
+[permission.commands]
+allow = [
+  "voice_fish_set_key"
+]

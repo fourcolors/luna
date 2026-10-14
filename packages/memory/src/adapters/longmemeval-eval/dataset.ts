@@ -40,7 +40,7 @@ export type LmeSplit = keyof typeof SPLIT_URLS
 const DEFAULT_DATASET_URL = SPLIT_URLS.oracle
 
 const here = dirname(fileURLToPath(import.meta.url))
-export const CACHE_DIR = resolve(here, ".cache")
+const CACHE_DIR = resolve(here, ".cache")
 
 export function isAbstentionId(questionId: string): boolean {
   return questionId.includes("_abs")

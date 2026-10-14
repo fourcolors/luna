@@ -62,7 +62,7 @@ const warnedIgnoredLegacy = new Set<string>()
  *    cross-encoder and then switched to Jev in the Models tab silently ran
  *    Jev at depth 8 with a threshold of 40, which dropped most memories.
  */
-export function rerankTuningEnv(
+function rerankTuningEnv(
   knob: "THRESHOLD" | "MAX_CANDIDATES",
   env: Record<string, string | undefined>,
   engine: string | undefined,
@@ -137,7 +137,7 @@ export function resolveRerankMaxCandidates(
 /**
  * Whether a lane reranks: "1" forces it on, "0" forces it off, and unset
  * follows the engine (MemoryRerankerApi.defaults.enabled) - on for an engine
- * the operator explicitly configured (LUNA_RERANK_ENGINE=jev), off for the
+ * the operator explicitly configured (LUNA_RERANK_ENGINE=jev or laya), off for the
  * always-bound default cross-encoder, which keeps today's opt-in behavior.
  */
 export function rerankLaneEnabled(

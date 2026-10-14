@@ -28,7 +28,7 @@ export interface PoolResult {
   readonly exit: Exit.Exit<unknown, unknown>
 }
 
-export type PoolPolicy = "block" | "drop-newest" | "drop-oldest"
+type PoolPolicy = "block" | "drop-newest" | "drop-oldest"
 
 export interface SupervisedPoolConfig {
   readonly capacity: number

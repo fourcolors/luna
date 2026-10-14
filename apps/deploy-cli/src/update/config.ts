@@ -65,10 +65,10 @@
  */
 
 /** `luna_die` exits 1 (scripts/lib/luna-deploy.sh:6); so does every refusal here. */
-export const EXIT_CONFIG_ERROR = 1
+const EXIT_CONFIG_ERROR = 1
 
-export type Supervisor = "systemd" | "launchd"
-export type Layout = "inplace" | "releases"
+type Supervisor = "systemd" | "launchd"
+type Layout = "inplace" | "releases"
 
 /** The process environment, read once and passed in. See the header on why nothing here reads `process.env`. */
 export type Env = Readonly<Record<string, string | undefined>>

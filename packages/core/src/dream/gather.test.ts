@@ -171,4 +171,19 @@ describe("gatherInputs — distilled sessions (Loop B integration)", () => {
     )
     expect(out.memories).toEqual(seeded)
   })
+
+  it("S3e: external-provenance memories never reach the dream", async () => {
+    const external: MemoryRecord = {
+      ...memRecord("ccj_1"),
+      tags: ["claude-code-journal", "external", "untrusted"],
+      provenance: { source: "external", sessionId: "sess-1" },
+    }
+    const out = await run(
+      Effect.gen(function* () {
+        return yield* gatherInputs(0, 100)
+      }),
+      [memRecord("mem-1"), external],
+    )
+    expect(out.memories.map((m) => m.id)).toEqual(["mem-1"])
+  })
 })

@@ -21,12 +21,12 @@
 
 export type WizardStep = "welcome" | "path" | "local" | "remote" | "progress" | "connect" | "done"
 export type ChosenPath = "local" | "remote" | "connect" | null
-export type ConnStatus = "disconnected" | "connecting" | "connected" | "error" | "version-warning"
-export type ConnectStatusKind = "" | "run" | "ok" | "fail"
-export type VoiceVisualState = "" | "listening" | "transcribing" | "speaking"
-export type TaskState = "" | "running" | "ok" | "fail"
+type ConnStatus = "disconnected" | "connecting" | "connected" | "error" | "version-warning"
+type ConnectStatusKind = "" | "run" | "ok" | "fail"
+type VoiceVisualState = "" | "listening" | "transcribing" | "speaking"
+type TaskState = "" | "running" | "ok" | "fail"
 
-export interface WizardTaskRow {
+interface WizardTaskRow {
   readonly label: string
   readonly state: TaskState
   readonly note: string
@@ -44,7 +44,7 @@ export const BEAD_FOR: Record<WizardStep, number> = {
   done: 4,
 }
 
-export interface WizardState {
+interface WizardState {
   readonly active: boolean
   readonly current: WizardStep
   readonly chosenPath: ChosenPath
@@ -95,7 +95,7 @@ export interface HubState {
   readonly wizard: WizardState
 }
 
-export function initialWizardState(): WizardState {
+function initialWizardState(): WizardState {
   return {
     active: false,
     current: "welcome",

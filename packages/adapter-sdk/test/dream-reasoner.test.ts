@@ -32,6 +32,8 @@ import {
   BELIEF_DOMAINS,
   buildDreamPrompt,
   DreamReasonerDefault,
+  resolveBeliefCandidateAfter,
+  DREAM_STRUCTURED_MAX_TURNS,
 } from "../src/dream-reasoner.js"
 import { makeFakeQuery, makeAssistantMessage, makeResultMessage } from "./fake-sdk.js"
 import type { DreamInputs, DistilledSession } from "@luna/core"
@@ -259,6 +261,23 @@ describe("DreamReasonerDefault", () => {
     expect(exit._tag).toBe("Failure")
   })
 
+  it("structured prompt asks for the StructuredOutput tool call, not JSON written as text", () => {
+    // Regression (2026-09-19..10-02): the structured prompt said "Output ONLY a
+    // JSON object ... no code fences", so the model answered in a text reply.
+    // The SDK then needed an enforcement turn to get the tool call, and the
+    // run died on the turn cap. The prompt must point at the tool.
+    const structured = buildDreamPrompt(EMPTY_INPUTS, true)
+    expect(structured).toContain("StructuredOutput tool")
+    expect(structured).not.toContain("Output ONLY a JSON object")
+    // A lane that ignores outputFormat has no StructuredOutput tool; the broker
+    // then parses turn.text, so the prompt must keep a JSON-only fallback.
+    expect(structured).toContain("If no StructuredOutput tool is available, reply with only that JSON object")
+    // The prose (non-structured) path still asks for a bare JSON array.
+    const prose = buildDreamPrompt(EMPTY_INPUTS, false)
+    expect(prose).toContain("Output ONLY a JSON array")
+    expect(prose).not.toContain("StructuredOutput tool")
+  })
+
   it("buildDreamPrompt includes skill catalog and skill_improvement rules", () => {
     const prompt = buildDreamPrompt({
       sessions: [],
@@ -308,6 +327,46 @@ describe("DreamReasonerDefault", () => {
     )
     expect(ops).toHaveLength(1)
     expect(ops[0]!.before).toBeNull()
+  })
+
+  it("re-deriving an ACTIVE belief keeps the existing record as `after` (never demotes to proposed)", async () => {
+    const active = makeBeliefRecord({
+      statement: RAW_BELIEF_OP.statement,
+      confidence: 0.9,
+      domain: RAW_BELIEF_OP.domain,
+      status: "active",
+      now: 100,
+    })
+    const activeWithHistory: MemoryRecord = {
+      ...active,
+      content: {
+        ...(active.content as Record<string, unknown>),
+        validationHistory: [{ at: 200, verdict: "confirmed", via: "survey" as const }],
+      },
+    }
+    // deriveBeliefId is deterministic: the re-derived candidate hits this id.
+    expect(activeWithHistory.id).toBe(EXPECTED_ID)
+
+    const json = JSON.stringify([RAW_BELIEF_OP])
+    const ops = await Effect.runPromise(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(json), FakeMemory([activeWithHistory])),
+    )
+    expect(ops).toHaveLength(1)
+    const op = ops[0]!
+    // before-snapshot is still the existing record...
+    expect((op.before as MemoryRecord).id).toBe(EXPECTED_ID)
+    // ...and `after` is the SAME existing record, not a fresh "proposed" one:
+    // the active belief keeps its status, confidence, and validation history.
+    const after = op.after as MemoryRecord
+    expect(after.id).toBe(EXPECTED_ID)
+    const content = after.content as {
+      status: string
+      confidence: number
+      validationHistory: ReadonlyArray<unknown>
+    }
+    expect(content.status).toBe("active")
+    expect(content.confidence).toBe(0.9)
+    expect(content.validationHistory).toHaveLength(1)
   })
 
   it("malformed (non-JSON) model output → DreamError with op:'parse'", async () => {
@@ -468,7 +527,7 @@ describe("DreamReasonerDefault", () => {
         readonly maxTurns?: number
         readonly pathToClaudeCodeExecutable?: string
       }
-      expect(opts.maxTurns).toBe(1)
+      expect(opts.maxTurns).toBe(DREAM_STRUCTURED_MAX_TURNS)
       expect(opts.pathToClaudeCodeExecutable).toBe("/usr/local/bin/claude-test")
     })
 
@@ -534,7 +593,7 @@ describe("DreamReasonerDefault", () => {
         return makeFakeQuery({ messages: [r] }).query
       })
 
-    it("disables all built-in tools so maxTurns:1 cannot be spent on a tool_use", async () => {
+    it("disables all built-in tools so the turn budget cannot be spent on a tool_use", async () => {
       const sink: { last: { options: Record<string, unknown> } | null } = {
         last: null,
       }
@@ -542,7 +601,7 @@ describe("DreamReasonerDefault", () => {
         runReason(EMPTY_INPUTS, recordingClient(sink), FakeMemory()),
       )
       const opts = sink.last!.options
-      expect(opts["maxTurns"]).toBe(1)
+      expect(opts["maxTurns"]).toBe(DREAM_STRUCTURED_MAX_TURNS)
       // Must be an empty array — not absent, and not `allowedTools`.
       expect(opts["tools"]).toEqual([])
     })
@@ -610,7 +669,7 @@ describe("DreamReasonerDefault", () => {
       const opts = sink.last!.options
       expect("model" in opts).toBe(false)
       expect("env" in opts).toBe(false)
-      expect(opts["maxTurns"]).toBe(1)
+      expect(opts["maxTurns"]).toBe(DREAM_STRUCTURED_MAX_TURNS)
     })
 
     it("(c) EXHAUSTION: broker with no matching account → reason() returns a DreamError (Left), does NOT throw", async () => {
@@ -748,7 +807,7 @@ describe("DreamReasonerDefault — structured output flag ON (end-to-end)", () =
     expect(outputFormat).toBeDefined()
     expect(outputFormat!.type).toBe("json_schema")
     expect(outputFormat!.schema?.type).toBe("object")
-    expect(opts["maxTurns"]).toBe(1)
+    expect(opts["maxTurns"]).toBe(DREAM_STRUCTURED_MAX_TURNS)
   })
 
   it("explicit override OFF rolls back structured output even on a capable (anthropic) lane", async () => {
@@ -999,5 +1058,45 @@ describe("buildDreamPrompt - structured-output prompt shortening", () => {
     )
     expect(m).not.toBeNull()
     expect([...BELIEF_DOMAINS]).toContain(m![1])
+  })
+})
+
+describe("resolveBeliefCandidateAfter", () => {
+  const candidateFor = (status: "proposed" | "active" | "retired") =>
+    makeBeliefRecord({
+      statement: "Operator prefers terse answers",
+      confidence: 0.85,
+      domain: "comms",
+      status,
+      now: 100,
+    })
+
+  it("null existing → the fresh candidate record", () => {
+    const candidate = candidateFor("proposed")
+    expect(resolveBeliefCandidateAfter(null, candidate)).toBe(candidate)
+  })
+
+  it("proposed existing → the fresh candidate record (refresh)", () => {
+    const candidate = candidateFor("proposed")
+    expect(resolveBeliefCandidateAfter(candidateFor("proposed"), candidate)).toBe(candidate)
+  })
+
+  it("retired existing → the fresh candidate record (legitimate revival)", () => {
+    const candidate = candidateFor("proposed")
+    expect(resolveBeliefCandidateAfter(candidateFor("retired"), candidate)).toBe(candidate)
+  })
+
+  it("active existing → the EXISTING record (never demotes, never wipes history)", () => {
+    const existing = candidateFor("active")
+    const candidate = candidateFor("proposed")
+    const resolved = resolveBeliefCandidateAfter(existing, candidate)
+    expect(resolved).toBe(existing)
+    expect((resolved.content as { status: string }).status).toBe("active")
+  })
+
+  it("non-belief record at the same id → the fresh candidate record", () => {
+    const candidate = candidateFor("proposed")
+    const nonBelief: MemoryRecord = memRecordFixture(candidate.id)
+    expect(resolveBeliefCandidateAfter(nonBelief, candidate)).toBe(candidate)
   })
 })

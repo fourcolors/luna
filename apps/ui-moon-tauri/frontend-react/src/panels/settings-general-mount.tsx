@@ -18,7 +18,7 @@ import { mountReactPanel } from "./panel-mount"
 import { PANEL_TITLE, SettingsGeneralPanel } from "./settings-general/SettingsGeneralPanel"
 import type { PanelCtx } from "./panel-ctx"
 
-export const SETTINGS_GENERAL_PANEL_TYPES = ["settings.general"] as const
+const SETTINGS_GENERAL_PANEL_TYPES = ["settings.general"] as const
 
 export function isSettingsGeneralPanelType(type: string): boolean {
   return (SETTINGS_GENERAL_PANEL_TYPES as readonly string[]).includes(type)

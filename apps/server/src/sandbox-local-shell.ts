@@ -54,8 +54,14 @@ const profileEnvPrefix = (profileName: string): string =>
 
 const isUnderSandboxRoot = (cwd: string, root: string): boolean => {
   if (!cwd.startsWith("/") || !root.startsWith("/")) return false
-  const normalizedCwd = pathPosix.normalize(cwd)
-  const normalizedRoot = pathPosix.normalize(root)
+  // path.posix.normalize PRESERVES a trailing slash, so strip it (mapping the
+  // filesystem root back to "/") before comparing — otherwise a root like
+  // "/root/luna/" matches neither "/root/luna" nor anything under it, and the
+  // sandbox shell disables itself at boot and denies every request. Mirrors
+  // isCwdWithinRoot in apps/agent-cli/src/chat/local-shell.ts.
+  const strip = (p: string): string => pathPosix.normalize(p).replace(/\/+$/, "") || "/"
+  const normalizedCwd = strip(cwd)
+  const normalizedRoot = strip(root)
   return normalizedCwd === normalizedRoot
     || normalizedCwd.startsWith(`${normalizedRoot}/`)
 }

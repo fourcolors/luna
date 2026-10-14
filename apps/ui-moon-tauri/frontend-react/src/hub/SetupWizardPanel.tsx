@@ -14,7 +14,7 @@
  */
 import { useEffect, useRef } from "react"
 import type { HubController } from "./hubEngines"
-import type { HubState, WizardStep } from "./hubReducer"
+import type { HubState } from "./hubReducer"
 import { BEAD_FOR } from "./hubReducer"
 import { connectBackStep, localStepCopy } from "./wizardHelpers"
 

@@ -19,11 +19,11 @@
 import type { WorkflowGalleryItem } from "@luna/ui-shared/core"
 import { jobStatusClass } from "../job-status.js"
 
-export const MAX_ROWS = 500
-export const MAX_LABEL = 200
-export const MAX_META = 64
+const MAX_ROWS = 500
+const MAX_LABEL = 200
+const MAX_META = 64
 
-export function clampText(value: unknown, max: number): string {
+function clampText(value: unknown, max: number): string {
   return String(value == null ? "" : value).slice(0, max)
 }
 
@@ -31,7 +31,7 @@ export function clampText(value: unknown, max: number): string {
  * Past → "2h ago"; future → "in 2h"; invalid → null. Coerce first: a date
  * STRING would pass a `new Date()` guard but NaN the arithmetic.
  */
-export function fmtRelative(epochMs: unknown): string | null {
+function fmtRelative(epochMs: unknown): string | null {
   const n = Number(epochMs)
   if (!Number.isFinite(n) || n <= 0) return null
   const diffSec = Math.round((Date.now() - n) / 1000)
@@ -59,7 +59,7 @@ export function fmtRelative(epochMs: unknown): string | null {
 export const statusClass = (rawStatus: unknown): string => jobStatusClass(rawStatus)
 
 /** Humanized meta copy - "fired" reads as "ok", "errored" as "failed". */
-export function statusLabel(rawStatus: unknown): string | null {
+function statusLabel(rawStatus: unknown): string | null {
   const cls = statusClass(rawStatus)
   if (cls === "success") return "ok"
   if (cls === "failed") return "failed"

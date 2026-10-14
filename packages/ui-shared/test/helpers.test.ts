@@ -52,6 +52,17 @@ describe("truncate", () => {
   it("trims trailing whitespace before the ellipsis", () => {
     expect(truncate("hi there friend", 5)).toBe("hi t…")
   })
+  it("cuts on code points, never splitting a surrogate pair", () => {
+    expect(truncate("😀abc", 2)).toBe("😀…")
+    expect(truncate("a😀bc", 2)).toBe("a…")
+    const out = truncate("😀😀😀😀", 3)
+    expect(out).toBe("😀😀…")
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/)
+  })
+  it("counts length in code points, not UTF-16 units", () => {
+    // 3 code points, .length === 6: fits in n=3, so returned unchanged.
+    expect(truncate("😀😀😀", 3)).toBe("😀😀😀")
+  })
 })
 
 describe("formatBytes", () => {

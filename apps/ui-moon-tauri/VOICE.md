@@ -10,7 +10,7 @@ client-side from the existing `assistant-delta` stream.
 ```
 ┌─ Rust (src-tauri/src/voice/) ─────────────────────────────────┐
 │ cpal mic → mono/16k → Silero VAD endpointer → whisper (Metal) │
-│      AVSpeechSynthesizer TTS queue (macOS) ◄─ speak_text      │
+│      TTS router → AVSpeechSynthesizer | Fish Audio ◄─ speak_text │
 └── events: voice-state / voice-transcript / voice-error ───────┘
                        ▲ commands │ events ▼
 ┌─ Webview (frontend/index.html, VoiceEngine) ──────────────────┐
@@ -46,10 +46,13 @@ client-side from the existing `assistant-delta` stream.
 | `voice_cancel` | – | – | Discard in-flight capture/transcription. |
 | `speak_text` | `{ text: string, interrupt: bool }` | – | Enqueue one sentence. `interrupt: true` clears the queue first. No-op when mode is `off` (returns Ok). |
 | `voice_stop_speaking` | – | – | Stop playback + clear TTS queue. |
-| `voice_list_voices` | – | `Voice[]` | `{ id, name, lang, quality }`, quality ∈ `default\|enhanced\|premium`. Empty on non-macOS. |
+| `voice_list_voices` | – | `Voice[]` | `{ id, name, lang, quality }` — served by the ACTIVE engine (AVSpeech voices on `system`; the Fish catalog on `fish`, empty without a key). |
 | `voice_set_voice` | `{ id: string }` | – | Persisted by the frontend, re-applied each session via this call. |
 | `voice_set_config` | `{ silenceHangMs?: number }` | – | Endpointing tunables; clamped server-side (200–2000ms). |
 | `voice_ensure_model` | – | – (resolves when present) | Downloads ggml model to `~/.luna/models/` via spawned `curl`; progress via `voice-model-progress`. Idempotent. |
+| `voice_tts_info` | – | `TtsInfo` | `{ engine, engines, fishKeyConfigured }` — the key itself never crosses IPC. |
+| `voice_set_tts_engine` | `{ engine: "system"\|"fish" }` | `String` | Switch live (next `speak_text`); stops every engine first. |
+| `voice_fish_set_key` | `{ key: string }` | – | Writes/clears `~/.luna/fish-api-key` (0600, atomic; blank deletes). |
 
 ## Events (Rust → webview, via `emit_to("main", …)`)
 
@@ -96,11 +99,34 @@ client-side from the existing `assistant-delta` stream.
 |---|---|---|
 | `luna_voice_mode` | `off\|ptt\|auto` | `off` |
 | `luna_voice_speak_replies` | `"1"\|"0"` | `"1"` |
-| `luna_voice_id` | AVSpeech voice identifier | unset (system default) |
+| `luna_voice_tts_engine` | `system\|fish` | `system` |
+| `luna_voice_id` | AVSpeech voice identifier (system engine) | unset (system default) |
+| `luna_voice_fish_id` | Fish `reference_id` (fish engine) | unset (Fish default voice) |
 | `luna_voice_silence_hang_ms` | number | `600` |
 
 On boot, frontend re-applies persisted settings via `voice_set_mode`,
-`voice_set_voice`, `voice_set_config`.
+`voice_set_tts_engine` (engine BEFORE voice — `voice_set_voice` targets the
+active engine), `voice_set_voice`, `voice_set_config`.
+
+## Fish Audio engine
+
+`engine = "fish"` routes `speak_text` through Fish Audio instead of the
+platform synthesizer. API shape (defaults; `LUNA_FISH_API_BASE` /
+`LUNA_FISH_MODEL` override for tests or a self-hosted endpoint):
+
+- `POST {base}/v1/tts` with `Authorization: Bearer <key>` and
+  `model: <id>` (`s2.1-pro-free` — Fish's free dev tier); body
+  `{ text, format: "wav", sample_rate, reference_id? }`.
+- `GET {base}/model` (own voices) + the public catalog merge into
+  `voice_list_voices`; a picked voice is stored as `reference_id`.
+
+The key resolves `FISH_API_KEY` env → `~/.luna/fish-api-key` (0600). Audio
+streams into the cpal output sink as it downloads (WAV header parsed
+incrementally — a non-RIFF body is an API error, surfaced as `voice-error`),
+resampled to the device rate. Stop kills the in-flight `curl`.
+
+Non-macOS builds: the platform engine is `NoopTts`, so Fish is the only real
+engine there — first speech support off macOS.
 
 ## Rust module layout (src-tauri/src/voice/)
 
@@ -115,9 +141,18 @@ stt.rs        SttEngine trait + WhisperEngine (ONE long-lived context +
               state, reused across utterances — re-creating state re-inits
               the Metal backend, measured +300ms in the spike).
 tts.rs        TtsEngine trait + NoopTts + create_platform_tts() factory.
+tts_router.rs TtsRouter: engine registry + active selection + a mirror
+              thread OR-ing every engine's speaking flag into one atomic
+              (correct across mid-utterance engine switches). TtsRouterHandle
+              backs voice_tts_info / voice_set_tts_engine / voice_fish_set_key.
 tts_avspeech.rs  (cfg target_os = "macos") AVSpeechSynthesizer engine on a
               dedicated thread with a command channel; isSpeaking polled
               ~10 Hz to drive the speaking state.
+tts_fish.rs   Fish Audio engine: spawned `curl` POST streams WAV into the
+              sink; pump thread parses the RIFF header, pipes PCM16 through
+              the resampler; own+public /model catalog → list_voices.
+playback.rs   AudioSink trait + CpalSink (cpal output stream, shared sample
+              queue → device callback) + QueueSink test sink.
 model.rs      whisper model presence check + curl-spawn download with
               file-size-poll progress (tokio::process, already a dep).
 ```

@@ -47,15 +47,6 @@
  * caveat of its own.
  */
 
-/** `LUNA_READINESS_PORT:-4753` (scripts/luna-update-server:86). */
-export const READINESS_PORT_DEFAULT = 4753
-/** `LUNA_READINESS_TIMEOUT:-60` (scripts/luna-update-server:87). */
-export const READINESS_TIMEOUT_DEFAULT = 60
-/** `LUNA_READINESS_INTERVAL:-2` (scripts/luna-update-server:88). */
-export const READINESS_INTERVAL_DEFAULT = 2
-/** `LUNA_READINESS_CURL_MAX_TIME:-5` (scripts/luna-update-server:89). */
-export const READINESS_CURL_MAX_TIME_DEFAULT = 5
-
 /** `[[ "$n" =~ ^[0-9]+$ ]]` - the restart-count validation both bash sites share. */
 const RESTART_COUNT_FORMAT = /^[0-9]+$/
 

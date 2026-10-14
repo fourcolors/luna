@@ -22,7 +22,7 @@ import { FlowPanel } from "./FlowPanel"
 import type { PanelCtx } from "./panel-ctx"
 
 export const FLOW_PANEL_TITLE = "Run history"
-export const FLOW_PANEL_TYPES = ["flow"] as const
+const FLOW_PANEL_TYPES = ["flow"] as const
 
 export function isFlowPanelType(type: string): boolean {
   return (FLOW_PANEL_TYPES as readonly string[]).includes(type)

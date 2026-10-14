@@ -55,7 +55,6 @@ import {
   type ToolSegment,
   type Turn,
 } from "./chatModel"
-import { getChatHost } from "./chat-host"
 import { buildMessageMeta } from "./messageMeta"
 
 // ============================================================================
@@ -590,7 +589,7 @@ const WELCOME_TURN: Turn = {
 }
 export const WELCOME_ITEM: PlannedItem = { key: WELCOME_TURN.key, kind: "banner", turn: WELCOME_TURN }
 
-export interface MessageListProps {
+interface MessageListProps {
   store: ChatModelStore
   /** `State.serverSupportsTurnComplete !== false`, read live at plan time -
    * mirrors the vanilla `_plan()`'s own live read of that same global. */
@@ -608,7 +607,7 @@ export interface MessageListProps {
   emptyStateItem?: PlannedItem
 }
 
-export function MessageList({ store, getGrouped, onOpenAgentsPanel, container, emptyStateItem }: MessageListProps) {
+function MessageList({ store, getGrouped, onOpenAgentsPanel, container, emptyStateItem }: MessageListProps) {
   const state = useChatModelState(store)
   // Read live on every render (not just when getGrouped's own identity
   // changes, which never happens - main-chat.tsx creates it once) so the
@@ -659,7 +658,7 @@ export function MessageList({ store, getGrouped, onOpenAgentsPanel, container, e
 // inline script keeps calling (see this file's module doc).
 // ============================================================================
 
-export interface ChatStateBridge {
+interface ChatStateBridge {
   readonly turns: readonly Turn[]
   reset(): void
   loadHistory(messages: readonly HistoryMessage[]): void
@@ -683,7 +682,7 @@ export interface ChatStateBridge {
   _findPending(): Turn | null
 }
 
-export interface ChatLoopBridge {
+interface ChatLoopBridge {
   /** rAF-coalesced: idempotent within a frame. */
   schedule(): void
   /** Forces a synchronous render via flushSync, so DOM reads immediately

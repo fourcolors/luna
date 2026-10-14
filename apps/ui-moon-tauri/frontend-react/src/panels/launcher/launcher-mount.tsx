@@ -17,7 +17,7 @@ import { mountReactPanel } from "../panel-mount"
 import { LauncherPanel } from "./LauncherPanel"
 import type { PanelCtx } from "../panel-ctx"
 
-export const LAUNCHER_PANEL_TYPE = "launcher"
+const LAUNCHER_PANEL_TYPE = "launcher"
 export const LAUNCHER_TITLE = "Launcher"
 
 export function isLauncherPanelType(type: string): boolean {

@@ -58,8 +58,6 @@ import type { CommandResult } from "./target.js"
  * string against the journal's persisted `prev_lock_hash`.
  */
 export { lockfileHashSync } from "./apply-inplace.js"
-export type { LockfileHashOptions } from "./apply-inplace.js"
-
 /**
  * 7-64 hex, case-insensitive: bash's `[[ "$REQUESTED_REF" =~ ^[0-9a-fA-F]{7,64}$ ]]`
  * at :1989 and the identical post-resolution test at :1994, which are two

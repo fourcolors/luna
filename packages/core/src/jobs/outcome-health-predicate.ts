@@ -31,12 +31,12 @@ export interface HealthPayload {
   readonly [key: string]: unknown
 }
 
-export interface PredicateResult {
+interface PredicateResult {
   readonly state: "fresh" | "stale"
   readonly detail?: string
 }
 
-export interface PredicateError {
+interface PredicateError {
   readonly kind: "unknown_predicate" | "eval_error"
   readonly message: string
 }

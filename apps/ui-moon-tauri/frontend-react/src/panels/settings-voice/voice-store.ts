@@ -25,10 +25,18 @@ import { formatMb } from "@luna/ui-shared/core"
 
 export type VoiceMode = "off" | "ptt" | "auto"
 
-export const VOICE_MODES: readonly VoiceMode[] = ["off", "ptt", "auto"]
+const VOICE_MODES: readonly VoiceMode[] = ["off", "ptt", "auto"]
 
 export function isVoiceMode(value: string): value is VoiceMode {
   return (VOICE_MODES as readonly string[]).includes(value)
+}
+
+export type TtsEngine = "system" | "fish"
+
+const TTS_ENGINES: readonly TtsEngine[] = ["system", "fish"]
+
+export function isTtsEngine(value: string): value is TtsEngine {
+  return (TTS_ENGINES as readonly string[]).includes(value)
 }
 
 export interface VoiceOption {
@@ -37,9 +45,9 @@ export interface VoiceOption {
   readonly quality?: string
 }
 
-export type VoiceModelStatus = "checking" | "ready" | "missing" | "downloading" | "error"
+type VoiceModelStatus = "checking" | "ready" | "missing" | "downloading" | "error"
 
-export interface VoiceProgress {
+interface VoiceProgress {
   readonly downloadedBytes: number
   readonly totalBytes: number
 }
@@ -53,7 +61,14 @@ export interface VoiceState {
   readonly probeDone: boolean
   readonly mode: VoiceMode
   readonly speakReplies: boolean
+  /** Active speech engine: "system" (platform) or "fish" (Fish Audio). */
+  readonly ttsEngine: TtsEngine
+  /** Backend reports a Fish API key is on file (never the key itself). */
+  readonly fishKeyConfigured: boolean
   readonly voiceId: string
+  /** Selected voice id on the fish engine (luna_voice_fish_id); kept
+   *  separate from voiceId so per-engine picks survive engine switches. */
+  readonly fishVoiceId: string
   /** Committed value - what has been persisted + sent to voice_set_config. */
   readonly silenceHangMs: number
   /** Live value while the slider is being dragged, pre-commit. Equal to
@@ -65,16 +80,19 @@ export interface VoiceState {
   readonly modelProgress: VoiceProgress | null
 }
 
-export const DEFAULT_SILENCE_HANG_MS = 600
-export const MIN_SILENCE_HANG_MS = 300
-export const MAX_SILENCE_HANG_MS = 1200
+const DEFAULT_SILENCE_HANG_MS = 600
+const MIN_SILENCE_HANG_MS = 300
+const MAX_SILENCE_HANG_MS = 1200
 
 export const initialVoiceState: VoiceState = {
   available: false,
   probeDone: false,
   mode: "off",
   speakReplies: true,
+  ttsEngine: "system",
+  fishKeyConfigured: false,
   voiceId: "",
+  fishVoiceId: "",
   silenceHangMs: DEFAULT_SILENCE_HANG_MS,
   silenceHangDisplay: DEFAULT_SILENCE_HANG_MS,
   voices: [],
@@ -88,11 +106,24 @@ export type VoiceAction =
       readonly type: "settings-loaded"
       readonly mode: VoiceMode
       readonly speakReplies: boolean
+      readonly ttsEngine: TtsEngine
       readonly voiceId: string
+      readonly fishVoiceId: string
       readonly silenceHangMs: number
     }
   | { readonly type: "mode-changed"; readonly mode: VoiceMode }
   | { readonly type: "speak-replies-changed"; readonly value: boolean }
+  | { readonly type: "engine-changed"; readonly engine: TtsEngine }
+  | { readonly type: "tts-info-resolved"; readonly engine: string; readonly fishKeyConfigured: boolean }
+  | {
+      readonly type: "fish-key-resolved"
+      readonly configured: boolean
+      /** Saving a key refreshes the fish voice catalog in the same
+       *  transition so the configured flag and the fresh list render as
+       *  one update (a second async dispatch can land mid-render and trip
+       *  a react-dom interrupted-render crash). */
+      readonly voices?: readonly VoiceOption[]
+    }
   | { readonly type: "voice-selected"; readonly id: string }
   | { readonly type: "voices-loaded"; readonly voices: readonly VoiceOption[] }
   | { readonly type: "silence-hang-dragged"; readonly value: number }
@@ -112,7 +143,7 @@ export function clampSilenceHang(value: number): number {
 }
 
 /** Progress status text, mirrors voice-model-progress's non-error/non-done branch. */
-export function progressStatusText(downloadedBytes: number, totalBytes: number): string {
+function progressStatusText(downloadedBytes: number, totalBytes: number): string {
   return totalBytes > 0
     ? `Downloading… ${formatMb(downloadedBytes)} / ${formatMb(totalBytes)} MB`
     : `Downloading… ${formatMb(downloadedBytes)} MB`
@@ -126,7 +157,9 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
         ...state,
         mode: action.mode,
         speakReplies: action.speakReplies,
+        ttsEngine: action.ttsEngine,
         voiceId: action.voiceId,
+        fishVoiceId: action.fishVoiceId,
         silenceHangMs,
         silenceHangDisplay: silenceHangMs,
       }
@@ -135,8 +168,31 @@ export function voiceReduce(state: VoiceState, action: VoiceAction): VoiceState 
       return { ...state, mode: action.mode }
     case "speak-replies-changed":
       return { ...state, speakReplies: action.value }
+    case "engine-changed":
+      // The picker serves the active engine's catalog; keeping the old
+      // list would flash the previous engine's voices until repopulation.
+      return { ...state, ttsEngine: action.engine, voices: [] }
+    case "tts-info-resolved":
+      // The backend engine is authoritative: a stale persisted value
+      // (or a rejected set) shows what is actually speaking.
+      return {
+        ...state,
+        ttsEngine: isTtsEngine(action.engine) ? action.engine : state.ttsEngine,
+        fishKeyConfigured: action.fishKeyConfigured,
+      }
+    case "fish-key-resolved":
+      if (action.voices) {
+        return { ...state, fishKeyConfigured: action.configured, voices: action.voices }
+      }
+      // A cleared key means the fish catalog is unusable — drop the list
+      // so stale voice ids can't be picked and 400 at speak time.
+      return action.configured
+        ? { ...state, fishKeyConfigured: true }
+        : { ...state, fishKeyConfigured: false, voices: [] }
     case "voice-selected":
-      return { ...state, voiceId: action.id }
+      return state.ttsEngine === "fish"
+        ? { ...state, fishVoiceId: action.id }
+        : { ...state, voiceId: action.id }
     case "voices-loaded":
       return { ...state, voices: action.voices }
     case "silence-hang-dragged":

@@ -63,7 +63,7 @@ export const NOTIFICATION_LOG_CAP = 50
 /** Bound on a single stored preview, so one huge job result can't eat quota. */
 export const NOTIFICATION_PREVIEW_CAP = 280
 /** Schema version stamped on every entry (see FORWARD COMPATIBILITY above). */
-export const NOTIFICATION_ENTRY_VERSION = 1
+const NOTIFICATION_ENTRY_VERSION = 1
 
 export interface NotificationEntry {
   /** Schema version - always NOTIFICATION_ENTRY_VERSION for entries we write. */
@@ -164,7 +164,7 @@ export function appendEntry(
  * Strict `>` so a Clear taken in the same millisecond as an entry wins the tie:
  * the user pressed the button after seeing the row, so the row goes.
  */
-export function dropCleared(
+function dropCleared(
   entries: readonly NotificationEntry[],
   clearedAt: number,
 ): NotificationEntry[] {

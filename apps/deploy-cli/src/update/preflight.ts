@@ -62,16 +62,16 @@ import { join } from "node:path"
 import { stripTrailingNewlines } from "./session-guard.js"
 
 /** `luna_die` exits 1 (scripts/lib/luna-deploy.sh:6); every refusal below carries this. */
-export const EXIT_PREFLIGHT_REFUSED = 1
+const EXIT_PREFLIGHT_REFUSED = 1
 
 /** `luna_info` (scripts/lib/luna-deploy.sh:4) - `printf '%s\n' "-> $*"`, stdout. */
-export const infoLine = (message: string): string => `-> ${message}`
+const infoLine = (message: string): string => `-> ${message}`
 
 /** `luna_die`'s stderr line (scripts/lib/luna-deploy.sh:6), newline excluded. */
-export const errorLine = (message: string): string => `error: ${message}`
+const errorLine = (message: string): string => `error: ${message}`
 
 /** scripts/luna-update-server:521, byte for byte. */
-export const targetRefLine = (ref: string): string => `Target ref: ${ref}`
+const targetRefLine = (ref: string): string => `Target ref: ${ref}`
 
 /** `--supervisor systemd|launchd` (scripts/luna-update-server:229). */
 export type Supervisor = "systemd" | "launchd"
@@ -85,7 +85,7 @@ export type Supervisor = "systemd" | "launchd"
  * check and a `?: string` would let a caller express `undefined` vs `""` as if
  * they differed.
  */
-export interface PreflightBannerContext {
+interface PreflightBannerContext {
   readonly profile: string
   readonly incusContainer: string
   readonly supervisor: Supervisor
@@ -116,7 +116,7 @@ export interface PreflightBannerContext {
  * alignment against the line above it and is reproduced verbatim; an operator
  * diffing two hosts' output would see a whitespace change as a real change.
  */
-export const preflightBannerLines = (ctx: PreflightBannerContext): ReadonlyArray<string> => {
+const preflightBannerLines = (ctx: PreflightBannerContext): ReadonlyArray<string> => {
   const head = infoLine(`Updating Luna server profile: ${ctx.profile}`)
   if (ctx.incusContainer !== "") {
     return [
@@ -211,7 +211,7 @@ export interface PreflightOptions extends PreflightBannerContext, PreflightSeams
   readonly bunBinIncus: string
 }
 
-export interface PreflightSuccess {
+interface PreflightSuccess {
   readonly ok: true
   /** REF after default resolution; the value `Target ref:` printed. */
   readonly ref: string

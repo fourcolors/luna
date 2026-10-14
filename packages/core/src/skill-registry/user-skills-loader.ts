@@ -154,7 +154,6 @@ export interface SyncUserSkillsOptions {
 export const syncUserSkills = (
   registry: SkillRegistryApi,
   scan: UserSkillScan,
-  options: SyncUserSkillsOptions = {},
 ): Effect.Effect<{
   readonly added: number
   readonly updated: number

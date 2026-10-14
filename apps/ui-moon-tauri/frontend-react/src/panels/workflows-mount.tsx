@@ -19,7 +19,7 @@ import { WorkflowsPanel } from "./workflows/WorkflowsPanel"
 import type { PanelCtx } from "./panel-ctx"
 
 export const WORKFLOWS_PANEL_TITLE = "Workflows"
-export const WORKFLOWS_PANEL_TYPES = ["workflows"] as const
+const WORKFLOWS_PANEL_TYPES = ["workflows"] as const
 
 export function isWorkflowsPanelType(type: string): boolean {
   return (WORKFLOWS_PANEL_TYPES as readonly string[]).includes(type)

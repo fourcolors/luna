@@ -41,7 +41,6 @@ import {
   AnalyticsService,
   Clock,
   ConfigError,
-  DuckDbService,
   EventSink,
   LunaSqliteBootstrap,
   SessionSync,

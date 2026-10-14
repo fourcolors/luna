@@ -5,9 +5,9 @@
 #   1. Tag push — `git push origin moon-v0.0.40` (e.g. the local
 #      `bump-moon.ts <ver> --tag --push` path). Builds the already-tagged commit.
 #   2. The button — Actions ▸ "Release Moon" ▸ Run workflow ▸ enter a version.
-#      The run BUMPS all four version files in lockstep, commits them to master,
+#      The run BUMPS all five version files in lockstep, commits them to master,
 #      tags `moon-v<version>`, pushes both, then builds — no local Mac, no git
-#      ritual, no Cargo.lock hand-edit. This is the recommended path.
+#      ritual, no Cargo.lock or bun.lock hand-edit. This is the recommended path.
 #
 # Why one workflow and not a separate "cut" workflow that pushes a tag: a tag
 # pushed using the in-run GITHUB_TOKEN does NOT trigger another workflow
@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release as x.y.z (bumps all 4 files, commits to master, tags moon-v<version>, then builds + publishes)"
+        description: "Version to release as x.y.z (bumps all 5 files, commits to master, tags moon-v<version>, then builds + publishes)"
         required: true
         type: string
 
@@ -83,7 +83,7 @@ jobs:
           fi
 
       # workflow_dispatch only: turn a bare version into a tagged, pushed commit.
-      # bump-moon.ts rewrites all four version files atomically (and validates the
+      # bump-moon.ts rewrites all five version files atomically (and validates the
       # x.y.z shape — a bad value exits non-zero and fails the run before anything
       # is committed). We then commit to master + tag + push both; the build below
       # runs on this exact working tree.

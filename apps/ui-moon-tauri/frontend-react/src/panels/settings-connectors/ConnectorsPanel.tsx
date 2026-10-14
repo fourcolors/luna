@@ -51,6 +51,7 @@ import {
 import { useLocalStore, useMoonSelector } from "../../state/store"
 import {
   formatOauthConsentError,
+  frameTargetsInFlightOauth,
   initialConnectorsState,
   instancesFor,
   labelTaken,
@@ -273,7 +274,10 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
     })
 
     registry.register("connector-status", (frame: any) => {
-      clearBeginTimer()
+      // A superseded flow's late frame must not disarm the in-flight flow's
+      // begin watchdog: only a status attributable to our OAuth flow clears
+      // the timer (same attribution the reducer applies to the frame itself).
+      if (frameTargetsInFlightOauth(store.getState(), frame)) clearBeginTimer()
       store.dispatch({ type: "status-frame", frame })
     })
 

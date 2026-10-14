@@ -265,6 +265,17 @@ export interface UserAcceptedFrame {
   readonly seq: number
   readonly message: ChatMessage
 }
+/** One message waiting behind the running turn. Mirrors protocol.ts. */
+export interface QueuedMessage {
+  readonly userMessageId: string
+  readonly text: string
+}
+/** Messages waiting behind the running turn. Mirrors protocol.ts. */
+export interface QueueUpdateFrame {
+  readonly type: "queue-update"
+  readonly threadId: string
+  readonly queued: ReadonlyArray<QueuedMessage>
+}
 export interface AssistantDeltaFrame {
   readonly type: "assistant-delta"
   readonly threadId: string
@@ -732,6 +743,9 @@ export interface ForkProposalWire {
   readonly status: ForkProposalStatus
   readonly createdAt: number
   readonly childThreadId?: string
+  /** Agent-created chat (create_thread): the client viewing the parent
+   *  thread switches to `childThreadId` once accepted. */
+  readonly autoOpen?: boolean
 }
 export interface ForkProposalSetFrame {
   readonly type: "fork-proposal-set"
@@ -944,13 +958,15 @@ export interface RoleBindingItem {
   readonly preferenceList: ReadonlyArray<{ readonly provider: string; readonly model: string }>
 }
 
-/** The memory reranker engine setting ("cross-encoder" | "jev"). Never carries the Jev key.
+/** The memory reranker engine setting ("cross-encoder" | "jev" | "laya"). Never carries the Jev key.
  * Mirrors packages/ui-ws/src/protocol.ts, keep in sync. */
 export interface MemoryRerankerSettingsItem {
   /** List: the engine after the next start. Save: the operator's choice. */
   readonly engine: string
   /** List only: the engine this running server bound (differs from `engine` until a restart). */
   readonly active?: string
+  /** List only: last health-probe verdict for the local laya sidecar — "up" answers at LUNA_LAYA_URL, "down" does not. Absent until the first probe lands (and on older servers). */
+  readonly layaSidecar?: "up" | "down"
 }
 
 /** The classifier engine setting ("auto" | "model" | "jev"). Never carries the Jev key.
@@ -1084,6 +1100,7 @@ export type ServerFrame =
   | ThreadCreateErrorFrame
   | ThreadSnapshotFrame
   | UserAcceptedFrame
+  | QueueUpdateFrame
   | AssistantDeltaFrame
   | AssistantDoneFrame
   | AssistantErrorFrame
@@ -1220,6 +1237,12 @@ export interface InterruptFrame {
   readonly type: "interrupt"
   readonly threadId: string
 }
+/** Push a waiting message into the running turn. Mirrors protocol.ts. */
+export interface SteerFrame {
+  readonly type: "steer"
+  readonly threadId: string
+  readonly userMessageId: string
+}
 
 /**
  * Client→server: flip one skill from the Skills settings section (PRD Part
@@ -1241,6 +1264,7 @@ export type ClientFrame =
   | NewThreadFrame
   | UserMessageFrame
   | InterruptFrame
+  | SteerFrame
   | SkillToggleFrame
   | ConnectorOauthBeginFrame
   | ConnectorOauthCodeFrame

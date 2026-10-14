@@ -1,18 +1,19 @@
 #!/usr/bin/env bun
 /**
- * bump-moon.ts — move the Luna Moon version across all four files in lockstep and (optionally)
+ * bump-moon.ts — move the Luna Moon version across all five files in lockstep and (optionally)
  * cut the `moon-v*` tag that triggers the macOS CI build+sign+publish pipeline
  * (`.github/workflows/release-moon.yml`).
  *
  * WHY THIS EXISTS
- * The Tauri app's version lives in FOUR files that must always agree:
+ * The Tauri app's version lives in FIVE files that must always agree:
  *   - apps/ui-moon-tauri/package.json
  *   - apps/ui-moon-tauri/src-tauri/Cargo.toml
  *   - apps/ui-moon-tauri/src-tauri/tauri.conf.json
  *   - apps/ui-moon-tauri/src-tauri/Cargo.lock   (the luna-moon-ui [[package]] entry)
+ *   - bun.lock                                   (the "apps/ui-moon-tauri" workspace entry)
  * If they drift, the macOS build fails — but only AFTER the irreversible tag push,
  * forcing a `git tag -d` + `--delete` cleanup. The fix is twofold: (1) a single
- * writer that bumps all four atomically, and (2) a `--check` gate that CI runs on
+ * writer that bumps all five atomically, and (2) a `--check` gate that CI runs on
  * every PR so drift is caught BEFORE any tag exists. The Mac build itself is fully
  * autonomous in CI (no local Mac needed) — the only missing piece was a safe bump.
  *
@@ -21,10 +22,15 @@
  * member, bumped via a package-anchored replace (so only luna-moon-ui's own
  * version moves, never a dependency's).
  *
+ * bun.lock is a lockstep member too (#718). `bun install --lockfile-only` does NOT
+ * rewrite a workspace's version line when the version is the only thing that changed,
+ * and `bun install --frozen-lockfile` does not flag the mismatch, so the lock is
+ * bumped by the same anchored replace instead of by shelling out to bun.
+ *
  * USAGE
- *   bun run scripts/bump-moon.ts --check                 # assert the 4 versions match (CI gate; exit 1 on drift)
- *   bun run scripts/bump-moon.ts <x.y.z>                 # rewrite all 4 to <x.y.z>
- *   bun run scripts/bump-moon.ts <x.y.z> --tag          # also: git commit the 4 files + annotated tag moon-v<x.y.z>
+ *   bun run scripts/bump-moon.ts --check                 # assert the 5 versions match (CI gate; exit 1 on drift)
+ *   bun run scripts/bump-moon.ts <x.y.z>                 # rewrite all 5 to <x.y.z>
+ *   bun run scripts/bump-moon.ts <x.y.z> --tag          # also: git commit the 5 files + annotated tag moon-v<x.y.z>
  *   bun run scripts/bump-moon.ts <x.y.z> --tag --push   # also: push the tag -> fires the macOS release CI
  *
  * --push is a "release that publishes to users" — keep it an operator-gated action.
@@ -35,21 +41,24 @@ import { readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { spawnSync } from "node:child_process"
 
-export type Kind = "json" | "toml" | "lock"
+export type Kind = "json" | "toml" | "lock" | "bunlock"
 export interface VersionFile {
   readonly path: string
   readonly kind: Kind
-  /** For kind "lock": the [[package]] name whose version to move (Cargo.lock has one version line per crate). */
+  /**
+   * For kind "lock": the [[package]] name whose version to move (Cargo.lock has one version line per crate).
+   * For kind "bunlock": the workspace path key in bun.lock (e.g. "apps/ui-moon-tauri").
+   */
   readonly pkg?: string
 }
 
-// TODO(#718): bun.lock also records the Moon workspace version and is never bumped here.
-/** The four files that carry the Moon version and MUST stay in lockstep. */
+/** The five files that carry the Moon version and MUST stay in lockstep. */
 export const VERSION_FILES: readonly VersionFile[] = [
   { path: "apps/ui-moon-tauri/package.json", kind: "json" },
   { path: "apps/ui-moon-tauri/src-tauri/Cargo.toml", kind: "toml" },
   { path: "apps/ui-moon-tauri/src-tauri/tauri.conf.json", kind: "json" },
   { path: "apps/ui-moon-tauri/src-tauri/Cargo.lock", kind: "lock", pkg: "luna-moon-ui" },
+  { path: "bun.lock", kind: "bunlock", pkg: "apps/ui-moon-tauri" },
 ]
 
 export const SEMVER = /^\d+\.\d+\.\d+$/
@@ -69,8 +78,12 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 const versionRe = (kind: Kind, pkg?: string): RegExp => {
   if (kind === "json") return /("version"\s*:\s*")(\d+\.\d+\.\d+)(")/
   if (kind === "toml") return /^(version\s*=\s*")(\d+\.\d+\.\d+)(")/m
+  if (!pkg) throw new Error(`${kind} kind requires a package name`)
+  if (kind === "bunlock") {
+    // bun.lock workspace entry: "<path>": { "name": "...", "version": "x.y.z", ... — anchored so a dependency's version never matches.
+    return new RegExp(`("${escapeRe(pkg)}"\\s*:\\s*\\{\\s*"name"\\s*:\\s*"[^"]+"\\s*,\\s*"version"\\s*:\\s*")(\\d+\\.\\d+\\.\\d+)(")`)
+  }
   // kind === "lock"
-  if (!pkg) throw new Error("lock kind requires a package name")
   return new RegExp(`(name\\s*=\\s*"${escapeRe(pkg)}"\\s*\\nversion\\s*=\\s*")(\\d+\\.\\d+\\.\\d+)(")`)
 }
 
@@ -97,7 +110,7 @@ export interface SyncResult {
   readonly distinct: readonly string[]
 }
 
-/** Pure: given the four files' contents, decide whether they are in sync. */
+/** Pure: given the five files' contents, decide whether they are in sync. */
 export const checkSync = (contents: ReadonlyMap<string, string>): SyncResult => {
   const entries: VersionEntry[] = VERSION_FILES.map((f) => ({
     ...f,
@@ -141,7 +154,7 @@ const main = (): void => {
   if (flags.has("--check")) {
     const res = checkSync(readContents(root))
     for (const e of res.entries) process.stdout.write(`  ${e.version ?? "MISSING"}  ${e.path}\n`)
-    if (!res.ok) die(`version drift — files disagree: [${res.distinct.join(", ") || "none"}]. All four must equal one x.y.z.`)
+    if (!res.ok) die(`version drift — files disagree: [${res.distinct.join(", ") || "none"}]. All five must equal one x.y.z.`)
     process.stdout.write(`✓ moon version in sync: ${res.distinct[0]}\n`)
     return
   }
@@ -150,7 +163,7 @@ const main = (): void => {
   if (!next) die("usage: bump-moon.ts <x.y.z> [--tag [--push]]  |  bump-moon.ts --check")
   if (!SEMVER.test(next as string)) die(`'${next}' is not a valid x.y.z version`)
 
-  // Rewrite all four.
+  // Rewrite all five.
   for (const f of VERSION_FILES) {
     const p = join(root, f.path)
     const before = readFileSync(p, "utf8")
@@ -159,10 +172,10 @@ const main = (): void => {
     process.stdout.write(`  set ${next}  ${f.path}\n`)
   }
 
-  // Re-read and assert the write produced a synced quad.
+  // Re-read and assert the write produced a synced set.
   const res = checkSync(readContents(root))
   if (!res.ok || res.distinct[0] !== next) die(`post-write check failed (got [${res.distinct.join(", ")}]) — aborting before any tag`)
-  process.stdout.write(`✓ all four files now at ${next}\n`)
+  process.stdout.write(`✓ all five files now at ${next}\n`)
 
   if (!flags.has("--tag")) {
     process.stdout.write(`\nNext: review the diff, then re-run with --tag (and --push to release).\n`)

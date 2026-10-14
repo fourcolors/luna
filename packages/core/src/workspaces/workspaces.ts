@@ -20,8 +20,6 @@ import { applyMigration, ensureSchemaVersions } from "../db/schema-versions.js"
 import { LunaSqliteBootstrap } from "../db/sqlite-bootstrap.js"
 import { ConfigError } from "../errors.js"
 import type {
-  ListFilter,
-  RegisterInput,
   Workspace,
   WorkspaceRegistryApi,
   WorkspaceStatus,
@@ -112,7 +110,6 @@ export class WorkspaceRegistryService extends Context.Service<WorkspaceRegistryS
 
         const mutateOne = (
           slug: string,
-          op: WorkspaceError["op"],
           patch: (w: Workspace, ts: number) => Workspace,
         ): Effect.Effect<Workspace | null, WorkspaceError> =>
           Effect.gen(function* () {
@@ -129,20 +126,20 @@ export class WorkspaceRegistryService extends Context.Service<WorkspaceRegistryS
           })
 
         const touch: WorkspaceRegistryApi["touch"] = (slug) =>
-          mutateOne(slug, "touch", (w, ts) => ({ ...w, updatedAt: ts }))
+          mutateOne(slug, (w, ts) => ({ ...w, updatedAt: ts }))
 
         const updateSummary: WorkspaceRegistryApi["updateSummary"] = (
           slug,
           summary,
         ) =>
-          mutateOne(slug, "update-summary", (w, ts) => ({
+          mutateOne(slug, (w, ts) => ({
             ...w,
             summary,
             updatedAt: ts,
           }))
 
         const setStatus: WorkspaceRegistryApi["setStatus"] = (slug, status) =>
-          mutateOne(slug, "set-status", (w, ts) => ({
+          mutateOne(slug, (w, ts) => ({
             ...w,
             status,
             updatedAt: ts,

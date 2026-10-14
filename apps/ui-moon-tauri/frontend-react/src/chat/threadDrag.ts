@@ -235,7 +235,7 @@ export function wireThreadRow(
   /** This row's entry in State._threadDragGesture while its gesture is live. */
   let gesture: NonNullable<ThreadDragState['_threadDragGesture']> | null = null;
   let raf = 0;
-  let lastX = 0, lastY = 0, lastSX = 0, lastSY = 0;
+  let lastX = 0, lastY = 0;
   let floatedLabel: string | null = null;
   let spawnPromise: Promise<string | null> | null = null;
   let cancelled = false;
@@ -244,9 +244,6 @@ export function wireThreadRow(
   /** Sticky insert: require two consecutive samples at a new index. */
   let stickyPendingAt = -1;
   let stickyPendingCount = 0;
-  /** Reset on pointerdown and never read - kept because deleting it would be
-   * a runtime edit, not a type one. */
-  let pendingPos: unknown = null;
   /** First detach spawn start time (for open budget). */
   let detachStartedAt = 0;
   /** Hard promote: only one open_widget; OS owns free motion after. */
@@ -278,10 +275,6 @@ export function wireThreadRow(
     }
   };
 
-  const stripWidth = () => {
-    const r = stripRect();
-    return r && r.width > 40 ? r.width : 240;
-  };
 
   const rowCount = () => {
     try { return self._visibleThreads().length; } catch (_) { return 0; }
@@ -441,7 +434,6 @@ export function wireThreadRow(
     // finger's events must not steer or prematurely settle this session.
     if (pid != null && e.pointerId !== pid) return;
     lastX = e.clientX; lastY = e.clientY;
-    lastSX = e.screenX; lastSY = e.screenY;
     const move = session.pointerMove({
       clientX: e.clientX,
       clientY: e.clientY,
@@ -677,7 +669,6 @@ export function wireThreadRow(
     cancelled = false;
     floatedLabel = null;
     spawnPromise = null;
-    pendingPos = null;
     attachedVisual = false;
     lastInsertAt = -1;
     stickyPendingAt = -1;
@@ -703,7 +694,6 @@ export function wireThreadRow(
       },
     });
     lastX = e.clientX; lastY = e.clientY;
-    lastSX = e.screenX; lastSY = e.screenY;
     pid = e.pointerId;
     gesture = { pointerId: e.pointerId, cancel: () => cancelGesture(false) };
     State._threadDragGesture = gesture;

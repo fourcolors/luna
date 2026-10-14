@@ -68,6 +68,7 @@ const makeFakeModelRoutingService = (
   let memoryReranker: MemoryRerankerSettingsItem = { engine: "cross-encoder" }
   const saves: Array<Record<string, unknown>> = []
   const scheduleRestart = vi.fn()
+  let notifyChanged: (() => void) | null = null
 
   const svc = {
     list: (): ModelRoutingListFrame => ({
@@ -91,8 +92,17 @@ const makeFakeModelRoutingService = (
       return { ok: true, message: "Model routing settings saved. Restart to apply." }
     },
     scheduleRestart,
+    changes: (notify: () => void) => {
+      notifyChanged = notify
+    },
   }
-  return { svc, scheduleRestart, saves }
+  // Flip the laya-sidecar verdict + fire the registered notifier, the same
+  // two-step the chat-server probe does on an up/down transition.
+  const flipLayaSidecar = (verdict: "up" | "down") => {
+    memoryReranker = { ...memoryReranker, layaSidecar: verdict }
+    notifyChanged?.()
+  }
+  return { svc, scheduleRestart, saves, flipLayaSidecar }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -226,6 +236,24 @@ describe("model-routing server routing", () => {
     client.close()
   })
 
+  it("service changes() ping broadcasts a fresh model-routing-list to every connected client", async () => {
+    const { svc, flipLayaSidecar } = makeFakeModelRoutingService()
+    rig = await startModelRoutingRig(svc)
+    const client = await openClient(rig.url)
+    // Baseline post-hello list arrives with no sidecar verdict.
+    await client.waitFor((f) => f.type === "model-routing-list")
+
+    flipLayaSidecar("up")
+    const broadcast = (await client.waitFor(
+      (f) =>
+        f.type === "model-routing-list" &&
+        f.memoryReranker?.layaSidecar === "up",
+    )) as ModelRoutingListFrame
+    expect(broadcast.memoryReranker?.layaSidecar).toBe("up")
+
+    client.close()
+  })
+
   it("model-routing-save success: save → validate → persist → status(ok:true) + fresh list + scheduleRestart called", async () => {
     const { svc, scheduleRestart } = makeFakeModelRoutingService()
     rig = await startModelRoutingRig(svc)
@@ -303,6 +331,29 @@ describe("model-routing server routing", () => {
     client.send({ type: "model-routing-save", requestId: "req-rr-2", providers: SEED_PROVIDERS, roleBindings: SEED_ROLE_BINDINGS })
     await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-rr-2")
     expect("memoryReranker" in saves[1]!).toBe(false)
+    client.close()
+  })
+
+  it("classifier engine: a save passes it through, and an older client's save omits it", async () => {
+    const { svc, saves } = makeFakeModelRoutingService()
+    rig = await startModelRoutingRig(svc)
+    const client = await openClient(rig.url)
+    await client.waitFor((f) => f.type === "model-routing-list")
+
+    client.send({
+      type: "model-routing-save",
+      requestId: "req-ce-1",
+      providers: SEED_PROVIDERS,
+      roleBindings: SEED_ROLE_BINDINGS,
+      classifierEngine: { engine: "jev" },
+    })
+    await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-ce-1")
+    expect(saves[0]).toMatchObject({ classifierEngine: { engine: "jev" } })
+
+    // An older client never sends the field: the server must not invent one (the service keeps the stored choice).
+    client.send({ type: "model-routing-save", requestId: "req-ce-2", providers: SEED_PROVIDERS, roleBindings: SEED_ROLE_BINDINGS })
+    await client.waitFor((f) => f.type === "model-routing-status" && (f as ModelRoutingStatusFrame).requestId === "req-ce-2")
+    expect("classifierEngine" in saves[1]!).toBe(false)
     client.close()
   })
 

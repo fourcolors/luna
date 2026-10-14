@@ -36,7 +36,7 @@ export interface TextSegment {
   readonly done: boolean
 }
 
-export interface ToolResult {
+interface ToolResult {
   readonly ok: boolean
   readonly output: string
   readonly truncated: boolean
@@ -53,8 +53,8 @@ export interface ToolSegment {
 
 export type Segment = TextSegment | ToolSegment
 
-export type TurnStatus = "streaming" | "done" | "error" | "banner"
-export type TurnRole = "user" | "assistant"
+type TurnStatus = "streaming" | "done" | "error" | "banner"
+type TurnRole = "user" | "assistant"
 
 export interface Preview {
   readonly kind: string
@@ -90,7 +90,7 @@ export interface Turn {
  *  folded back onto it (absent on an older server, or when the run's
  *  `tool_result` fell outside the snapshot window). Every field is optional
  *  because this is wire data, not our own construction. */
-export interface HistoryToolUse {
+interface HistoryToolUse {
   readonly id?: string
   readonly name?: string
   readonly input?: unknown
@@ -100,7 +100,7 @@ export interface HistoryToolUse {
 /** A file attachment off a history message. No filename survives the round
  *  trip - the SDK content block carries only a media type and base64 - so the
  *  chip label is derived from the media type. */
-export interface HistoryAttachment {
+interface HistoryAttachment {
   readonly mediaType?: string
   readonly data?: string
 }

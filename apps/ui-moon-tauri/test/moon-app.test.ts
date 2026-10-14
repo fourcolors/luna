@@ -826,6 +826,33 @@ describe('Luna Moon Companion - Behavioral Driven Tests', () => {
       await M().VoiceEngine.applyPersisted()
       expect(invoke).toHaveBeenCalledWith('voice_set_config', { silenceHangMs: 1200 })
     })
+
+    it('Scenario: a persisted fish engine is applied before the fish voice pick', async () => {
+      localStorage.setItem('luna_voice_tts_engine', 'fish')
+      localStorage.setItem('luna_voice_fish_id', 'f1')
+      const invoke = vi.fn(async (cmd: string) =>
+        cmd === 'voice_status' ? { state: 'idle', mode: 'off', modelPresent: true } : null)
+      ;(window as any).__TAURI__.core = { invoke }
+      await M().VoiceEngine.init()
+
+      const calls = invoke.mock.calls.map((c) => c[0])
+      expect(invoke).toHaveBeenCalledWith('voice_set_tts_engine', { engine: 'fish' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_voice', { id: 'f1' })
+      // voice_set_voice targets the ACTIVE engine — the engine switch must
+      // land first or the fish pick would hit the system engine.
+      expect(calls.indexOf('voice_set_tts_engine')).toBeLessThan(calls.indexOf('voice_set_voice'))
+    })
+
+    it('Scenario: the system engine still applies luna_voice_id (engine switch is a benign no-op first)', async () => {
+      localStorage.setItem('luna_voice_id', 'Samantha')
+      const invoke = vi.fn(async (cmd: string) =>
+        cmd === 'voice_status' ? { state: 'idle', mode: 'off', modelPresent: true } : null)
+      ;(window as any).__TAURI__.core = { invoke }
+      await M().VoiceEngine.init()
+
+      expect(invoke).toHaveBeenCalledWith('voice_set_tts_engine', { engine: 'system' })
+      expect(invoke).toHaveBeenCalledWith('voice_set_voice', { id: 'Samantha' })
+    })
   })
 
   // ───────────────────────────────────────────────────────────────────────────

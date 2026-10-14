@@ -27,7 +27,7 @@ export interface MoonBarDom {
 }
 
 /** The subset of a suggested action the chip paints. */
-export interface MoonBarSuggestion {
+interface MoonBarSuggestion {
   readonly title?: string
 }
 

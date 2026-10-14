@@ -52,7 +52,7 @@ import { query, type Options, type SDKMessage } from "@anthropic-ai/claude-agent
 import { makeRecord } from "@luna/memory"
 import { DEFAULT_RECALL_CONTEXT_OPTIONS, packRecallContext } from "@luna/memory-tools"
 
-export interface DumpRecord {
+interface DumpRecord {
   readonly id: string
   readonly text: string
   readonly updatedAt: number
@@ -128,7 +128,7 @@ export function history(q: DumpQuestion, setup: Setup): string {
     .join("")
 }
 
-export const SYSTEM =
+const SYSTEM =
   'You are a helpful assistant that remembers past conversations with the user. The chat history you are given is from the past. Treat the "Current Date" stated in the user\'s message as today\'s date; ignore any other date you may have been told.'
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16)

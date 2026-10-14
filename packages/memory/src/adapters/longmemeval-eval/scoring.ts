@@ -42,7 +42,7 @@ const RUBRIC_TYPES: ReadonlySet<string> = new Set(["single-session-preference"])
  * Readers often answer in markdown, escaping `_`, `*`, etc. The escaped
  * form of a correct answer (`@jessica\_poole`) must score like the plain one.
  */
-export function unescapeMarkdown(s: string): string {
+function unescapeMarkdown(s: string): string {
   return s.replace(/\\([\\`*_{}[\]()#+\-.!|~>%'"])/g, "$1")
 }
 

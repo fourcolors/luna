@@ -15,7 +15,7 @@ import { mountReactPanel } from "../panel-mount"
 import { VoicePanel, PANEL_TITLE } from "./VoicePanel"
 import type { PanelCtx } from "../panel-ctx"
 
-export const SETTINGS_VOICE_PANEL_TYPES = ["settings.voice"] as const
+const SETTINGS_VOICE_PANEL_TYPES = ["settings.voice"] as const
 
 export function isSettingsVoicePanelType(type: string): boolean {
   return (SETTINGS_VOICE_PANEL_TYPES as readonly string[]).includes(type)

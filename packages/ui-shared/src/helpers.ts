@@ -11,8 +11,10 @@
 import type { ThreadView } from "./reducer.js"
 import type { SessionSummary } from "./wire.js"
 
-export const truncate = (s: string, n: number): string =>
-  s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…"
+export const truncate = (s: string, n: number): string => {
+  const chars = [...s]
+  return chars.length <= n ? s : chars.slice(0, n - 1).join("").trimEnd() + "…"
+}
 
 /** Derive a display title for a thread. Order:
  *    1. explicit summary.title

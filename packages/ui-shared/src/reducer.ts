@@ -15,7 +15,6 @@ import type {
   ChatMessage,
   ConnectorCatalogItem,
   ConnectorInstanceItem,
-  JobInputRequestFrame,
   ObsEvent,
   PinnedArtifactItem,
   ServerDescriptor,
@@ -701,6 +700,10 @@ export const reduce = (state: UIState, action: Action): UIState => {
     case "thread-archive-error":
       // Phase 3: operation failed (thread not found / registry unavailable).
       // No persistent state to update; the UI layer handles the refresh.
+      return state
+    case "queue-update":
+      // Queue + Steer: the waiting-message tray is drawn by clients that
+      // offer a Steer button (Moon). This store has no queue view yet.
       return state
     case "thread-create-error":
       // A `new-thread` request failed before a thread row existed. Surface the

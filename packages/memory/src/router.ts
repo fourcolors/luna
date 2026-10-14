@@ -22,7 +22,6 @@ import type {
   MemoryExport,
   MemoryQuery,
   MemoryRecord,
-  MemoryScopeQuery,
 } from "./types.js"
 import { matchesMemoryScope } from "./types.js"
 

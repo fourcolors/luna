@@ -52,7 +52,7 @@ import type { TurnPrompt } from "./chat-service.js"
  * is healthy, so the next turn deserves the full burst again, however many
  * rotations happened earlier in the thread's life.
  */
-export const MAX_ORDINARY_ROTATION_ATTEMPTS = 3
+const MAX_ORDINARY_ROTATION_ATTEMPTS = 3
 
 export interface AccountRotationDeps {
   readonly id: string

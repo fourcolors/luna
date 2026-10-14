@@ -15,7 +15,7 @@ import { mountReactPanel } from "../panel-mount"
 import { UpdatesPanel, PANEL_TITLE } from "./UpdatesPanel"
 import type { PanelCtx } from "../panel-ctx"
 
-export const SETTINGS_UPDATES_PANEL_TYPES = ["settings.updates"] as const
+const SETTINGS_UPDATES_PANEL_TYPES = ["settings.updates"] as const
 
 export function isSettingsUpdatesPanelType(type: string): boolean {
   return (SETTINGS_UPDATES_PANEL_TYPES as readonly string[]).includes(type)

@@ -22,7 +22,7 @@
  */
 // @ts-nocheck
 
-export interface SurveyItem {
+interface SurveyItem {
   readonly id: string
   readonly kind: string
   readonly ref?: unknown
@@ -30,7 +30,7 @@ export interface SurveyItem {
   readonly prompt?: string
 }
 
-export interface SurveyAnswers {
+interface SurveyAnswers {
   likert: number | null
   beliefAnswers: Record<string, string>
 }

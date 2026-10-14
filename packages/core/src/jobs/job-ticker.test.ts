@@ -1082,6 +1082,91 @@ describe("JobTicker", () => {
     )
   })
 
+  it("a quarantined job leaves a failed job_runs row that names the bad schedule", async () => {
+    // Regression: quarantine used to disable the row and set
+    // last_status='errored' with only a log line, so anyone reading the DB saw
+    // "errored" with no run and no reason (hit by a one-shot written with
+    // spec='manual', which SYSTEM.md used to recommend).
+    let runs = 0
+    const counting: Worker = () =>
+      Effect.sync(() => {
+        runs++
+        return { outputText: null }
+      })
+    const prog = Effect.gen(function* () {
+      const store = yield* JobsStoreService
+      const ticker = yield* JobTicker
+      yield* store.record({ id: "manual-spec", kind: "wake", spec: "manual", payload: { label: "m" } })
+      yield* store.setV2Fields("manual-spec", { schedule: "manual", nextRunAt: 0 })
+
+      yield* ticker.drain
+      expect(runs).toBe(0)
+      const after = yield* store.getById("manual-spec")
+      expect(after?.enabled).toBe(false)
+      expect(after?.lastStatus).toBe("errored")
+
+      const rows = yield* store.listRuns("manual-spec", 10)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]?.status).toBe("failed")
+      expect(rows[0]?.finishedAt).not.toBeNull()
+      expect(rows[0]?.error ?? "").toMatch(/^quarantined: /)
+      expect(rows[0]?.error ?? "").toContain("manual")
+      expect(rows[0]?.error ?? "").toContain("disabled")
+
+      // Disabled, so a second drain adds no further rows.
+      yield* ticker.drain
+      expect(yield* store.listRuns("manual-spec", 10)).toHaveLength(1)
+    })
+    await Effect.runPromise(
+      prog.pipe(Effect.provide(buildStack({ wake: counting }))),
+    )
+  })
+
+  it("a failing quarantine audit write never blocks the quarantine itself", async () => {
+    let runs = 0
+    const counting: Worker = () =>
+      Effect.sync(() => {
+        runs++
+        return { outputText: null }
+      })
+    const prog = Effect.gen(function* () {
+      const real = yield* JobsStoreService
+      const wrapped: JobsStoreApi = {
+        ...real,
+        recordRunStart: () =>
+          Effect.fail(new JobsStoreError({ op: "run_start", message: "simulated storage blip" })),
+      }
+      yield* real.record({ id: "manual-blip", kind: "wake", spec: "manual", payload: { label: "mb" } })
+      yield* real.setV2Fields("manual-blip", { schedule: "manual", nextRunAt: 0 })
+
+      const summary = yield* Effect.gen(function* () {
+        const ticker = yield* JobTicker
+        return yield* ticker.drain
+      }).pipe(
+        Effect.provide(
+          JobTickerLayer({ autoStart: false }).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(JobsStoreService, wrapped),
+                makeWorkerRegistry({ wake: counting }),
+                Clock.Default,
+              ),
+            ),
+          ),
+        ),
+      )
+
+      expect(runs).toBe(0)
+      const after = yield* real.getById("manual-blip")
+      expect(after?.enabled).toBe(false)
+      expect(after?.lastStatus).toBe("errored")
+      expect(yield* real.listRuns("manual-blip", 10)).toHaveLength(0)
+      // No row was written, so nothing is counted as an inline failure.
+      expect(summary.failedInline).toBe(0)
+    })
+    await Effect.runPromise(prog.pipe(Effect.provide(buildStack({ wake: counting }))))
+  })
+
   it("a parseable-but-unschedulable cron (no upcoming match) is also quarantined", async () => {
     let runs = 0
     const counting: Worker = () =>

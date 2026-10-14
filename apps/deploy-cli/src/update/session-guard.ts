@@ -70,7 +70,7 @@ import { spawnSync } from "node:child_process"
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-export type GuardPermittedReason =
+type GuardPermittedReason =
   | "dry-run"
   | "guard-disabled"
   | "non-systemd-supervisor"
@@ -79,7 +79,7 @@ export type GuardPermittedReason =
   | "dead-server-exception"
   | "session-defer-stale"
 
-export type GuardDeferredReason = "live-sessions" | "transport-unreachable" | "unit-state-uncertain"
+type GuardDeferredReason = "live-sessions" | "transport-unreachable" | "unit-state-uncertain"
 
 /**
  * A discriminated union rather than a flat `permitted: boolean` plus a flat
@@ -363,7 +363,7 @@ export const queryActiveWsCountSync = (port: string, incusContainer?: string): n
  * module's header. Host-scoped only (no incusContainer routing) - see
  * SessionGuardOptions.incusContainer's doc.
  */
-export const queryUnitStateSync = (serviceName: string): string => {
+const queryUnitStateSync = (serviceName: string): string => {
   const r = spawnSync("systemctl", ["is-active", serviceName], { encoding: "utf8" })
   return stripTrailingNewlines(r.stdout ?? "")
 }
@@ -380,7 +380,7 @@ const unitStateVerdict = (state: string): GuardVerdict => {
  * Port of `luna_parse_systemd_duration` (scripts/lib/luna-deploy.sh).
  * Returns seconds, or null on garbage. "0" / "infinity" → 0 (disabled escape).
  */
-export const parseSystemdDuration = (span: string): number | null => {
+const parseSystemdDuration = (span: string): number | null => {
   const raw = span.trim().toLowerCase()
   if (raw === "") return null
   if (raw === "infinity") return 0
@@ -431,7 +431,7 @@ export const parseSystemdDuration = (span: string): number | null => {
 }
 
 /** Port of `luna_session_defer_state_path`. */
-export const sessionDeferStatePath = (updateStateDir: string, profile: string): string =>
+const sessionDeferStatePath = (updateStateDir: string, profile: string): string =>
   join(updateStateDir, `session-defer-${profile}`)
 
 const readSince = (path: string): number | null => {
@@ -448,7 +448,7 @@ const readSince = (path: string): number | null => {
 }
 
 /** Port of `luna_session_defer_mark` — idempotent first-seen stamp. */
-export const sessionDeferMark = (updateStateDir: string, profile: string, nowEpoch: number): void => {
+const sessionDeferMark = (updateStateDir: string, profile: string, nowEpoch: number): void => {
   const path = sessionDeferStatePath(updateStateDir, profile)
   if (readSince(path) !== null) return
   try {
@@ -470,7 +470,7 @@ export const sessionDeferMark = (updateStateDir: string, profile: string, nowEpo
 }
 
 /** Port of `luna_session_defer_clear`. */
-export const sessionDeferClear = (updateStateDir: string, profile: string): void => {
+const sessionDeferClear = (updateStateDir: string, profile: string): void => {
   try {
     unlinkSync(sessionDeferStatePath(updateStateDir, profile))
   } catch {
@@ -483,7 +483,7 @@ export const sessionDeferClear = (updateStateDir: string, profile: string): void
  * maxSecs (caller may apply as staleness). False while within the window, or
  * when maxSecs is 0 (disabled). Marks the clock on every call.
  */
-export const sessionDeferAged = (
+const sessionDeferAged = (
   updateStateDir: string,
   profile: string,
   maxSecs: number,
@@ -498,7 +498,7 @@ export const sessionDeferAged = (
   return age >= maxSecs
 }
 
-export const sessionDeferStaleLogLine = (
+const sessionDeferStaleLogLine = (
   sessionCount: number,
   readinessPort: string,
   maxSessionDefer: string,

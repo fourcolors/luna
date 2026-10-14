@@ -142,7 +142,6 @@ class Panel {
   readonly #container: HTMLElement
   #handle: Awaited<ReturnType<ConnectionManager["acquire"]>> | null = null
   #session: ChatSession | null = null
-  #connState: ConnectionState["status"] = "connecting"
   #connDotEl: HTMLElement
   #descriptorEl: HTMLElement
   #chatLog: HTMLElement
@@ -227,7 +226,6 @@ class Panel {
     if (!this.#handle) return
     try {
       for await (const state of this.#handle.adapter.connection) {
-        this.#connState = state.status
         const newDot = connectionDot(state.status)
         this.#connDotEl.replaceWith(newDot)
         this.#connDotEl = newDot

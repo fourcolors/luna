@@ -17,7 +17,7 @@ git-tracked files for `sk-ant-` keys + high-entropy runs and blocks the merge);
 the autonomous push-through workflow runs the same secret-scan on its diff before
 it can push. So a real token cannot reach a public branch by accident.
 
-## The two operator-supplied secrets
+## The operator-supplied secrets
 
 - **`CLAUDE_CODE_OAUTH_TOKEN`** — a long-lived `claude setup-token` value
   (`sk-ant-oat01…`). When present, the default account is pointed at
@@ -29,6 +29,12 @@ it can push. So a real token cannot reach a public branch by accident.
   from `~/.luna/.env` via its `load_local_connection` Tauri command to
   auto-provision its loopback connection; the browser build keeps the manual
   Settings flow.
+
+- **`LUNA_JOURNAL_TOKEN`** (optional) - the bearer for `POST /v1/journal`, the
+  route the luna-journal Claude Code mod posts session summaries to. At least 32
+  characters, and it must differ from the WebSocket token, because it lives in a
+  workstation's Claude Code settings. Without it the route answers 503. Setup:
+  `integrations/claude-code/luna-journal/README.md`.
 
 ## Making durable auth the install default (without leaking)
 
@@ -105,6 +111,6 @@ Ad-hoc tunnels (ngrok and similar) expose the same endpoint publicly; use only f
 
 Token transport rules, regardless of ingress:
 
-- Every `ui-ws` connection authenticates with the single bearer token from `LUNA_UI_WS_TOKEN`; there is no separate per-surface token, so do not invent one (the server does not read `LUNA_UI_WS_TOKEN_WEB`).
+- Every `ui-ws` WebSocket connection authenticates with the single bearer token from `LUNA_UI_WS_TOKEN`; there is no separate per-surface token, so do not invent one (the server does not read `LUNA_UI_WS_TOKEN_WEB`). The one exception is the HTTP route `POST /v1/journal`, which accepts only `LUNA_JOURNAL_TOKEN`.
 - Keep the token inside TLS; never send it over plain HTTP on an untrusted network.
 - Keep it out of access logs: configure the proxy to strip the `Authorization` header from logged requests, and prefer the header over the `?token=` query form, which is harder to scrub from logs.

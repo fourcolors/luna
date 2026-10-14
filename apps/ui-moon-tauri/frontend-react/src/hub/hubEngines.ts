@@ -124,7 +124,6 @@ export class HubController {
   private readonly dispatch: (action: HubAction) => void
   private readonly pendingInputs = new Set<string>()
   private _widgetDirectory: Array<{ kind: string; title: string; description: string }> | undefined
-  private lastSize = { w: 140, h: 185 }
   private frameRegistry: any = null
 
   // ── SetupWizard bookkeeping not owned by the reducer (async-flow guards) ──
@@ -138,7 +137,6 @@ export class HubController {
   // ── Tauri window services ────────────────────────────────────────────
   async setWindowSize(width: number, height: number): Promise<void> {
     if (!getTauri()) return
-    this.lastSize = { w: width, h: height }
     try {
       const { getCurrentWindow, LogicalSize } = getTauri().window
       const appWindow = getCurrentWindow()
@@ -657,10 +655,15 @@ export class HubController {
       }
     }
     const voiceId = localStorage.getItem("luna_voice_id") || ""
+    const engine = localStorage.getItem("luna_voice_tts_engine") === "fish" ? "fish" : "system"
+    const fishVoiceId = localStorage.getItem("luna_voice_fish_id") || ""
     const hang = parseInt(localStorage.getItem("luna_voice_silence_hang_ms") || "", 10)
     const silenceHangMs = Number.isFinite(hang) ? Math.max(300, Math.min(1200, hang)) : 600
     await this.voiceInvoke("voice_set_mode", { mode: "off" })
-    if (voiceId) await this.voiceInvoke("voice_set_voice", { id: voiceId })
+    // Engine BEFORE voice: voice_set_voice targets the ACTIVE engine.
+    await this.voiceInvoke("voice_set_tts_engine", { engine })
+    const vid = engine === "fish" ? fishVoiceId : voiceId
+    if (vid) await this.voiceInvoke("voice_set_voice", { id: vid })
     await this.voiceInvoke("voice_set_config", { silenceHangMs })
   }
 

@@ -60,7 +60,7 @@ export const normalizeVaultStorageMode = (
 }
 
 /** Minimal luna-vault write/delete surface the facade needs (injected). */
-export interface VaultFileWriter {
+interface VaultFileWriter {
   readonly writeSecret: (name: string, value: string) => Promise<void>
   /** Returns true if a value was removed, false if the name was absent. */
   readonly deleteSecret: (name: string) => Promise<boolean>

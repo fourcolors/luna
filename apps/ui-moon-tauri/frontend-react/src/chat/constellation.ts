@@ -30,8 +30,8 @@ export interface Star {
 /** Stars are pinned this far apart and never move once placed. A star records
  *  something that already happened, so if the strip tracked its container the
  *  whole constellation would stretch and the past would appear to rearrange. */
-export const STAR_GAP = 22
-export const STAR_MAX = 6
+const STAR_GAP = 22
+const STAR_MAX = 6
 const PAD = 14
 const H = 12
 
@@ -120,7 +120,7 @@ export function kindForTool(name: string): StarKind {
 }
 
 /** Vertical jitter, deterministic so a star never moves between renders. */
-export function starOffset(i: number): number {
+function starOffset(i: number): number {
   const x = Math.sin(i * 127.1 + 311.7) * 43758.5453
   return ((x - Math.floor(x)) - 0.5) * 5.4
 }

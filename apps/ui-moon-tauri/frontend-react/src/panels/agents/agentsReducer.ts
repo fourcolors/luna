@@ -33,7 +33,7 @@ export interface AgentNode {
   readonly toolCount: number
 }
 
-export type AgentsCapability = "pending" | "unsupported" | "supported"
+type AgentsCapability = "pending" | "unsupported" | "supported"
 
 export interface AgentsPanelState {
   readonly threadId: string

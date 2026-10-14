@@ -171,7 +171,7 @@ export const resolveProbeHost = (host: string | undefined): string => {
 }
 
 /** IPv6 literals must be bracketed in URLs (tailnet fd7a:… binds are real). */
-export const probeUrlHost = (probeHost: string): string =>
+const probeUrlHost = (probeHost: string): string =>
   probeHost.includes(":") ? `[${probeHost}]` : probeHost
 
 /**

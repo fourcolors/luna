@@ -12,7 +12,7 @@
  */
 
 /** A single conversational turn. `dia_id` is unique within a sample, e.g. "D3:7". */
-export interface LocomoTurn {
+interface LocomoTurn {
   readonly speaker: string
   readonly dia_id: string
   readonly text: string
@@ -26,7 +26,7 @@ export interface LocomoTurn {
  * upper bound on `n` baked into the schema (LoCoMo conversations range up
  * to ~35 sessions), so we index it dynamically rather than typing each key.
  */
-export interface LocomoConversation {
+interface LocomoConversation {
   readonly speaker_a: string
   readonly speaker_b: string
   readonly [key: string]: string | ReadonlyArray<LocomoTurn> | undefined

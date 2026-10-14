@@ -21,7 +21,7 @@
  */
 // @ts-nocheck
 
-export interface LocalShellState {
+interface LocalShellState {
   enabled: boolean
   roots: string[]
   fullAccess: boolean

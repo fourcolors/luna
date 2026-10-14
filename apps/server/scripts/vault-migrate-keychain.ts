@@ -142,7 +142,7 @@ export const readRuntimeEnvNames = (): string[] =>
  * bearing on which tier `auto` storage mode WRITES new secrets to - it only
  * names where THIS script relocates values that are still in `.env`.
  */
-export type MigrationTargetKind = "keychain" | "luna-vault"
+type MigrationTargetKind = "keychain" | "luna-vault"
 
 /**
  * Injectable seam for the platform target's IO, mirroring the script's
@@ -179,7 +179,7 @@ const probeExistingKeychainNames = async (
 }
 
 /** Darwin target: the macOS keychain, via the existing `security` helpers. */
-export const keychainTargetOps = (): VaultMigrationTargetOps => ({
+const keychainTargetOps = (): VaultMigrationTargetOps => ({
   kind: "keychain",
   label: "macOS keychain",
   probeExisting: probeExistingKeychainNames,
@@ -197,7 +197,7 @@ export const keychainTargetOps = (): VaultMigrationTargetOps => ({
  * both the readability probe and the write path, matching the injectable
  * `_baseDir` idiom `LunaVaultFile` already exposes for tests.
  */
-export const lunaVaultTargetOps = (
+const lunaVaultTargetOps = (
   vault: LunaVaultFile = new LunaVaultFile({
     _baseDir: resolveRuntimePaths().lunaHome,
   }),

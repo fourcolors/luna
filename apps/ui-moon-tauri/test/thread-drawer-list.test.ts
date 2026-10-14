@@ -68,6 +68,15 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
     evalChatInlineScriptWithBridge()
   })
 
+  // Most scenarios here pin list mechanics. A fixed Main chat moves one thread
+  // out of the list onto the card, so by default no Main chat is in play; the
+  // Main chat scenarios call useRealMainChat() to run the real resolution.
+  let mainSpy: { mockRestore: () => void } | null = null
+  beforeEach(() => {
+    mainSpy = vi.spyOn(M().ThreadDrawerEngine, '_mainThreadId').mockReturnValue(null)
+  })
+  const useRealMainChat = () => { mainSpy?.mockRestore(); mainSpy = null }
+
   afterEach(() => {
     document.body.innerHTML = ''
     for (const k of ['__TAURI__', '__MoonInternals', 'LunaChatHost', 'LunaProtocol', 'LunaWS', 'LunaMarkdown', 'LunaDock', 'ChatState', 'ChatLoop']) {
@@ -233,7 +242,9 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       State().activeThreadId = 'fresh'
       // A server list that legitimately cannot contain 'fresh' yet.
       eng().applyList([{ id: 'a', lastMessageAt: 2_000 }])
-      expect(ids().sort()).toEqual(['a', 'fresh'])
+      // The carve-out keeps it in State.threads, so the drawer still lists it.
+      expect(State().threads.map((t: any) => t.id).sort()).toEqual(['a', 'fresh'])
+      expect(ids()).toEqual(['fresh', 'a'])
     })
 
     it('still DROPS a locally-known thread that is not the active one', () => {
@@ -249,24 +260,27 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       eng().upsertThread({ id: 'fresh', createdAt: 3_000 })
       State().activeThreadId = 'fresh'
       eng().applyList([{ id: 'a' }])
-      expect(ids().sort()).toEqual(['a', 'fresh'])
+      expect(State().threads.map((t: any) => t.id).sort()).toEqual(['a', 'fresh'])
+      expect(ids()).toEqual(['fresh', 'a'])
       // `thread-archived` nulls activeThreadId synchronously before any
       // refreshed list arrives; the next list must then let 'fresh' go.
       State().activeThreadId = null
       eng().applyList([{ id: 'a' }])
       expect(ids()).toEqual(['a'])
+      expect(State().threads.map((t: any) => t.id)).toEqual(['a'])
     })
 
-    it('yields exactly ONE row once the server list finally carries the thread', () => {
+    it('yields exactly ONE record once the server list finally carries the thread', () => {
       eng().upsertThread({ id: 'fresh', createdAt: 3_000 })
       State().activeThreadId = 'fresh'
       // First user message landed, so the server now returns it - with the
       // real title/preview the local stub never had.
       eng().applyList([{ id: 'fresh', title: 'Real title', lastMessagePreview: 'hi', lastMessageAt: 4_000 }])
-      expect(ids()).toEqual(['fresh'])
       const rows = State().threads.filter((t: any) => t.id === 'fresh')
       expect(rows).toHaveLength(1)
       expect(rows[0].title).toBe('Real title')
+      // Listed exactly once, never duplicated.
+      expect(ids()).toEqual(['fresh'])
     })
   })
 
@@ -286,16 +300,18 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       eng().applyList([{ id: 'a', lastMessageAt: 1_000 }])
       M().ThreadCreateState.begin(State())      // "+ New" pressed
       M().handleFrame(created('fresh'))
-      expect(ids().sort()).toEqual(['a', 'fresh'])
+      // 'fresh' becomes the active thread and is listed right away.
       expect(State().activeThreadId).toBe('fresh')
+      expect(ids()).toEqual(['fresh', 'a'])
     })
 
     it('the new thread survives the very next thread-list', () => {
       // The regression in one assertion: a drawer-open or reconnect nudge fires
-      // a list that cannot contain 'fresh', and the row must not vanish.
+      // a list that cannot contain 'fresh', and it must not vanish.
       M().ThreadCreateState.begin(State())
       M().handleFrame(created('fresh'))
       eng().applyList([{ id: 'a', lastMessageAt: 1_000 }])
+      expect(State().threads.map((t: any) => t.id)).toContain('fresh')
       expect(ids()).toContain('fresh')
     })
 
@@ -305,7 +321,7 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       State().threadDrawerOpen = false
       M().ThreadCreateState.begin(State())
       M().handleFrame(created('fresh'))
-      expect(ids()).toContain('fresh')
+      expect(State().threads.map((t: any) => t.id)).toContain('fresh')
     })
 
     it('a BACKGROUNDED create inserts nothing', () => {
@@ -429,6 +445,155 @@ describe('ThreadDrawerEngine list core (chat.html)', () => {
       expect(titles).toContain('Untitled thread')
       expect(titles).toContain('<img src=x onerror=alert(1)>')
       expect(document.querySelector('#thread-drawer-list img')).toBeNull()
+    })
+  })
+
+  // ── Main chat card + Chats (consumer-friendly sidebar) ───────────────
+  describe('Main chat card and chat list', () => {
+    // The Main chat is a FIXED thread (localStorage 'luna.mainThreadId'),
+    // not whichever chat is open. Opening another chat never moves it.
+    it('excludes the Main chat from _visibleThreads, not the open chat', () => {
+      useRealMainChat()
+      localStorage.setItem('luna.mainThreadId', 'a')
+      State().threads = [
+        { id: 'a', title: 'A', lastMessageAt: 1 },
+        { id: 'b', title: 'B', lastMessageAt: 2 },
+        { id: 'c', title: 'C', lastMessageAt: 3 },
+      ]
+      State().activeThreadId = 'b'
+      expect(ids()).toEqual(['c', 'b'])
+    })
+
+    it('paints the Main chat card with the main thread, even while another chat is open', () => {
+      useRealMainChat()
+      localStorage.setItem('luna.mainThreadId', 'b')
+      State().threads = [
+        { id: 'a', title: 'Side A', lastMessageAt: 1 },
+        { id: 'b', title: 'Main B', lastMessageAt: 2 },
+      ]
+      State().activeThreadId = 'a'
+      eng().render()
+      const card = document.getElementById('main-chat-card') as HTMLElement
+      expect(card.hidden).toBe(false)
+      expect(document.getElementById('main-chat-title')!.textContent).toBe('Main B')
+      expect(card.getAttribute('aria-label')).toBe('Main chat: Main B')
+      expect(card.classList.contains('active')).toBe(false)
+      const rowIds = Array.from(document.querySelectorAll('#thread-drawer-list .thread-row')).map(
+        (el) => (el as HTMLElement).dataset.threadId,
+      )
+      expect(rowIds).toEqual(['a'])
+      // Opening the Main chat highlights the card; the list is unchanged.
+      State().activeThreadId = 'b'
+      eng().render()
+      expect(card.classList.contains('active')).toBe(true)
+      expect(document.getElementById('main-chat-title')!.textContent).toBe('Main B')
+    })
+
+    it('lights the Main chat card unread when it gets activity while you are elsewhere', () => {
+      useRealMainChat()
+      localStorage.setItem('luna.mainThreadId', 'b')
+      State().threads = [
+        { id: 'a', title: 'A', lastMessageAt: 100 },
+        { id: 'b', title: 'B', lastMessageAt: 200 },
+      ]
+      State().activeThreadId = 'a'
+      eng().render()
+      const card = document.getElementById('main-chat-card') as HTMLElement
+      expect(card.classList.contains('unread')).toBe(false)
+      State().threads = [
+        { id: 'a', title: 'A', lastMessageAt: 100 },
+        { id: 'b', title: 'B', lastMessageAt: 300 },
+      ]
+      eng().render()
+      expect(card.classList.contains('unread')).toBe(true)
+    })
+
+    it('hides the Main chat card only when there are no threads', () => {
+      useRealMainChat()
+      State().threads = []
+      State().activeThreadId = null
+      eng().render()
+      expect((document.getElementById('main-chat-card') as HTMLElement).hidden).toBe(true)
+    })
+
+    it('never injects markup from a server title into the Main chat card', () => {
+      useRealMainChat()
+      State().threads = [{ id: 'a', title: '<img src=x onerror=alert(1)>' }]
+      State().activeThreadId = 'a'
+      eng().render()
+      expect(document.getElementById('main-chat-title')!.textContent).toBe('<img src=x onerror=alert(1)>')
+      expect(document.querySelector('#main-chat-card img')).toBeNull()
+    })
+
+    it('marks a chat unread when its activity is newer than last seen, and clears it on open', () => {
+      State().threads = [
+        { id: 'a', title: 'A', lastMessageAt: 100 },
+        { id: 'b', title: 'B', lastMessageAt: 200 },
+      ]
+      State().activeThreadId = 'b'
+      eng().render()
+      // First sight seeds "seen" — nothing is unread yet.
+      expect(document.querySelector('#thread-drawer-list .thread-row.unread')).toBeNull()
+      // Background activity lands on the chat.
+      State().threads = [
+        { id: 'a', title: 'A', lastMessageAt: 300 },
+        { id: 'b', title: 'B', lastMessageAt: 200 },
+      ]
+      eng().render()
+      const row = document.querySelector('#thread-drawer-list .thread-row[data-thread-id="a"]') as HTMLElement
+      expect(row.classList.contains('unread')).toBe(true)
+      // Opening it marks it seen.
+      State().activeThreadId = 'a'
+      eng().render()
+      expect(document.querySelector('#thread-drawer-list .thread-row.unread')).toBeNull()
+    })
+
+    it('a seen-state write skipped by the 2s throttle still lands: trailing timer, or forced on hide', () => {
+      vi.useFakeTimers()
+      try {
+        const saved = () => JSON.parse(localStorage.getItem('luna.threadSeenAt') || '{}')
+        State().threads = [
+          { id: 'a', title: 'A', lastMessageAt: 100 },
+          { id: 'b', title: 'B', lastMessageAt: 200 },
+        ]
+        State().activeThreadId = 'b'
+        eng().render() // first write goes straight through
+        expect(saved()).toEqual({ a: 100, b: 200 })
+
+        // New activity on B is seen inside the throttle window: not written yet.
+        State().threads = [
+          { id: 'a', title: 'A', lastMessageAt: 100 },
+          { id: 'b', title: 'B', lastMessageAt: 250 },
+        ]
+        eng().render()
+        expect(saved().b).toBe(200)
+        // The trailing timer writes it once the window ends.
+        vi.advanceTimersByTime(2000)
+        expect(saved().b).toBe(250)
+
+        // Inside a fresh window, a forced flush (window hiding/closing) bypasses it.
+        State().threads = [
+          { id: 'a', title: 'A', lastMessageAt: 100 },
+          { id: 'b', title: 'B', lastMessageAt: 300 },
+        ]
+        eng().render()
+        expect(saved().b).toBe(250)
+        eng()._persistSeenAt(true)
+        expect(saved().b).toBe(300)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('the active thread never wears the unread dot', () => {
+      State().threads = [
+        { id: 'a', title: 'A', lastMessageAt: 500 },
+        { id: 'b', title: 'B', lastMessageAt: 100 },
+      ]
+      State().activeThreadId = 'a'
+      State().threadSeenAt = { b: 1000 } // B was seen after its last activity
+      eng().render()
+      expect(document.querySelector('#thread-drawer-list .thread-row.unread')).toBeNull()
     })
   })
 })

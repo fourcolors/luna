@@ -47,6 +47,8 @@
     "allow-voice-set-voice",
     "allow-voice-set-config",
     "allow-voice-ensure-model",
+    "allow-voice-tts-info",
+    "allow-voice-set-tts-engine",
     "dialog:allow-open",
     "allow-oauth-loopback-start",
     "allow-oauth-loopback-wait",

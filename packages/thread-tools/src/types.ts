@@ -18,11 +18,24 @@ export interface ForkProposalWire {
   readonly createdAt: number
   /** Set when status === "accepted". */
   readonly childThreadId?: string
+  /**
+   * True for an agent-created thread (`create_thread`): the server accepts it
+   * immediately and the client viewing the parent thread switches to the new
+   * chat. Absent for an ordinary fork marker the operator must click.
+   */
+  readonly autoOpen?: boolean
 }
+
+/**
+ * How a proposal entered the store. "propose" = fork_thread marker, waits for
+ * the operator. "create" = create_thread, accepted by the server at once.
+ */
+export type ForkProposalMode = "propose" | "create"
 
 /** Full server-side proposal including the seed text for the new thread. */
 export interface ForkProposal extends ForkProposalWire {
   readonly seed: string
+  readonly mode: ForkProposalMode
 }
 
 export interface ProposeForkInput {
@@ -31,6 +44,8 @@ export interface ProposeForkInput {
   readonly summary: string
   readonly seed: string
   readonly nowMs: number
+  /** Default "propose". */
+  readonly mode?: ForkProposalMode
 }
 
 export interface AcceptForkResult {
@@ -41,5 +56,8 @@ export interface AcceptForkResult {
 
 /** Tag applied to threads created by an accepted fork (fork-loop guard). */
 export const FORK_CHILD_TAG = "forked-from-parent"
+
+/** Tag applied to a fresh thread the agent made with `create_thread`. */
+export const AGENT_CREATED_TAG = "agent-created"
 
 /** Tag applied briefly / for filtering; parent thread id stored as parentId. */

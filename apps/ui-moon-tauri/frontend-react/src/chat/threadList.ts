@@ -391,3 +391,59 @@ export function groupByAgent(
     .sort((a, b) => recency(b.s) - recency(a.s) || a.i - b.i)
     .map(({ s }) => s)
 }
+
+/**
+ * Consumer-friendly unread (the blue dot on a chat): a thread whose
+ * newest activity is NEWER than the last time it was on screen. The active
+ * thread is never unread — it is the conversation on screen. `seenAt` maps thread id -> epoch ms of the newest activity the
+ * user has seen; a thread with NO entry is treated as seen (the drawer
+ * seeds entries on first sight, so only future activity lights the dot),
+ * and a thread with no timestamp at all can never be unread.
+ *
+ * Pure — no DOM, no State import, same contract as visibleThreads.
+ */
+export function isThreadUnread(
+  t: ThreadRow | null | undefined,
+  seenAt: Record<string, number> | null | undefined,
+  activeThreadId: string | null | undefined,
+): boolean {
+  if (!t || !t.id || t.id === activeThreadId) return false
+  const ts = threadTimestamp(t)
+  if (!ts) return false
+  return ts > ((seenAt && seenAt[t.id]) || 0)
+}
+
+/**
+ * The Main chat: ONE fixed, go-to conversation pinned above the Chats list.
+ * It does NOT follow the active thread. Opening another chat leaves the
+ * Main chat card where it is, so the sidebar never reshuffles under you.
+ *
+ * Resolution, in order:
+ *  1. `storedId`, if that thread still exists.
+ *  2. With no thread list yet (boot), keep `storedId` as-is — absence from an
+ *     empty list is not evidence the thread is gone.
+ *  3. Otherwise adopt a replacement: the active thread if it is a general
+ *     (non-agent) chat, else the most recent general chat, else the active
+ *     thread, else the most recent thread of any kind.
+ *
+ * Pure — no DOM, no State import, no storage.
+ */
+export function resolveMainThreadId(
+  threads: ReadonlyArray<ThreadRow | null | undefined> | null | undefined,
+  storedId: string | null | undefined,
+  activeThreadId: string | null | undefined,
+): string | null {
+  const rows = (Array.isArray(threads) ? threads : []).filter(
+    (t): t is ThreadRow => !!t && !!t.id,
+  )
+  if (rows.length === 0) return storedId || null
+  if (storedId && rows.some((t) => t.id === storedId)) return storedId
+  const byRecency = rows.slice().sort((x, y) => threadTimestamp(y) - threadTimestamp(x))
+  const general = byRecency.filter((t) => !t.agentName)
+  const active = activeThreadId ? rows.find((t) => t.id === activeThreadId) : undefined
+  if (active && !active.agentName) return active.id
+  const newestGeneral = general[0]
+  if (newestGeneral) return newestGeneral.id
+  if (active) return active.id
+  return byRecency[0]?.id ?? null
+}

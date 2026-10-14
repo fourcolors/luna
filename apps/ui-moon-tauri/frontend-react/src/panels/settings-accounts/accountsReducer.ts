@@ -5,9 +5,9 @@
  * secretRef is a POINTER only — wiped on submit and socket close.
  * Kind is fixed to anthropic for this settings surface (v1).
  */
-export type StatusKind = "ok" | "error" | "info"
+type StatusKind = "ok" | "error" | "info"
 
-export interface StatusLine {
+interface StatusLine {
   readonly text: string
   readonly kind: StatusKind
 }

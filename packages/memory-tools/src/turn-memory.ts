@@ -275,7 +275,7 @@ export function recallForTurn(input: {
   /**
    * Reranks when a reranker is passed AND the lane is on: LUNA_RECALL_RERANK=1
    * (separate flag from memory_search's LUNA_MEMORY_RERANK), or unset with an
-   * engine that is on by default (LUNA_RERANK_ENGINE=jev, ~0.2 s per warm
+   * engine that is on by default (LUNA_RERANK_ENGINE=jev or laya, ~0.2 s per warm
    * call, well inside the 1.5 s per-turn rerank cap); "0" always turns it off. It then
    * over-fetches (20, or the engine's depth) and reranks before packing;
    * with the default cross-encoder and the flag unset, behavior is

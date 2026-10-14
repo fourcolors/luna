@@ -15,7 +15,6 @@ import type {
   ExecuteOutcome,
   ExecuteRequest,
   ExecuteResult,
-  Unsubscribe,
 } from "./provider.js"
 
 export interface RecordedExecution {

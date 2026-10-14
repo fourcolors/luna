@@ -130,7 +130,7 @@ export const writeStub = (path: string, body: string) => {
 // the remaining PATH resolve `perl`, so a restricted PATH lacking perl fails
 // rc=127 for real instead of the stub silently smuggling in a host perl the
 // allowlist never granted.
-export const writePerlStub = (bin: string) => {
+const writePerlStub = (bin: string) => {
   // Host precondition only - the stub itself resolves perl via PATH at runtime.
   if (!spawnSync("bash", ["-c", "command -v perl"], { encoding: "utf8" }).stdout.trim())
     throw new Error("writePerlStub: perl not found on host")
@@ -398,7 +398,7 @@ export const runPinnedCheck = (h: Harness, extra: Record<string, string> = {}) =
     env: { ...h.env, LUNA_TEST_RUNTIME_MATCHES_CHECKOUT: "true", ...extra },
   })
 
-export const invocationsLog = (h: Harness) =>
+const invocationsLog = (h: Harness) =>
   join(h.env.LUNA_TEST_SYSTEMCTL_STATE as string, "invocations.log")
 
 export const invocationLines = (h: Harness) =>
@@ -406,7 +406,7 @@ export const invocationLines = (h: Harness) =>
     .split("\n")
     .filter(Boolean)
 
-export const unitFiles = (h: Harness) =>
+const unitFiles = (h: Harness) =>
   ["luna-guardian-stable.service", "luna-guardian-alert-stable.service", "luna-guardian-stable.timer"]
     .map((name) => join(h.env.LUNA_TEST_SYSTEMD_DIR as string, name))
 

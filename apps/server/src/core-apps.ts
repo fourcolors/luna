@@ -258,7 +258,7 @@ export interface CuratedMemoryRow {
   }
 }
 
-export interface CuratedMemorySearchRow extends CuratedMemoryRow {
+interface CuratedMemorySearchRow extends CuratedMemoryRow {
   readonly score: number
 }
 

@@ -21,7 +21,7 @@
  * no innerHTML here at all, which is why a hostile label cannot become markup.
  */
 
-export interface ResultNotification {
+interface ResultNotification {
   readonly label?: unknown
   readonly preview?: unknown
 }
