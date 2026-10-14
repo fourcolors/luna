@@ -346,5 +346,8 @@ export const attachSandboxLocalShell = (
       fullAccess: false,
     },
     send,
+    // Stable owner id: one registration for the life of the process, no
+    // reconnect race (the guard only matters for connection-scoped clients).
+    "sandbox",
   )
 }

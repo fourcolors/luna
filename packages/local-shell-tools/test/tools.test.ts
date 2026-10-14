@@ -73,7 +73,7 @@ describe("local shell tools", () => {
   it("local_shell_run returns camelCase fields plus the machine it ran on", async () => {
     const bridge = createLocalShellBridge()
     const sent: unknown[] = []
-    bridge.setCapability(cap(), (f) => sent.push(f))
+    bridge.setCapability(cap(), (f) => sent.push(f), "conn_1")
 
     const [runTool] = makeLocalShellTools(bridge, session())
     const pending = runTool.handler(
@@ -134,7 +134,7 @@ describe("local shell tools", () => {
   it("local_shell_run returns a denied result instead of a ToolError", async () => {
     const bridge = createLocalShellBridge()
     const sent: unknown[] = []
-    bridge.setCapability(cap(), (f) => sent.push(f))
+    bridge.setCapability(cap(), (f) => sent.push(f), "conn_1")
 
     const [runTool] = makeLocalShellTools(bridge, session())
     const pending = runTool.handler(
@@ -173,7 +173,7 @@ describe("local shell tools", () => {
   it("local_shell_run defaults an omitted timeout_ms to 120000", async () => {
     const bridge = createLocalShellBridge()
     const sent: unknown[] = []
-    bridge.setCapability(cap(), (f) => sent.push(f))
+    bridge.setCapability(cap(), (f) => sent.push(f), "conn_1")
 
     const [runTool] = makeLocalShellTools(bridge, session())
     const pending = runTool.handler(
@@ -203,7 +203,7 @@ describe("local shell tools", () => {
   it("local_shell_run rejects a timeout above the maximum without dispatching", async () => {
     const bridge = createLocalShellBridge()
     const sent: unknown[] = []
-    bridge.setCapability(cap(), (f) => sent.push(f))
+    bridge.setCapability(cap(), (f) => sent.push(f), "conn_1")
 
     const [runTool] = makeLocalShellTools(bridge, session())
     const message = parseErrorResult(
@@ -225,8 +225,8 @@ describe("local shell tools", () => {
     const bridge = createLocalShellBridge()
     const toLaptop: unknown[] = []
     const toSandbox: unknown[] = []
-    bridge.setCapability(cap(), (f) => toLaptop.push(f))
-    bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f))
+    bridge.setCapability(cap(), (f) => toLaptop.push(f), "conn_1")
+    bridge.setCapability(sandboxCap(), (f) => toSandbox.push(f), "conn_1")
 
     const [runTool] = makeLocalShellTools(bridge, session())
     const pending = runTool.handler(
@@ -266,8 +266,8 @@ describe("local shell tools", () => {
   it("local_shell_run errors, naming both machines, when a target is required and omitted", async () => {
     const bridge = createLocalShellBridge()
     const sent: unknown[] = []
-    bridge.setCapability(cap(), (f) => sent.push(f))
-    bridge.setCapability(sandboxCap(), (f) => sent.push(f))
+    bridge.setCapability(cap(), (f) => sent.push(f), "conn_1")
+    bridge.setCapability(sandboxCap(), (f) => sent.push(f), "conn_1")
 
     const [runTool] = makeLocalShellTools(bridge, session())
     const message = parseErrorResult(
@@ -299,7 +299,7 @@ describe("local shell tools", () => {
 
   it("local_shell_list_roots lists one target and does not require a target", async () => {
     const bridge = createLocalShellBridge()
-    bridge.setCapability(cap({ roots: ["/a", "/b"], fullAccess: true }), () => undefined)
+    bridge.setCapability(cap({ roots: ["/a", "/b"], fullAccess: true }), () => undefined, "conn_1")
     const [, listTool] = makeLocalShellTools(bridge, session())
 
     const parsed = parseTextResult<{
@@ -325,8 +325,8 @@ describe("local shell tools", () => {
 
   it("local_shell_list_roots requires a target once two machines are attached", async () => {
     const bridge = createLocalShellBridge()
-    bridge.setCapability(cap(), () => undefined)
-    bridge.setCapability(sandboxCap(), () => undefined)
+    bridge.setCapability(cap(), () => undefined, "conn_1")
+    bridge.setCapability(sandboxCap(), () => undefined, "conn_1")
     const [, listTool] = makeLocalShellTools(bridge, session())
 
     const parsed = parseTextResult<{
@@ -340,8 +340,8 @@ describe("local shell tools", () => {
 
   it("local_shell_list_roots hides personal machines from an unattended thread", async () => {
     const bridge = createLocalShellBridge()
-    bridge.setCapability(cap(), () => undefined)
-    bridge.setCapability(sandboxCap(), () => undefined)
+    bridge.setCapability(cap(), () => undefined, "conn_1")
+    bridge.setCapability(sandboxCap(), () => undefined, "conn_1")
     const [, listTool] = makeLocalShellTools(
       bridge,
       session(["forked-from-parent"]),

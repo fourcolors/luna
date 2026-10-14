@@ -83,6 +83,7 @@ describe("LocalShellToolsLayer - structural invariants", () => {
         fullAccess: false,
       },
       (frame) => sent.push(frame as { requestId: string; threadId: string }),
+      "conn_1",
     )
 
     const toolOf = (binding: typeof first) =>
