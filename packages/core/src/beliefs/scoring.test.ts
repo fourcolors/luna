@@ -15,6 +15,15 @@ describe("beliefStrength", () => {
     const s = beliefStrength(base, /*updatedAt*/ 1000, /*now*/ 1000)
     expect(s).toBeCloseTo(0.8, 5) // confidence * 1 (recency) * 1 (validation)
   })
+  it("a legacy belief without validationHistory scores neutral, not throws", () => {
+    // validationHistory was introduced 2026-09-24; beliefs written before
+    // then may not carry it. rankByStrength runs beliefStrength over every
+    // active belief (incl. legacy ones) at boot and on a refresh loop.
+    const legacy = { ...base } as Record<string, unknown>
+    delete legacy.validationHistory
+    const s = beliefStrength(legacy as unknown as BeliefContent, /*updatedAt*/ 1000, /*now*/ 1000)
+    expect(s).toBeCloseTo(0.8, 5) // same as empty history: neutral
+  })
   it("decays with staleness", () => {
     const fresh = beliefStrength(base, 0, 0)
     const old = beliefStrength(base, 0, 45 * DAY)
