@@ -571,8 +571,10 @@ describe("CrossEncoderRerankerLayer", () => {
     // Restore real fetch - the suite's hanging-mock helpers swap globalThis.fetch.
     restoreFetch()
 
-    const budgetMs = 400
-    const scoreDelayMs = 2500
+    // The health probe shares this budget, so leave CI-load headroom: at 400ms
+    // a slow loopback /health on a busy runner failed as "acquire" first.
+    const budgetMs = 1000
+    const scoreDelayMs = 6000
     let server: Server | undefined
     const port = await new Promise<number>((resolve, reject) => {
       server = createServer((req, res) => {
@@ -652,9 +654,9 @@ describe("CrossEncoderRerankerLayer", () => {
       expect(err.value).toBeInstanceOf(RerankError)
       expect((err.value as RerankError).op).toBe("timeout")
       expect((err.value as RerankError).message).toMatch(
-        /per-call budget of 400ms|timed out after 400ms/,
+        new RegExp(`per-call budget of ${budgetMs}ms|timed out after ${budgetMs}ms`),
       )
-      // Must fail near the budget, not after the 2.5s slow body completes.
+      // Must fail near the budget, not after the slow body completes.
       expect(elapsed).toBeLessThan(scoreDelayMs)
       expect(elapsed).toBeGreaterThanOrEqual(budgetMs - 50)
     } finally {

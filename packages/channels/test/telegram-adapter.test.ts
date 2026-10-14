@@ -359,8 +359,10 @@ describe("inbound: getUpdates → ChannelMessage", () => {
           const fiber = yield* Effect.forkChild(
             Effect.scoped(adapter.start()),
           )
-          // Give the poll loop time to run one iteration
+          // Give the poll loop time to run one iteration, then wait (bounded)
+          // for the handler: under CI load one fixed sleep is not enough.
           yield* Effect.sleep("50 millis")
+          for (let i = 0; i < 500 && receivedMessages.length < 1; i++) yield* Effect.sleep("10 millis")
           yield* Fiber.interrupt(fiber)
         }),
       ),
@@ -502,6 +504,8 @@ describe("inbound: attachments (photo / document)", () => {
     perMethod?: Partial<Record<string, Array<FakeResponse>>>
     allowedIds?: Iterable<string>
     runMillis?: number
+    /** After runMillis, keep polling (bounded at ~5s) until this holds, so CI load cannot cut the run short. */
+    until?: (s: { received: ChannelMessage[]; calls: FakeCall[] }) => boolean
   }) => {
     const received: ChannelMessage[] = []
     const { transport, calls } = makeFakeTransport(
@@ -525,6 +529,9 @@ describe("inbound: attachments (photo / document)", () => {
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep(`${opts.runMillis ?? 60} millis`)
+        for (let i = 0; i < 500 && opts.until !== undefined && !opts.until({ received, calls }); i++) {
+          yield* Effect.sleep("10 millis")
+        }
         yield* Fiber.interrupt(fiber)
         yield* adapter.stop()
       }),
@@ -869,7 +876,10 @@ describe("inbound: attachments (photo / document)", () => {
         date: Math.floor(Date.now() / 1000),
       },
     }
-    const { received, calls } = await runInbound({ updates: [video] })
+    const { received, calls } = await runInbound({
+      updates: [video],
+      until: (s) => s.calls.some((c) => c.method === "sendMessage"),
+    })
     expect(received).toHaveLength(0)
     expect(String(calls.find((c) => c.method === "sendMessage")?.params["text"])).toContain(
       "videos",
@@ -2180,6 +2190,8 @@ describe("inbound allowlist", () => {
   const runInbound = async (
     updates: ReturnType<typeof makeTextUpdate>[],
     allowedIds: TelegramAdapterConfig["allowedIds"],
+    /** Messages the test expects through; waited for (bounded) after the fixed sleep. */
+    expected = 0,
   ): Promise<ChannelMessage[]> => {
     const received: ChannelMessage[] = []
     const { transport } = makeFakeTransport([{ ok: true, result: updates }])
@@ -2197,6 +2209,7 @@ describe("inbound allowlist", () => {
       Effect.gen(function* () {
         const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
         yield* Effect.sleep("50 millis")
+        for (let i = 0; i < 500 && received.length < expected; i++) yield* Effect.sleep("10 millis")
         yield* Fiber.interrupt(fiber)
       }),
     )
@@ -2206,7 +2219,7 @@ describe("inbound allowlist", () => {
   it("accepts a DM whose sender id is allowlisted, drops other senders in the same batch", async () => {
     const allowed = makeTextUpdate({ fromId: 111, chatId: 111, updateId: 7001, text: "hi" })
     const blocked = makeTextUpdate({ fromId: 222, chatId: 222, updateId: 7002, text: "nope" })
-    const received = await runInbound([allowed, blocked], ["111"])
+    const received = await runInbound([allowed, blocked], ["111"], 1)
     expect(received.map((m) => m.senderId)).toEqual(["111"])
   })
 
@@ -2215,7 +2228,7 @@ describe("inbound allowlist", () => {
     const memberA = makeTextUpdate({ fromId: 333, chatId: -100500, chatType: "supergroup", updateId: 7101, text: "a" })
     const memberB = makeTextUpdate({ fromId: 444, chatId: -100500, chatType: "supergroup", updateId: 7102, text: "b" })
     const outsider = makeTextUpdate({ fromId: 555, chatId: 555, updateId: 7103, text: "dm" })
-    const received = await runInbound([memberA, memberB, outsider], ["-100500"])
+    const received = await runInbound([memberA, memberB, outsider], ["-100500"], 2)
     // Both group members served (chat-id match); the unrelated DM is dropped.
     expect(received.map((m) => m.senderId).sort()).toEqual(["333", "444"])
     expect(received.every((m) => m.channelId === "-100500")).toBe(true)
@@ -2224,13 +2237,13 @@ describe("inbound allowlist", () => {
   it("is open (accepts any sender) when allowedIds is omitted", async () => {
     const a = makeTextUpdate({ fromId: 1, chatId: 1, updateId: 7201 })
     const b = makeTextUpdate({ fromId: 2, chatId: 2, updateId: 7202 })
-    const received = await runInbound([a, b], undefined)
+    const received = await runInbound([a, b], undefined, 2)
     expect(received).toHaveLength(2)
   })
 
   it("is open when allowedIds is empty (fail-open, not fail-closed)", async () => {
     const a = makeTextUpdate({ fromId: 1, chatId: 1, updateId: 7301 })
-    const received = await runInbound([a], [])
+    const received = await runInbound([a], [], 1)
     expect(received).toHaveLength(1)
   })
 })
