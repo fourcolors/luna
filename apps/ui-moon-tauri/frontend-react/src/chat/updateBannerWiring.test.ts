@@ -63,7 +63,7 @@ describe('update banner wiring (PR #781)', () => {
     installWiring(makeCtx(UpdateBanner))
     expect(handlers['update://ready']).toBeTypeOf('function')
 
-    handlers['update://ready']({ payload: { version: '1.2.3' } })
+    handlers['update://ready']!({ payload: { version: '1.2.3' } })
     expect(UpdateBanner.onReady).toHaveBeenCalledTimes(1)
     expect(UpdateBanner.onReady).toHaveBeenCalledWith({ version: '1.2.3' })
   })
@@ -88,7 +88,7 @@ describe('update banner wiring (PR #781)', () => {
     installWiring(makeCtx(UpdateBanner))
     expect(handlers['update://error']).toBeTypeOf('function')
 
-    handlers['update://error']({ payload: { message: 'offline' } })
+    handlers['update://error']!({ payload: { message: 'offline' } })
     expect(UpdateBanner.hide).toHaveBeenCalledTimes(1)
   })
 
@@ -100,7 +100,7 @@ describe('update banner wiring (PR #781)', () => {
     installWiring(makeCtx(UpdateBanner))
     expect(handlers['update://none']).toBeTypeOf('function')
 
-    handlers['update://none']({})
+    handlers['update://none']!({})
     expect(UpdateBanner.hide).toHaveBeenCalledTimes(1)
   })
 
