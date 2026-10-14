@@ -360,6 +360,10 @@ projects total runtime before every answer-model call and stops cleanly
 (exit code 5, partial results still written) rather than risk an
 unbounded run. Exit code 6 means an `ollama-cloud` hard-stop instead (bad
 auth / quota / persistent throttling — see "Answer backends" above).
+With the local `ollama` backend the answer model is checked with
+`/api/show` before any work (exit code 2 if it is not pulled), and any failed
+answer call stops the run with exit code 7 and no results written, so a
+missing model or crashed daemon can never produce a file of zero scores.
 
 ## Status (see obs_note ledger for the authoritative timeline)
 

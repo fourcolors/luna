@@ -88,9 +88,15 @@
  *               the top-K search actually surface the annotated evidence
  *               dialog turns?). Zero cost/time spent on answer generation.
  *
- * Exit codes: 0 success, 2 Ollama unreachable, 3 dataset load error,
- * 4 missing required env for a non-dry-run, 5 time cap would be/was
- * exceeded, 6 hard-stop from the ollama-cloud backend (see above).
+ * Local Ollama answer backend: the answer model is preflighted with
+ * `probeModel` before any work (exit 2 if it is not pulled), and any failed
+ * answer call stops the run with no results written (exit 7) instead of
+ * being scored as an empty prediction.
+ *
+ * Exit codes: 0 success, 2 Ollama unreachable or the local answer model is
+ * not pulled, 3 dataset load error, 4 missing required env for a non-dry-run,
+ * 5 time cap would be/was exceeded, 6 hard-stop from the ollama-cloud backend
+ * (see above), 7 a local Ollama answer call failed (no results written).
  */
 import { Effect, Layer, Stream } from "effect"
 import {
@@ -110,6 +116,7 @@ import {
   answerFromContextAnthropic,
   answerFromContextOllama,
   answerFromContextOllamaCloud,
+  answerFailureAction,
   LocomoHardStopError,
   newCostTracker,
   type CostTracker,
@@ -126,7 +133,7 @@ import {
   rankSessions,
   sessionNumFromTags,
 } from "./retrieval-modes.js"
-import { resolveOllamaBaseUrl } from "../eval-common/ollama.js"
+import { probeModel, resolveOllamaBaseUrl } from "../eval-common/ollama.js"
 import { writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -302,6 +309,13 @@ async function main(): Promise<void> {
     console.error("[locomo-eval] Ollama unreachable — start the daemon first.")
     process.exit(2)
   }
+  if (!DRY_RUN && ANSWER_BACKEND === "ollama") {
+    const probe = await probeModel(OLLAMA_BASE_URL, ANSWER_MODEL!)
+    if (!probe.ok) {
+      console.error(`[locomo-eval] answer model unavailable: ${probe.reason}. No results written.`)
+      process.exit(2)
+    }
+  }
 
   let dataset: ReadonlyArray<LocomoSample>
   try {
@@ -344,6 +358,7 @@ async function main(): Promise<void> {
   const retrieval: RetrievalRecord[] = []
   let timeCapExceeded = false
   const hardStop: { current: { reason: string; message: string } | null } = { current: null }
+  const localAnswerFailure: { current: string | null } = { current: null }
   const answerStartedAt = Date.now()
   let qaAnswered = 0
   // Ingestion and answer-generation time are tracked SEPARATELY. Ingestion
@@ -508,9 +523,12 @@ async function main(): Promise<void> {
               catch: (cause) => cause,
             }).pipe(
               Effect.catch((cause) => {
-                if (cause instanceof LocomoHardStopError) {
+                const action = answerFailureAction(ANSWER_BACKEND, cause)
+                if (action === "hard-stop" && cause instanceof LocomoHardStopError) {
                   hardStop.current = { reason: cause.reason, message: cause.message }
                   console.error(`[locomo-eval] HARD STOP (${cause.reason}): ${cause.message}`)
+                } else if (action === "abort") {
+                  localAnswerFailure.current = String(cause)
                 } else {
                   console.error(`[locomo-eval] answer-model call failed: ${String(cause)}`)
                 }
@@ -524,16 +542,22 @@ async function main(): Promise<void> {
             )
             answerElapsedMs += Date.now() - answerCallStart
 
-            if (hardStop.current) break
+            if (hardStop.current || localAnswerFailure.current) break
 
             qaAnswered += 1
             scored.push(scoreQA(qa, result.text))
           }
-          if (timeCapExceeded || hardStop.current) break
+          if (timeCapExceeded || hardStop.current || localAnswerFailure.current) break
         }
       }),
     ).pipe(Effect.provide(layer)),
   )
+
+  if (localAnswerFailure.current) {
+    console.error(`[locomo-eval] local answer-model call failed: ${localAnswerFailure.current}`)
+    console.error("[locomo-eval] No results written.")
+    process.exit(7)
+  }
 
   mkdirSync(OUT_DIR, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, "-")
