@@ -115,6 +115,11 @@ async function flush() {
   })
 }
 const q = (id: string) => container.querySelector(`[data-testid="${id}"]`)
+/** subtle.digest resolves off the main thread, so one macrotask is not always enough under CI load. */
+async function waitFor(id: string) {
+  for (let i = 0; i < 50 && !q(id); i++) await flush()
+  return q(id)
+}
 
 async function connectTo(host: string) {
   setInput("vnc-host-input", host)
@@ -326,8 +331,7 @@ describe("VncPanel login and server checks", () => {
   it("shows the server fingerprint and approves only on click", async () => {
     const { rfb } = await startLive()
     act(() => rfb.fire("serververification", { type: "RSA", publickey: new Uint8Array([1, 2, 3]) }))
-    await flush()
-    expect(q("vnc-fingerprint")?.textContent).toMatch(/^([0-9a-f]{2}-){7}[0-9a-f]{2}$/)
+    expect((await waitFor("vnc-fingerprint"))?.textContent).toMatch(/^([0-9a-f]{2}-){7}[0-9a-f]{2}$/)
     expect(rfb.approved).toBe(0)
     click("vnc-verify-approve")
     expect(rfb.approved).toBe(1)
@@ -336,7 +340,7 @@ describe("VncPanel login and server checks", () => {
   it("Cancel on the server check disconnects", async () => {
     const { rfb } = await startLive()
     act(() => rfb.fire("serververification", { type: "RSA", publickey: new Uint8Array([9]) }))
-    await flush()
+    expect(await waitFor("vnc-verify-cancel")).not.toBeNull()
     click("vnc-verify-cancel")
     expect(rfb.disconnected).toBe(true)
     expect(q("vnc-connect-btn")).not.toBeNull()
