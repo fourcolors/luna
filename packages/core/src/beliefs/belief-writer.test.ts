@@ -222,6 +222,29 @@ describe("BeliefWriter", () => {
     expect(readBelief(out!).validationHistory).toEqual([v])
   })
 
+  it("recordValidation tolerates a legacy belief without validationHistory", async () => {
+    // validationHistory was introduced 2026-09-24; beliefs written before
+    // then may not carry it. recordValidation must not throw on them.
+    const b = makeBeliefRecord({ statement: "s", confidence: 0.7, domain: "d", status: "active", now: 0 })
+    const legacyContent = { ...(b.content as Record<string, unknown>) }
+    delete legacyContent.validationHistory
+    const legacy = { ...b, content: legacyContent }
+    const v: BeliefValidation = { at: 5, verdict: "confirmed", via: "survey" }
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const w = yield* BeliefWriter
+          const ok = yield* w.recordValidation(b.id, v)
+          const mem = yield* MemoryRouterTag
+          return { ok, rec: yield* mem.get(b.id) }
+        }),
+        FakeMemory([legacy]),
+      ),
+    )
+    expect(out.ok).toBe(true)
+    expect(readBelief(out.rec!).validationHistory).toEqual([v])
+  })
+
   it("recordValidation is idempotent — appending the same validation twice yields ONE entry", async () => {
     const b = makeBeliefRecord({ statement: "s", confidence: 0.7, domain: "d", status: "active", now: 0 })
     const v: BeliefValidation = { at: 5, verdict: "confirmed", via: "survey" }
