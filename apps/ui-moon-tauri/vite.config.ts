@@ -57,7 +57,7 @@ export default defineConfig({
   // Pin the browser entries so Vite's dep crawler never pulls in anything
   // outside the four page bundles (adapted to Moon's multi-page entries).
   optimizeDeps: {
-    // @novnc/novnc is only ever dynamically imported (see VncPanel) and its
+    // @novnc/novnc is only ever dynamically imported (see panels/vnc/useVncSession.ts) and its
     // H264 decoder uses top-level await, which the dep optimizer's default
     // es2020 target rejects. Serving it unbundled sidesteps that entirely.
     exclude: ["@novnc/novnc"],

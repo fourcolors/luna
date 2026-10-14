@@ -1,6 +1,6 @@
 /**
  * novnc.d.ts - ambient types for @novnc/novnc (the package ships no .d.ts).
- * Declared to exactly the members VncPanel uses; widen as needed.
+ * A subset of the noVNC RFB API, enough for panels/vnc/useVncSession.ts; widen as needed.
  */
 declare module "@novnc/novnc" {
   export default class RFB extends EventTarget {

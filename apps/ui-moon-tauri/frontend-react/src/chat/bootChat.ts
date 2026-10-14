@@ -560,6 +560,8 @@ export function bootChat() {
       mainChatCard: document.getElementById("main-chat-card"),
       mainChatTitle: document.getElementById("main-chat-title"),
       mainChatPop: document.getElementById("main-chat-pop"),
+      // The Main chat's live subagent rows (renderMainChat paints them).
+      mainChatAgents: document.getElementById("main-chat-agents"),
       threadDivider: document.getElementById("thread-divider"),
       // The title-bar disclosure control for this drawer. _applyWidth keeps
       // its lit/aria-expanded state in lockstep with the panel, so it has to

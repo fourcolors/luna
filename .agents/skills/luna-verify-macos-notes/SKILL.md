@@ -278,7 +278,7 @@ whole path verifiable without a real VNC host:
   mask=0x1` during drags, `KeyEvent keysym=0x… down=1/0` for keys. Use a key
   not already in the log so the new lines are unambiguous.
 - Closed-port negative: `vnc_connect` dials TCP first, so `127.0.0.1:5999`
-  surfaces `can't reach 127.0.0.1:5999 — Connection refused (os error 61)` on
+  surfaces `can't reach 127.0.0.1:5999 - Connection refused (os error 61)` on
   the card and flips the button to `Try again`; no server log line appears.
 - `scaleViewport = true`: shrinking the window rescales the whole remote —
   verify the full checkerboard stays visible rather than clipping.
