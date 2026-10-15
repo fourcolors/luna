@@ -443,8 +443,20 @@ export function reduceConnectors(
     case "oauth-code-sent":
       return { ...state, oauthCodeSent: true }
 
-    case "oauth-cancelled":
-      return teardownOauth(state, action.message)
+    case "oauth-cancelled": {
+      // Sweep every "authorizing" busy entry rather than keying off
+      // state.oauthDefinitionId (the same rationale documented on
+      // oauth-superseded): a cancel landing between oauth-authorizing-start
+      // and oauth-begin-set never set oauthDefinitionId, so teardownOauth's
+      // keying alone would leave the busy indicator and Cancel button in
+      // place. OAuth has a single loopback listener, so any "authorizing"
+      // entry here is the cancelled flow's by definition.
+      const busy = { ...state.busy }
+      for (const defId of Object.keys(busy)) {
+        if (busy[defId] === "authorizing") delete busy[defId]
+      }
+      return { ...teardownOauth(state, action.message), busy }
+    }
 
     case "oauth-superseded": {
       // A newer connectOauth retired this flow: Rust's oauth_loopback_start
