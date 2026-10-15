@@ -249,23 +249,6 @@ function clearBusy(
   return next
 }
 
-/**
- * Sweep every "authorizing" busy entry. OAuth has a single loopback listener,
- * so any such entry is the retired flow's by definition; keying off
- * state.oauthDefinitionId instead misses flows retired before oauth-begin-set
- * (their oauthDefinitionId was never set), leaving a stale "waiting for
- * browser consent" indicator and Cancel button in place.
- */
-function clearAuthorizingBusy(
-  busy: Readonly<Record<string, BusyState>>,
-): Record<string, BusyState> {
-  const next = { ...busy }
-  for (const defId of Object.keys(next)) {
-    if (next[defId] === "authorizing") delete next[defId]
-  }
-  return next
-}
-
 function teardownOauth(
   state: ConnectorsPanelState,
   message: string | null,
@@ -461,27 +444,43 @@ export function reduceConnectors(
       return { ...state, oauthCodeSent: true }
 
     case "oauth-cancelled": {
-      // Sweep every "authorizing" busy entry (same rationale as
+      // Sweep every "authorizing" busy entry rather than keying off
+      // state.oauthDefinitionId (the same rationale documented on
       // oauth-superseded): a cancel landing between oauth-authorizing-start
       // and oauth-begin-set never set oauthDefinitionId, so teardownOauth's
       // keying alone would leave the busy indicator and Cancel button in
-      // place.
-      return {
-        ...teardownOauth(state, action.message),
-        busy: clearAuthorizingBusy(state.busy),
+      // place. OAuth has a single loopback listener, so any "authorizing"
+      // entry here is the cancelled flow's by definition.
+      const busy = { ...state.busy }
+      for (const defId of Object.keys(busy)) {
+        if (busy[defId] === "authorizing") delete busy[defId]
       }
+      return { ...teardownOauth(state, action.message), busy }
     }
 
     case "oauth-superseded": {
       // A newer connectOauth retired this flow: Rust's oauth_loopback_start
       // already cancelled its listener, so retire the UI state too — the stale
       // "waiting for browser consent" indicator and Cancel button must not
-      // linger (that Cancel would kill the NEW flow's listener). Never
-      // touches the Rust listener or the new flow's epoch bookkeeping; see
-      // the epoch guard in ConnectorsPanel.tsx.
+      // linger (that Cancel would kill the NEW flow's listener).
+      //
+      // Sweep EVERY "authorizing" busy entry rather than keying off
+      // state.oauthDefinitionId: a flow superseded between
+      // oauth-authorizing-start and oauth-begin-set (its oauth_loopback_start
+      // resolves late and is dropped by the epoch guard) never set
+      // oauthDefinitionId, so the old keying left its busy indicator and
+      // Cancel button in place. OAuth has a single loopback listener, so any
+      // "authorizing" entry here is the retired flow's by definition; the new
+      // flow's oauth-authorizing-start re-adds its own entry immediately after
+      // this dispatch. Never touches the Rust listener or the new flow's
+      // epoch bookkeeping; see the epoch guard in ConnectorsPanel.tsx.
+      const busy = { ...state.busy }
+      for (const defId of Object.keys(busy)) {
+        if (busy[defId] === "authorizing") delete busy[defId]
+      }
       return {
         ...state,
-        busy: clearAuthorizingBusy(state.busy),
+        busy,
         oauthRequestId: null,
         oauthDefinitionId: null,
         oauthCodeSent: false,
