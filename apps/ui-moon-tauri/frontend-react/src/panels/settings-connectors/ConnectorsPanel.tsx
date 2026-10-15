@@ -298,6 +298,11 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
       client.close()
       clientRef.current = null
       clearBeginTimer()
+      // Retire the loopback listener too: a mid-flow unmount would otherwise
+      // leave it bound (and the wait dangling) until the next start or app
+      // exit, letting a late provider redirect resolve a dead closure's wait.
+      // No-op when no flow is in flight (oauth.rs: oauth_loopback_cancel).
+      ctx.invoke("oauth_loopback_cancel").catch(() => {})
     }
     // ctx is panel.html's single window.__panelCtx / a stable test double -
     // this effect only ever needs to run once, on mount.
