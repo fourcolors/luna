@@ -1029,4 +1029,40 @@ describe("ConnectorsPanel connector-status begin watchdog", () => {
       vi.useRealTimers()
     }
   })
+
+  it("a flow cancelled before oauth-begin-set does not reanimate when the start resolves", async () => {
+    // Capture the oauth_loopback_start resolver so the bind can resolve AFTER
+    // the operator cancels.
+    let resolveStart: ((port: number) => void) | null = null
+    const conn = mountEnabled({
+      invoke: (cmd) => {
+        if (cmd === "oauth_loopback_start") return new Promise<number>((r) => { resolveStart = r })
+        if (cmd === "open_external_url") return null
+        return null
+      },
+    })
+    act(() => conn.fireFrame({ type: "connector-catalog", connectors: [OAUTH_DEF] }))
+    const cancelBtn = (defId: string) =>
+      document.querySelector(`[data-testid="connector-cancel-btn-${defId}"]`) as HTMLButtonElement | null
+
+    // Flow starts; its loopback bind stays in flight (oauth-begin-set never fires).
+    await startOauthFlow(conn, "gws")
+    expect(cancelBtn("gws")).toBeTruthy()
+
+    // The operator cancels while the bind is in flight: the busy indicator /
+    // Cancel button must clear immediately, with no error banner (silent cancel).
+    act(() => cancelBtn("gws")!.click())
+    expect(conn.invoke).toHaveBeenCalledWith("oauth_loopback_cancel")
+    expect(cancelBtn("gws")).toBeFalsy()
+
+    // When the bind resolves late, the retired epoch must drop it: no
+    // oauth-begin-set, no connector-oauth-begin, no re-armed watchdog, and the
+    // browser must never open for a flow the operator cancelled.
+    expect(resolveStart).not.toBeNull()
+    act(() => resolveStart!(54321))
+    await flushMicro()
+    expect(conn.sentFrames().filter((f) => f.type === "connector-oauth-begin")).toHaveLength(0)
+    expect(conn.invoke).not.toHaveBeenCalledWith("open_external_url")
+    expect(cancelBtn("gws")).toBeFalsy()
+  })
 })
