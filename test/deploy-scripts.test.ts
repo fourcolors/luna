@@ -3584,7 +3584,7 @@ esac`
         join(bin, "git"),
         `#!/usr/bin/env bash
 case "$*" in
-  *"fetch origin"*) exit 0 ;;
+  *"fetch origin"*) printf 'fetch\\n' >> "\${LUNA_TEST_GIT_LOG:-/dev/null}"; exit 0 ;;
   *"rev-parse HEAD") printf 'aaaaaaaaa\\n' ;;
   *"rev-parse origin/"*) printf 'bbbbbbbbb\\n' ;;
   *) "${realGit}" "$@" ;;
@@ -3676,6 +3676,36 @@ esac
       expect(r.status, r.stdout + r.stderr).toBe(0)
       expect(r.stdout).toContain("ALLOW-ACTIVE by operator: x")
       expect(r.stdout).toContain("--operator-override")
+    })
+
+    it("--dry-run performs zero side effects: no fetch, no defer-state mark/clear", () => {
+      // --dry-run "only renders flags" (do_validate's F7 comment). With
+      // standing sessions the old code ran a real `git fetch origin` and
+      // marked the staleness clock BEFORE the dry-run early-return, so a
+      // dry-run could start the maxSessionDefer window without any real
+      // deferral ever occurring.
+      const { temp, env } = makeAutodeployEnv()
+      const gitLog = join(temp, "git-calls.log")
+      const updateDir = join(temp, "update")
+      mkdirSync(updateDir, { recursive: true })
+      const dryEnv = {
+        ...env,
+        LUNA_TEST_WS_COUNT: "3", // standing sessions: the old path reached the defer gate
+        LUNA_UPDATE_STATE_DIR: updateDir,
+        LUNA_TEST_GIT_LOG: gitLog,
+      }
+      const r = runAutodeploy(["stable", "--dry-run"], dryEnv)
+      expect(r.status, r.stdout + r.stderr).toBe(0)
+      expect(r.stdout).toContain("DRY-RUN:")
+      const calls = existsSync(gitLog) ? readFileSync(gitLog, "utf8") : ""
+      expect(calls).not.toContain("fetch")
+      expect(existsSync(join(updateDir, "session-defer-stable"))).toBe(false)
+
+      // ... and a pre-existing defer state is not cleared either.
+      writeFileSync(join(updateDir, "session-defer-stable"), "since=12345\n")
+      const r2 = runAutodeploy(["stable", "--dry-run"], { ...dryEnv, LUNA_TEST_WS_COUNT: "0" })
+      expect(r2.status, r2.stdout + r2.stderr).toBe(0)
+      expect(readFileSync(join(updateDir, "session-defer-stable"), "utf8")).toContain("since=12345")
     })
 
     it("--repair --allow-active is rejected (exit 2): automation cannot hold the override", () => {

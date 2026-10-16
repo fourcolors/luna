@@ -465,6 +465,24 @@ do_deploy() {
     return 0
   fi
 
+  # Human override levers forward to the engine as an explicit, logged
+  # --operator-override reason. The engine's in-primitive session guard is the
+  # invariant; these flags are the only (human-typed) way past it. Computed
+  # before the dry-run return so --dry-run renders them.
+  local extra=()
+  if [[ "$FORCE" == true ]]; then extra=(--operator-override "operator --force: $FORCE_REASON")
+  elif [[ "$ALLOW_ACTIVE" == true ]]; then extra=(--operator-override "operator --allow-active: $ALLOW_ACTIVE_REASON")
+  fi
+  # --dry-run renders the exact engine argv and performs NO side effects: no
+  # network fetch, no defer-state mark/clear. It must sit above the fetch and
+  # the session-defer gate — both mutate real state (remote-tracking refs,
+  # the staleness clock) and the F7 contract is that --dry-run "only renders
+  # flags".
+  if [[ "$DRY_RUN" == true ]]; then
+    echo "[autodeploy:$profile] DRY-RUN: $UPDATE_SERVER ${P_UPDATE_ARGS[*]} ${extra[*]:-}"
+    return 0
+  fi
+
   # Releases layout: the ONLY fetch target is the bare mirror. With
   # P_REPO=<root>/current, an unforked fetch would write into an immutable
   # release's .git — an immutability violation and a stale-read hazard (the
@@ -512,17 +530,6 @@ do_deploy() {
   fi
 
   echo "[autodeploy:$profile] deploying ${local_sha:0:9} -> ${remote_sha:0:9} (origin/$P_BRANCH)"
-  # Human override levers forward to the engine as an explicit, logged
-  # --operator-override reason. The engine's in-primitive session guard is the
-  # invariant; these flags are the only (human-typed) way past it.
-  local extra=()
-  if [[ "$FORCE" == true ]]; then extra=(--operator-override "operator --force: $FORCE_REASON")
-  elif [[ "$ALLOW_ACTIVE" == true ]]; then extra=(--operator-override "operator --allow-active: $ALLOW_ACTIVE_REASON")
-  fi
-  if [[ "$DRY_RUN" == true ]]; then
-    echo "[autodeploy:$profile] DRY-RUN: $UPDATE_SERVER ${P_UPDATE_ARGS[*]} ${extra[*]:-}"
-    return 0
-  fi
 
   # F11: pin engine BEFORE the real exec so git-reset-hard cannot self-mutate it
   local pinned_engine
