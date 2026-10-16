@@ -185,9 +185,19 @@ const main = (): void => {
   const tag = `moon-v${next}`
   if (git(root, "rev-parse", "-q", "--verify", `refs/tags/${tag}`).ok) die(`tag ${tag} already exists — pick a new version`)
 
-  const add = git(root, "add", ...VERSION_FILES.map((f) => f.path))
-  if (!add.ok) die(`git add failed: ${add.out}`)
-  const commit = git(root, "commit", "-m", `chore(ui-moon-tauri): bump to ${next}`)
+  // Commit ONLY the five version files. `--only` stages and commits exactly
+  // those paths from the worktree, ignoring anything else already staged — so
+  // a pre-staged change can never sneak into the tagged release commit (the
+  // same guard bump-server.ts uses for server.version.json).
+  const commit = git(
+    root,
+    "commit",
+    "-m",
+    `chore(ui-moon-tauri): bump to ${next}`,
+    "--only",
+    "--",
+    ...VERSION_FILES.map((f) => f.path),
+  )
   if (!commit.ok) die(`git commit failed: ${commit.out}`)
   const tagged = git(root, "tag", "-a", tag, "-m", `Luna Moon ${next}`)
   if (!tagged.ok) die(`git tag failed: ${tagged.out}`)
