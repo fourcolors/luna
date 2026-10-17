@@ -1706,9 +1706,10 @@ export const startUIWebSocketServer = (
         const chatFibers = yield* Ref.make<
           ReadonlyMap<string, Fiber.Fiber<unknown, unknown>>
         >(new Map())
-        // Per-connection mutex for subscribeChatThread. The map check + fiber
-        // fork + Ref.update is NOT atomic against a `Ref<Map<...>>`; without
-        // serialization, two concurrent subscribeChatThread(t) calls (e.g.
+        // Per-connection mutex for subscribeChatThread AND unsubscribeChatThread.
+        // The map check + fiber fork + Ref.update is NOT atomic against a
+        // `Ref<Map<...>>`; without serialization, two concurrent
+        // subscribeChatThread(t) calls (e.g.
         // server auto-subscribe from `new-thread` racing with the client's
         // explicit `subscribe` frame fired from its `thread-created`
         // handler) can BOTH pass the `m.has(threadId)` check, BOTH fork a
@@ -1999,121 +2000,139 @@ export const startUIWebSocketServer = (
         const subscribeChatThread = (
           threadId: string,
         ): Effect.Effect<void, never> =>
-          subscribeMutex.withPermits(1)(
           Effect.gen(function* () {
             if (chat === null) return
-            const m = yield* Ref.get(chatFibers)
-            if (m.has(threadId)) {
-              // Already forwarding live frames — re-paint only.
-              const frames = yield* chat.snapshot(threadId)
-              // unsubscribeChatThread does not take subscribeMutex, so an
-              // unsubscribe may have landed while the snapshot was in
-              // flight. Only repaint while the subscription is still live,
-              // or the client gets a stale snapshot for a thread it left.
-              const live = yield* Ref.get(chatFibers)
-              if (!live.has(threadId)) return
-              if (ws.readyState === ws.OPEN) {
-                for (const f of frames) {
-                  send(ws, chatFrameToWire(f))
-                }
-              }
-              return
-            }
+            // Check-and-stake the forwarder under the mutex. The mutex is
+            // NOT held across the re-paint snapshot await below: an
+            // unsubscribe must be able to land (and be honored) while a
+            // snapshot is in flight, or the client gets a stale snapshot
+            // for a thread it left (the liveness re-check before sending
+            // covers that).
+            const alreadyForwarding = yield* subscribeMutex.withPermits(1)(
+              Effect.gen(function* () {
+                const m = yield* Ref.get(chatFibers)
+                if (m.has(threadId)) return true
 
-            const stream = chat.subscribe(threadId)
-            // Fork into the CONNECTION scope (not the per-message handler
-            // scope) so the forwarder lives until the ws closes.
-            const fiber = yield* stream.pipe(
-              Stream.runForEach((f) =>
-                Effect.sync(() => {
-                  // A `turn-complete` marks the true end of an agentic turn —
-                  // the safe moment to fire any deferred secret activation for
-                  // this thread (so a restart never kills the calling turn).
-                  // Fire regardless of ws state; it's a server-side signal.
-                  if (f.type === "turn-complete" && secretBridge !== null) {
-                    secretBridge.notifyTurnComplete(f.threadId)
-                  }
-                  // Smart bar: re-push on turn-complete (branch/dirty may have
-                  // changed during the turn). Fire regardless of ws state —
-                  // pushSmartBar checks readyState internally.
-                  if (f.type === "turn-complete") {
-                    sendSmartBarFor(f.threadId)
-                  }
-                  // Live Agents view (S4): fold this frame into the subagent
-                  // tree, which broadcasts to every client on change.
-                  // Server-side + ws-state-independent: the broadcast targets
-                  // OTHER connections too, so it must run even if this socket
-                  // is mid-flush. observe() is idempotent per toolCallId.
-                  //
-                  // THE AUTO-SUMMON IS DELIBERATELY GONE (Mr. Cobb,
-                  // 2026-08-26). The first delegation in a thread used to
-                  // `widgetSummoner.open("agents", ...)`, throwing a separate
-                  // window on screen for something the operator had not asked
-                  // to see. The live team now nests under that thread's own
-                  // sidebar row from this same broadcast (threadStrip
-                  // .buildAgentRow), so nothing needs summoning. `observe`
-                  // still returns `autoOpen` and the panel is still
-                  // registered — "view ↗" on an Agent tool card opens it on
-                  // purpose — but no server path opens a window unbidden.
-                  if (subagentTree !== null) {
-                    subagentTree.observe(
-                      f.threadId,
-                      f as unknown as import("./subagent-tree-bridge.js").ObservableThreadFrame,
-                    )
-                  }
-                  // Smart bar: push when a snapshot arrives — context just
-                  // (re)established for this thread.
-                  if (f.type === "snapshot") {
-                    sendSmartBarFor(f.threadId)
-                  }
-                  if (ws.readyState !== ws.OPEN) return
-                  send(ws, chatFrameToWire(f))
-                }),
-              ),
-              Effect.catchCause(() => Effect.void),
-              Effect.forkIn(connectionScope),
-            )
-            yield* Ref.update(chatFibers, (mm) => {
-              const next = new Map(mm)
-              next.set(threadId, fiber as Fiber.Fiber<unknown, unknown>)
-              return next
-            })
-            // When the fiber finishes naturally (e.g. ChatService.subscribe
-            // returned Stream.empty for an unknown thread), drop it from
-            // the map so future subscribe attempts re-fork. CAS by fiber
-            // identity: the observer for fiber A might fire AFTER the client
-            // unsubscribed and re-subscribed under the same threadId,
-            // installing a new fiber B. Without the identity check, A's
-            // observer would evict B and leave it orphaned (still alive in
-            // the connection scope, but unreachable from the map and from
-            // unsubscribe()).
-            fiber.addObserver(() => {
-              Effect.runFork(
-                Ref.update(chatFibers, (mm) => {
-                  if (mm.get(threadId) !== fiber) return mm
-                  const next = new Map(mm)
-                  next.delete(threadId)
-                  return next
-                }),
+              const stream = chat.subscribe(threadId)
+              // Fork into the CONNECTION scope (not the per-message handler
+              // scope) so the forwarder lives until the ws closes.
+              const fiber = yield* stream.pipe(
+                Stream.runForEach((f) =>
+                  Effect.sync(() => {
+                    // A `turn-complete` marks the true end of an agentic turn —
+                    // the safe moment to fire any deferred secret activation for
+                    // this thread (so a restart never kills the calling turn).
+                    // Fire regardless of ws state; it's a server-side signal.
+                    if (f.type === "turn-complete" && secretBridge !== null) {
+                      secretBridge.notifyTurnComplete(f.threadId)
+                    }
+                    // Smart bar: re-push on turn-complete (branch/dirty may have
+                    // changed during the turn). Fire regardless of ws state —
+                    // pushSmartBar checks readyState internally.
+                    if (f.type === "turn-complete") {
+                      sendSmartBarFor(f.threadId)
+                    }
+                    // Live Agents view (S4): fold this frame into the subagent
+                    // tree, which broadcasts to every client on change.
+                    // Server-side + ws-state-independent: the broadcast targets
+                    // OTHER connections too, so it must run even if this socket
+                    // is mid-flush. observe() is idempotent per toolCallId.
+                    //
+                    // THE AUTO-SUMMON IS DELIBERATELY GONE (Mr. Cobb,
+                    // 2026-08-26). The first delegation in a thread used to
+                    // `widgetSummoner.open("agents", ...)`, throwing a separate
+                    // window on screen for something the operator had not asked
+                    // to see. The live team now nests under that thread's own
+                    // sidebar row from this same broadcast (threadStrip
+                    // .buildAgentRow), so nothing needs summoning. `observe`
+                    // still returns `autoOpen` and the panel is still
+                    // registered — "view ↗" on an Agent tool card opens it on
+                    // purpose — but no server path opens a window unbidden.
+                    if (subagentTree !== null) {
+                      subagentTree.observe(
+                        f.threadId,
+                        f as unknown as import("./subagent-tree-bridge.js").ObservableThreadFrame,
+                      )
+                    }
+                    // Smart bar: push when a snapshot arrives — context just
+                    // (re)established for this thread.
+                    if (f.type === "snapshot") {
+                      sendSmartBarFor(f.threadId)
+                    }
+                    if (ws.readyState !== ws.OPEN) return
+                    send(ws, chatFrameToWire(f))
+                  }),
+                ),
+                Effect.catchCause(() => Effect.void),
+                Effect.forkIn(connectionScope),
               )
-            })
-          }),
-          )
+              yield* Ref.update(chatFibers, (mm) => {
+                const next = new Map(mm)
+                next.set(threadId, fiber as Fiber.Fiber<unknown, unknown>)
+                return next
+              })
+              // When the fiber finishes naturally (e.g. ChatService.subscribe
+              // returned Stream.empty for an unknown thread), drop it from
+              // the map so future subscribe attempts re-fork. CAS by fiber
+              // identity: the observer for fiber A might fire AFTER the client
+              // unsubscribed and re-subscribed under the same threadId,
+              // installing a new fiber B. Without the identity check, A's
+              // observer would evict B and leave it orphaned (still alive in
+              // the connection scope, but unreachable from the map and from
+              // unsubscribe()).
+              fiber.addObserver(() => {
+                Effect.runFork(
+                  Ref.update(chatFibers, (mm) => {
+                    if (mm.get(threadId) !== fiber) return mm
+                    const next = new Map(mm)
+                    next.delete(threadId)
+                    return next
+                  }),
+                )
+              })
+                return false
+              }),
+            )
+            if (!alreadyForwarding) return
+            // Already forwarding live frames — re-paint only. The snapshot
+            // await runs WITHOUT the mutex so unsubscribeChatThread can
+            // interleave; liveness is re-checked under the mutex before
+            // sending, so a client that left mid-snapshot gets nothing.
+            const frames = yield* chat.snapshot(threadId)
+            yield* subscribeMutex.withPermits(1)(
+              Effect.gen(function* () {
+                const live = yield* Ref.get(chatFibers)
+                if (!live.has(threadId)) return
+                if (ws.readyState === ws.OPEN) {
+                  for (const f of frames) {
+                    send(ws, chatFrameToWire(f))
+                  }
+                }
+              }),
+            )
+          })
 
         const unsubscribeChatThread = (
           threadId: string,
         ): Effect.Effect<void, never> =>
-          Effect.gen(function* () {
-            const m = yield* Ref.get(chatFibers)
-            const fiber = m.get(threadId)
-            if (fiber === undefined) return
-            yield* Ref.update(chatFibers, (mm) => {
-              const next = new Map(mm)
-              next.delete(threadId)
-              return next
-            })
-            yield* Fiber.interrupt(fiber)
-          })
+          // Takes subscribeMutex: the fork-then-register sequence in
+          // subscribeChatThread is atomic under it, so an unsubscribe can
+          // no longer slip into the window between the fork and the map
+          // insert, miss the lookup, and get silently dropped — leaving a
+          // forwarder fiber pushing frames for a thread the client left.
+          subscribeMutex.withPermits(1)(
+            Effect.gen(function* () {
+              const m = yield* Ref.get(chatFibers)
+              const fiber = m.get(threadId)
+              if (fiber === undefined) return
+              yield* Ref.update(chatFibers, (mm) => {
+                const next = new Map(mm)
+                next.delete(threadId)
+                return next
+              })
+              yield* Fiber.interrupt(fiber)
+            }),
+          )
 
         // Inbound message handler. Runs as a sync ws callback; we
         // runFork into the captured runtime so Effect ops don't block
