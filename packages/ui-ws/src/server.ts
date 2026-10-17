@@ -2553,6 +2553,25 @@ export const startUIWebSocketServer = (
                   }
                   case "survey-response": {
                     if (survey === null) return
+                    // Malformed-frame guard: surveyId/issuedAt/verdicts are
+                    // attacker-controlled JSON — reject junk before touching
+                    // survey state. A missing/non-array `verdicts` would throw
+                    // a TypeError here (defect, log-only), and a non-number
+                    // `issuedAt` would pin verdicts to `at: undefined`, which
+                    // makes processVerdict fall back to the live clock and
+                    // defeats the D-LOCK-5 idempotency keying below.
+                    if (
+                      typeof frame.surveyId !== "string" ||
+                      frame.surveyId.length === 0 ||
+                      typeof frame.issuedAt !== "number" ||
+                      !Number.isFinite(frame.issuedAt) ||
+                      !Array.isArray(frame.verdicts)
+                    ) {
+                      console.error(
+                        "[ui-ws] ignoring malformed survey-response frame",
+                      )
+                      return
+                    }
                     // Phase 3 D3 — D-LOCK-5 idempotency: pin EVERY verdict's `at`
                     // to the survey's `issuedAt` SERVER-SIDE. The client SHOULD
                     // already echo issuedAt, but the server overwrites it so a
