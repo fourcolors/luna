@@ -1062,10 +1062,79 @@ export function reembedMemoryVectors(args: {
           )
           const embeddedAt = Date.now()
           const inputHash = hashEmbeddingInput(embeddingInput)
-          yield* Effect.try({
-            try: () => {
+          const rowUpdated = yield* Effect.try({
+            try: (): boolean => {
               db.run("BEGIN IMMEDIATE")
               try {
+                // Lost-update guard: the candidate snapshot was taken up
+                // front, and the embedding calls between the scan and this
+                // row are slow, so a concurrent put()/delete() may have
+                // rewritten the row meanwhile. Re-check the snapshot inside
+                // the transaction and skip when it moved; the concurrent
+                // writer already stored fresh vectors for this id, so
+                // overwriting them with the stale scan snapshot would
+                // corrupt the row (stale text/embedding/hash with a fresh
+                // embedded_at).
+                //
+                // The check covers both halves of the row: the keyed fields
+                // plus the input hash, AND the vector metadata. A concurrent
+                // put() that re-embeds unchanged content with a different
+                // model leaves the keyed fields and the input hash (which
+                // covers only namespace/kind/tags/text) untouched while
+                // rewriting dimension/provider/model/format/embedded_at;
+                // without the metadata comparison the guard would miss that
+                // rewrite and clobber the fresh vector with the scan-time
+                // one.
+                const current = db
+                  .query(
+                    `SELECT k.content_json AS content_json,
+                            k.tags_json AS tags_json,
+                            k.kind AS kind,
+                            k.namespace AS namespace,
+                            v.embedding_input_hash AS embedding_input_hash,
+                            v.dimension AS dimension,
+                            v.embedding_provider AS embedding_provider,
+                            v.embedding_model AS embedding_model,
+                            v.embedding_format AS embedding_format,
+                            v.embedded_at AS embedded_at
+                       FROM memory_vectors v
+                       LEFT JOIN memory_keyed k ON k.id = v.id
+                      WHERE v.id = ?`,
+                  )
+                  .get(candidate.raw.id) as
+                  | {
+                      readonly content_json: string | null
+                      readonly tags_json: string | null
+                      readonly kind: string | null
+                      readonly namespace: string | null
+                      readonly embedding_input_hash: string | null
+                      readonly dimension: number | null
+                      readonly embedding_provider: string | null
+                      readonly embedding_model: string | null
+                      readonly embedding_format: string | null
+                      readonly embedded_at: number | null
+                    }
+                  | null
+                  | undefined
+                const moved =
+                  current == null ||
+                  current.content_json !== candidate.raw.content_json ||
+                  current.tags_json !== candidate.raw.tags_json ||
+                  current.kind !== candidate.raw.kind ||
+                  current.namespace !== candidate.raw.namespace ||
+                  current.embedding_input_hash !==
+                    candidate.raw.embedding_input_hash ||
+                  current.dimension !== candidate.raw.dimension ||
+                  current.embedding_provider !==
+                    candidate.raw.embedding_provider ||
+                  current.embedding_model !== candidate.raw.embedding_model ||
+                  current.embedding_format !==
+                    candidate.raw.embedding_format ||
+                  current.embedded_at !== candidate.raw.embedded_at
+                if (moved) {
+                  db.run("ROLLBACK")
+                  return false
+                }
                 db.query(
                   `UPDATE memory_vectors
                       SET embedding = ?,
@@ -1093,6 +1162,7 @@ export function reembedMemoryVectors(args: {
                   candidate.raw.id,
                 )
                 db.run("COMMIT")
+                return true
               } catch (txnErr) {
                 try {
                   db.run("ROLLBACK")
@@ -1104,6 +1174,18 @@ export function reembedMemoryVectors(args: {
             },
             catch: (cause) => asError("reembed.update", cause),
           })
+          if (!rowUpdated) {
+            skipped++
+            rows.push({
+              id: candidate.audit.id,
+              namespace: candidate.audit.namespace,
+              reasons: candidate.audit.reasons,
+              action: "skipped",
+              skipReason:
+                "row changed since the scan (concurrent write); the concurrent writer already stored fresh vectors",
+            })
+            continue
+          }
           reembedded++
           rows.push({
             id: candidate.audit.id,
