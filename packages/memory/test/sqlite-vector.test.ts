@@ -2340,7 +2340,16 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
     try {
       expect(await openBackend("sidecar warn probe")).toBe(true)
-      // Plant an untrusted provenance record so the next open discards.
+      // Plant an untrusted sidecar file plus a bogus provenance record so
+      // the next open discards. The file itself must be planted: the
+      // discard path only runs when a sidecar file exists
+      // (statHnswSidecar !== null), writeHnswMeta writes only the
+      // provenance record, and the close-time flush is best-effort and may
+      // not have materialised a file.
+      fs.writeFileSync(
+        `${dbPath}.hnsw.bin`,
+        Buffer.from([0xff, 0x00, 0xde, 0xad, 0xbe, 0xef]),
+      )
       sidecarMod.writeHnswMeta(`${dbPath}.hnsw.bin`, {
         dimension: 64,
         sidecar: "bogus",
