@@ -406,4 +406,95 @@ d("sqlite-vector maintenance", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("reembed skips a row whose keyed content changed since the scan", async () => {
+    // Lost-update guard: the candidate snapshot is taken up front and the
+    // embedding calls are slow, so a concurrent put() can land between the
+    // scan and a row's UPDATE. The reembed must not overwrite the fresh
+    // vectors with the stale scan snapshot (stale text/embedding/hash with
+    // a fresh embedded_at); it must skip the row instead.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-reembed-race-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      // The replacement provider makes the row stale; the racing embedder's
+      // side effect puts fresh text for the same id mid-run. The embedder
+      // closes over the backend so its Effect needs no environment channel.
+      const { result, raced } = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "race-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "stale text" },
+              }),
+            )
+            let raced = false
+            const racingEmbedder: EmbedderApi = {
+              provider: "replacement",
+              model: "replacement",
+              dimension: 64,
+              embeddingFormat: "memory-note-v1",
+              embed: (_input) =>
+                Effect.gen(function* () {
+                  if (!raced) {
+                    raced = true
+                    // Simulate the concurrent writer: a fresh put() lands
+                    // while the reembed is busy embedding the stale snapshot.
+                    yield* Effect.orDie(
+                      b.put(
+                        makeRecord({
+                          id: "race-1",
+                          namespace: "notes",
+                          kind: "note",
+                          content: { text: "concurrent fresh text" },
+                        }),
+                      ),
+                    )
+                  }
+                  return new Float32Array(64).fill(1 / 8)
+                }),
+            }
+            const result = yield* reembedMemoryVectors({
+              dbPath,
+              embedder: racingEmbedder,
+              dryRun: false,
+            })
+            return { result, raced }
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(raced).toBe(true)
+      expect(result.reembedded).toBe(0)
+      expect(result.skipped).toBe(1)
+      expect(result.rows).toEqual([
+        expect.objectContaining({ id: "race-1", action: "skipped" }),
+      ])
+
+      // The fresh put's vectors must survive: no clobber by the stale scan.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          query: (sql: string) => { get: (...p: unknown[]) => unknown }
+          close: () => void
+        }
+      }
+      const check = new bunSqlite.Database(dbPath)
+      try {
+        const vec = check
+          .query("SELECT text FROM memory_vectors WHERE id = 'race-1'")
+          .get() as { text: string }
+        expect(vec.text).toBe("concurrent fresh text")
+      } finally {
+        check.close()
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
