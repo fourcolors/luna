@@ -197,6 +197,25 @@ function warnFallbackOnce(reason: string): void {
   )
 }
 
+// Separate one-shot for sidecar discards. A discard is a routine, expected
+// event (first boot after a status run, untrusted/stale sidecar) that
+// rebuilds the graph (not a fallback to naive ranking), so it must neither
+// print the naive-fallback message nor consume warnFallbackOnce's flag,
+// which would silently swallow a genuine later fallback warning.
+let _sidecarDiscardWarned = false
+function warnSidecarDiscardOnce(reason: string): void {
+  if (_sidecarDiscardWarned) return
+  _sidecarDiscardWarned = true
+  // eslint-disable-next-line no-console
+  console.warn(`[luna/sqlite-vector] ${reason}.`)
+}
+
+/** Test-only: reset the one-shot warning flags. Not exported from package index. */
+export function _resetSqliteVectorWarnFlagsForTests(): void {
+  _vectorliteFallbackWarned = false
+  _sidecarDiscardWarned = false
+}
+
 // NOTE: text extraction for embedding lives in sqlite-vector-maintenance.ts
 // as `extractMemoryText` (kind-aware: beliefs embed `content.statement`).
 // Do not add a second local copy here; the write path and the maintenance
@@ -483,7 +502,7 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
             let knownPopulated = false
             if (sidecarPath !== null) {
               const discardAndRecreate = (why: string): void => {
-                warnFallbackOnce(why)
+                warnSidecarDiscardOnce(why)
                 try {
                   dropHnswObjects()
                 } catch {

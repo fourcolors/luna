@@ -5,6 +5,9 @@
  * Skipped under stock node+vitest (bun:sqlite unavailable).
  */
 import { describe, expect, it } from "vitest"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Effect, Stream, Layer } from "effect"
 import {
   EmbedderError,
@@ -2282,6 +2285,117 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     expect(out.beforeCount).toBe(1)
     expect(out.wasDeleted).toBe(true)
     expect(out.afterCount).toBe(0)
+  })
+
+  // A sidecar discard is a routine, expected event (untrusted/stale sidecar
+  // on open) that rebuilds the HNSW graph (not a fallback to naive
+  // ranking). It must neither print the naive-fallback message nor consume
+  // the naive-fallback one-shot warning, or a genuine later fallback goes
+  // silently unreported.
+  // Runs before the HNSW #2 test: it relies on the vectorlite init cache
+  // still being in its loaded state (a reset here would push later opens
+  // onto the naive path via the setCustomSQLite-too-late failure).
+  it("sidecar discard keeps its own warning and does not swallow the naive-fallback warning", async () => {
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const sidecarMod = await import("../src/backends/hnsw-sidecar.js")
+    // Fresh one-shot flags: earlier tests in this file may already have
+    // consumed them (genuine fallbacks and discards both warn once per
+    // process). Optional-chained so the pre-fix tree (no such export) still
+    // runs the test body against the real defect.
+    const backendMod = (await import("../src/backends/sqlite-vector.js")) as {
+      _resetSqliteVectorWarnFlagsForTests?: () => void
+    }
+    backendMod._resetSqliteVectorWarnFlagsForTests?.()
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-sidecar-warn-"))
+    const dbPath = path.join(dir, "memory.db")
+    const prevEnv = process.env.LUNA_DISABLE_VECTORLITE
+    const warned: string[] = []
+    const origWarn = console.warn
+    console.warn = (...args: unknown[]) => {
+      warned.push(args.map(String).join(" "))
+    }
+    const openBackend = (putText?: string) => {
+      const l = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      return Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            if (putText !== undefined) {
+              yield* b.put(
+                makeRecord({
+                  id: "warn-1",
+                  namespace: "notes",
+                  kind: "note",
+                  content: { text: putText },
+                }),
+              )
+            }
+            return b.hnswEnabled
+          }).pipe(Effect.provide(l)),
+        ),
+      )
+    }
+    try {
+      expect(await openBackend("sidecar warn probe")).toBe(true)
+      // Plant an untrusted provenance record so the next open discards.
+      sidecarMod.writeHnswMeta(`${dbPath}.hnsw.bin`, {
+        dimension: 64,
+        sidecar: "bogus",
+        source: "bogus",
+      })
+
+      warned.length = 0
+      expect(await openBackend()).toBe(true)
+      const discardWarnings = warned.filter(
+        (w) =>
+          w.includes("[luna/sqlite-vector]") &&
+          w.includes("discarding and rebuilding"),
+      )
+      expect(discardWarnings).toHaveLength(1)
+      expect(discardWarnings[0]).not.toMatch(/naive/)
+
+      // Genuine fallback AFTER a discard: the naive-fallback warning must
+      // still fire. Pre-fix, any earlier discard (this test's own, or an
+      // earlier test's) consumed the shared one-shot and this stays silent.
+      // (Fresh DB: a DB that retains HNSW sync triggers from a previous
+      // HNSW-enabled open currently crashes the naive-path open with
+      // "no such module: vectorlite" - tracked separately in queued_bugs.)
+      initMod._resetVectorliteInitForTests()
+      process.env.LUNA_DISABLE_VECTORLITE = "1"
+      warned.length = 0
+      const naiveDir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-naive-warn-"))
+      const naiveDbPath = path.join(naiveDir, "memory.db")
+      const openNaive = () => {
+        const l = Layer.provideMerge(
+          SqliteVectorBackend.fromPath(naiveDbPath),
+          Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+        )
+        return Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const b = yield* SqliteVectorBackend
+              return b.hnswEnabled
+            }).pipe(Effect.provide(l)),
+          ),
+        )
+      }
+      expect(await openNaive()).toBe(false)
+      const fallbackWarnings = warned.filter((w) =>
+        w.includes("[luna/sqlite-vector]"),
+      )
+      expect(fallbackWarnings).toHaveLength(1)
+      expect(fallbackWarnings[0]).toMatch(/naive/)
+      fs.rmSync(naiveDir, { recursive: true, force: true })
+    } finally {
+      console.warn = origWarn
+      if (prevEnv === undefined) delete process.env.LUNA_DISABLE_VECTORLITE
+      else process.env.LUNA_DISABLE_VECTORLITE = prevEnv
+      initMod._resetVectorliteInitForTests()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   // Last in the describe so resetting the init cache cannot disturb earlier
