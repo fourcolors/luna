@@ -68,6 +68,32 @@ describe("applyOps", () => {
     expect(out.rows[0]?.appliedAt).not.toBeNull()
   })
 
+  it("holds a memory_dedup with non-null after as 'proposed' and writes nothing", async () => {
+    // memory_dedup is delete-only; a non-null after is off-contract
+    // (model-fabricated) and must not reach operator memory.
+    const out = await Effect.runPromise(
+      provide(
+        Effect.gen(function* () {
+          const mem = yield* MemoryRouterTag
+          const store = yield* DreamStore
+          const ops: DreamOp[] = [
+            { kind: "memory_dedup", targetId: "dup-1", before: rec("dup-1"), after: rec("fabricated-1"), rationale: "off-contract" },
+          ]
+          yield* applyOps("dream-0-100", ops)
+          const fabricated = yield* mem.get("fabricated-1")
+          const target = yield* mem.get("dup-1")
+          const rows = yield* store.list({ dreamId: "dream-0-100" })
+          return { fabricated, target, rows }
+        }),
+      ),
+    )
+    expect(out.fabricated).toBeNull() // fabricated record NOT written
+    expect(out.target).not.toBeNull() // target NOT deleted either
+    expect(out.rows).toHaveLength(1)
+    expect(out.rows[0]?.status).toBe("proposed")
+    expect(out.rows[0]?.appliedAt).toBeNull()
+  })
+
   it("does NOT apply non-dedup ops; logs them 'proposed' and leaves memory untouched", async () => {
     const out = await Effect.runPromise(
       provide(
