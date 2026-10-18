@@ -115,6 +115,11 @@ export function ConnectorsPanel({ ctx }: { ctx: PanelCtx }) {
 
   function cancelOauth(message: string | null): void {
     clearBeginTimer()
+    // Retire the epoch: a late-resolving oauth_loopback_start must not
+    // reanimate the cancelled flow, and this flow's own wait rejection (our
+    // oauth_loopback_cancel rejects the pending wait) must not re-cancel it
+    // with a banner the caller deliberately suppressed by passing null.
+    oauthEpochRef.current++
     ctx.invoke("oauth_loopback_cancel").catch(() => {})
     store.dispatch({ type: "oauth-cancelled", message })
   }
