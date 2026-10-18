@@ -1075,13 +1075,28 @@ export function reembedMemoryVectors(args: {
                 // overwriting them with the stale scan snapshot would
                 // corrupt the row (stale text/embedding/hash with a fresh
                 // embedded_at).
+                //
+                // The check covers both halves of the row: the keyed fields
+                // plus the input hash, AND the vector metadata. A concurrent
+                // put() that re-embeds unchanged content with a different
+                // model leaves the keyed fields and the input hash (which
+                // covers only namespace/kind/tags/text) untouched while
+                // rewriting dimension/provider/model/format/embedded_at;
+                // without the metadata comparison the guard would miss that
+                // rewrite and clobber the fresh vector with the scan-time
+                // one.
                 const current = db
                   .query(
                     `SELECT k.content_json AS content_json,
                             k.tags_json AS tags_json,
                             k.kind AS kind,
                             k.namespace AS namespace,
-                            v.embedding_input_hash AS embedding_input_hash
+                            v.embedding_input_hash AS embedding_input_hash,
+                            v.dimension AS dimension,
+                            v.embedding_provider AS embedding_provider,
+                            v.embedding_model AS embedding_model,
+                            v.embedding_format AS embedding_format,
+                            v.embedded_at AS embedded_at
                        FROM memory_vectors v
                        LEFT JOIN memory_keyed k ON k.id = v.id
                       WHERE v.id = ?`,
@@ -1093,6 +1108,11 @@ export function reembedMemoryVectors(args: {
                       readonly kind: string | null
                       readonly namespace: string | null
                       readonly embedding_input_hash: string | null
+                      readonly dimension: number | null
+                      readonly embedding_provider: string | null
+                      readonly embedding_model: string | null
+                      readonly embedding_format: string | null
+                      readonly embedded_at: number | null
                     }
                   | null
                   | undefined
@@ -1103,7 +1123,14 @@ export function reembedMemoryVectors(args: {
                   current.kind !== candidate.raw.kind ||
                   current.namespace !== candidate.raw.namespace ||
                   current.embedding_input_hash !==
-                    candidate.raw.embedding_input_hash
+                    candidate.raw.embedding_input_hash ||
+                  current.dimension !== candidate.raw.dimension ||
+                  current.embedding_provider !==
+                    candidate.raw.embedding_provider ||
+                  current.embedding_model !== candidate.raw.embedding_model ||
+                  current.embedding_format !==
+                    candidate.raw.embedding_format ||
+                  current.embedded_at !== candidate.raw.embedded_at
                 if (moved) {
                   db.run("ROLLBACK")
                   return false
