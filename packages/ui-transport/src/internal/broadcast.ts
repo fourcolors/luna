@@ -16,6 +16,20 @@ export class Broadcast<T> {
   #subscribers = new Set<Subscriber<T>>()
 
   subscribe(): AsyncIterableIterator<T> {
+    if (this.#closed) {
+      // Post-close subscribe: replaying #last would hand out a stale value,
+      // and the parked waiter could never resolve (publish() no-ops after
+      // close, and close() already cleared the subscriber set). Return an
+      // immediately-done iterator so for-await over it exits cleanly.
+      const done = { value: undefined as unknown as T, done: true as const }
+      return {
+        next: () => Promise.resolve(done),
+        return: () => Promise.resolve(done),
+        [Symbol.asyncIterator]() {
+          return this
+        },
+      }
+    }
     const sub = new Subscriber<T>(this.#last, () => this.#subscribers.delete(sub))
     this.#subscribers.add(sub)
     return sub.iterator()
