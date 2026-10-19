@@ -2456,6 +2456,74 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
       initMod._resetVectorliteInitForTests()
     }
   })
+
+  // Naive-fallback open after an HNSW-enabled open: a previous HNSW open
+  // leaves the sync triggers (and the vectorlite v-table) in the schema.
+  // SQLite compiles trigger bodies at prepare time, so without dropping
+  // them the naive-path open crashed with 'no such module: vectorlite' at
+  // insertVecStmt prepare instead of falling back to naive cosine ranking.
+  // Placed after HNSW #2: phase 1 relies on the vectorlite init cache still
+  // being in its loaded state (no reset here — a reset before phase 1 would
+  // push it onto the naive path via the setCustomSQLite-too-late failure).
+  it("naive-fallback open survives a DB file left by an HNSW-enabled open", async () => {
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-naive-"))
+    const dbPath = path.join(dir, "memory.db")
+    const prevEnv = process.env.LUNA_DISABLE_VECTORLITE
+    try {
+      // Phase 1: HNSW-enabled open, one row, close. Must actually be HNSW
+      // or the regression is vacuous — assert it loudly.
+      delete process.env.LUNA_DISABLE_VECTORLITE
+      const phase1Layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const phase1Hnsw = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "hn-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "cats felines whiskers" },
+              }),
+            )
+            return b.hnswEnabled
+          }).pipe(Effect.provide(phase1Layer)),
+        ),
+      )
+      expect(phase1Hnsw).toBe(true)
+
+      // Phase 2: reopen with vectorlite disabled — must fall back to naive
+      // cosine ranking, not throw 'no such module: vectorlite'.
+      initMod._resetVectorliteInitForTests()
+      process.env.LUNA_DISABLE_VECTORLITE = "1"
+      const phase2Layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const out = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const hits = yield* Stream.runCollect(
+              b.search({ queryText: "cats", topK: 5 }),
+            )
+            return { hnsw: b.hnswEnabled, count: Array.from(hits).length }
+          }).pipe(Effect.provide(phase2Layer)),
+        ),
+      )
+      expect(out.hnsw).toBe(false)
+      expect(out.count).toBeGreaterThanOrEqual(1)
+    } finally {
+      if (prevEnv === undefined) delete process.env.LUNA_DISABLE_VECTORLITE
+      else process.env.LUNA_DISABLE_VECTORLITE = prevEnv
+      initMod._resetVectorliteInitForTests()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
   // ─────────────── hybrid-weighted + query expansion (#702) ───────────────
 
   const seedWeighted = (ns: string) =>
