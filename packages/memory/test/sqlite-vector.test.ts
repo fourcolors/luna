@@ -2511,12 +2511,31 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
             const hits = yield* Stream.runCollect(
               b.search({ queryText: "cats", topK: 5 }),
             )
-            return { hnsw: b.hnswEnabled, count: Array.from(hits).length }
+            // A fallback write must also work: the dropped sync triggers
+            // are what blocked DML prepare, so exercise an actual put and
+            // confirm the new row is retrievable via naive ranking.
+            yield* b.put(
+              makeRecord({
+                id: "fb-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "tortoises amble slowly" },
+              }),
+            )
+            const fbHits = yield* Stream.runCollect(
+              b.search({ queryText: "tortoises", topK: 5 }),
+            )
+            return {
+              hnsw: b.hnswEnabled,
+              count: Array.from(hits).length,
+              fbIds: Array.from(fbHits).map((r) => r.record.id),
+            }
           }).pipe(Effect.provide(phase2Layer)),
         ),
       )
       expect(out.hnsw).toBe(false)
       expect(out.count).toBeGreaterThanOrEqual(1)
+      expect(out.fbIds).toContain("fb-1")
     } finally {
       if (prevEnv === undefined) delete process.env.LUNA_DISABLE_VECTORLITE
       else process.env.LUNA_DISABLE_VECTORLITE = prevEnv
