@@ -1334,6 +1334,94 @@ describe("reconnection: transient poll errors are retried", () => {
 })
 
 /* -------------------------------------------------------------------------- */
+/* 4b. Poison update: a defect in one update's processing never wedges the    */
+/*     poll loop                                                              */
+/* -------------------------------------------------------------------------- */
+
+describe("poison update: per-update defect containment", () => {
+  it("skips the poison update, advances the offset, and still delivers later updates", async () => {
+    const receivedMessages: ChannelMessage[] = []
+    const getUpdatesOffsets: number[] = []
+
+    // Poison update: contract-violating `message.chat: null` — buildChannelMessage
+    // throws a TypeError (a DEFECT, not a typed Effect failure) reading msg.chat.id.
+    // Pre-fix this wedged the adapter: Effect.retry does not retry defects, the
+    // loop-level fallback kept the OLD offset, and the loop re-polled at full
+    // speed forever (measured: 105 getUpdates calls in 400ms, all at offset 0).
+    const poisonUpdate = {
+      update_id: 700,
+      message: {
+        message_id: 1,
+        chat: null,
+        from: { id: 999, first_name: "Test" },
+        text: "poison",
+        date: 1,
+      },
+    }
+    const goodUpdate = makeTextUpdate({ updateId: 701, text: "after poison" })
+
+    const perMethodQueues: Partial<Record<string, Array<{ ok: boolean; result?: unknown }>>> = {
+      getUpdates: [{ ok: true, result: [poisonUpdate, goodUpdate] }],
+    }
+
+    const { transport: baseTransport } = makeFakeTransport([], perMethodQueues)
+    const recordingTransport: TelegramHttpTransport = (method, params) =>
+      Effect.sync(() => {
+        if (method === "getUpdates") {
+          getUpdatesOffsets.push(params["offset"] as number)
+        }
+      }).pipe(Effect.flatMap(() => baseTransport(method, params)))
+
+    const adapter = makeTelegramAdapter({ id: "tg-poison", httpTransport: recordingTransport })
+    adapter.setMessageHandler((msg) =>
+      Effect.sync(() => {
+        receivedMessages.push(msg)
+      }),
+    )
+
+    // Capture console.error to assert the poison update is logged loudly.
+    const errors: Array<string> = []
+    const origError = console.error
+    console.error = (...args: Array<unknown>) => {
+      errors.push(args.map(String).join(" "))
+    }
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
+          // The poison batch is consumed on the first poll; several more polls
+          // prove the loop kept going instead of spinning at offset 0.
+          yield* Effect.sleep("600 millis")
+          // If interruption were swallowed by the containment, this would hang
+          // until the test timeout — so this also pins stop() still working.
+          yield* Fiber.interrupt(fiber)
+        }),
+      )
+    } finally {
+      console.error = origError
+    }
+
+    // (a) The poison update was skipped LOUDLY, not silently.
+    expect(
+      errors.some(
+        (e) => e.includes("defect while processing update") && e.includes("700"),
+      ),
+    ).toBe(true)
+
+    // (b) The good update in the SAME batch was still delivered (per-update
+    // containment, not per-batch: the poison update costs only itself).
+    expect(receivedMessages.map((m) => m.text)).toContain("after poison")
+
+    // (c) The offset advanced past both updates: exactly one poll ran at offset 0
+    // (the poison batch); every later poll used 702. A wedged loop re-polls at
+    // offset 0 dozens of times per second.
+    expect(getUpdatesOffsets[0]).toBe(0)
+    expect(getUpdatesOffsets.length).toBeGreaterThan(1)
+    expect(getUpdatesOffsets.slice(1).every((o) => o === 702)).toBe(true)
+  }, 10_000)
+})
+
+/* -------------------------------------------------------------------------- */
 /* 5. Dedup key correctness                                                   */
 /* -------------------------------------------------------------------------- */
 
