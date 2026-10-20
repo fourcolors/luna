@@ -1421,6 +1421,75 @@ describe("poison update: per-update defect containment", () => {
   }, 10_000)
 })
 
+describe("null envelope: malformed update elements do not wedge the loop", () => {
+  it("skips a null update element, still delivers later updates, and advances the offset", async () => {
+    const receivedMessages: ChannelMessage[] = []
+    const getUpdatesOffsets: number[] = []
+
+    // A null array element in getUpdates.result: pre-fix, pollOnce read
+    // update.update_id BEFORE processOneUpdate's per-update containment could
+    // run, throwing a TypeError that the loop-level fallback turned into a
+    // same-offset re-poll of the malformed batch (with backoff) forever —
+    // the later valid updates in the batch were never reached.
+    const goodUpdate = makeTextUpdate({ updateId: 701, text: "after null" })
+
+    const perMethodQueues: Partial<Record<string, Array<{ ok: boolean; result?: unknown }>>> = {
+      getUpdates: [{ ok: true, result: [null, goodUpdate] }],
+    }
+
+    const { transport: baseTransport } = makeFakeTransport([], perMethodQueues)
+    const recordingTransport: TelegramHttpTransport = (method, params) =>
+      Effect.sync(() => {
+        if (method === "getUpdates") {
+          getUpdatesOffsets.push(params["offset"] as number)
+        }
+      }).pipe(Effect.flatMap(() => baseTransport(method, params)))
+
+    const adapter = makeTelegramAdapter({ id: "tg-null-envelope", httpTransport: recordingTransport })
+    adapter.setMessageHandler((msg) =>
+      Effect.sync(() => {
+        receivedMessages.push(msg)
+      }),
+    )
+
+    // Capture console.warn to assert the malformed element is logged loudly.
+    const warnings: Array<string> = []
+    const origWarn = console.warn
+    console.warn = (...args: Array<unknown>) => {
+      warnings.push(args.map(String).join(" "))
+    }
+    try {
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
+          // The malformed batch is consumed on the first poll; several more
+          // polls prove the loop kept going instead of re-polling offset 0.
+          yield* Effect.sleep("600 millis")
+          // If interruption were swallowed by the containment, this would hang
+          // until the test timeout — so this also pins stop() still working.
+          yield* Fiber.interrupt(fiber)
+        }),
+      )
+    } finally {
+      console.warn = origWarn
+    }
+
+    // (a) The null element was skipped LOUDLY, not silently.
+    expect(warnings.some((w) => w.includes("malformed update"))).toBe(true)
+
+    // (b) The good update in the SAME batch was still delivered (per-update
+    // containment, not per-batch: the malformed element costs only itself).
+    expect(receivedMessages.map((m) => m.text)).toContain("after null")
+
+    // (c) The offset advanced past the batch: exactly one poll ran at offset 0
+    // (the malformed batch); every later poll used 702. A wedged loop keeps
+    // re-polling at offset 0.
+    expect(getUpdatesOffsets[0]).toBe(0)
+    expect(getUpdatesOffsets.length).toBeGreaterThan(1)
+    expect(getUpdatesOffsets.slice(1).every((o) => o === 702)).toBe(true)
+  }, 10_000)
+})
+
 /* -------------------------------------------------------------------------- */
 /* 5. Dedup key correctness                                                   */
 /* -------------------------------------------------------------------------- */

@@ -1508,6 +1508,17 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
         let nextOffset = currentOffset
         for (const update of updates) {
+          // Validate the envelope BEFORE reading update_id: a null/malformed
+          // element throws here, before processOneUpdate's per-update
+          // containment can run, and the loop-level fallback would then keep
+          // re-fetching this same batch at the old offset forever.
+          if (update === null || update === undefined || typeof update.update_id !== "number") {
+            console.warn(
+              `[luna/channels] telegram: skipping malformed update envelope ` +
+                `(missing numeric update_id); cannot advance the offset past it`,
+            )
+            continue
+          }
           // Advance offset past this update regardless of whether we handle it.
           if (update.update_id >= nextOffset) {
             nextOffset = update.update_id + 1
