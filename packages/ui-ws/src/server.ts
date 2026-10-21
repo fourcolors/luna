@@ -3320,10 +3320,34 @@ export const startUIWebSocketServer = (
                     return
                   }
                   case "pty-input": {
-                    setupHandle?.write(Buffer.from(frame.data, "base64").toString())
+                    // Malformed-frame guard: frame.data is
+                    // attacker-controlled JSON — a non-string would throw a
+                    // TypeError inside Buffer.from (defect, log-only), same
+                    // class as the survey-response fix (#797).
+                    if (typeof frame.data !== "string") {
+                      console.error(
+                        "[ui-ws] ignoring malformed pty-input frame",
+                      )
+                      return
+                    }
+                    setupHandle?.write(
+                      Buffer.from(frame.data, "base64").toString(),
+                    )
                     return
                   }
                   case "pty-resize": {
+                    // Same guard for cols/rows before they reach the pty.
+                    if (
+                      typeof frame.cols !== "number" ||
+                      !Number.isFinite(frame.cols) ||
+                      typeof frame.rows !== "number" ||
+                      !Number.isFinite(frame.rows)
+                    ) {
+                      console.error(
+                        "[ui-ws] ignoring malformed pty-resize frame",
+                      )
+                      return
+                    }
                     setupHandle?.resize(frame.cols, frame.rows)
                     return
                   }
