@@ -2219,8 +2219,20 @@ export const startUIWebSocketServer = (
                     return
                   case "local-shell-capability": {
                     if (localShellBridge === null) return
+                    // Trust boundary: `sandbox` is true ONLY for the server's
+                    // own in-process container sandbox (registered via
+                    // attachSandboxLocalShell, never over the wire — see the
+                    // protocol.ts doc on LocalShellCapabilityFrame.sandbox).
+                    // A WS client asserting sandbox:true would pass the
+                    // unattended-thread gate in the bridge's eligibleFor and
+                    // become reachable from forked/channel/agent-created
+                    // threads, an injection surface. The transport vouches
+                    // for identity, never the frame (cf. acceptResult's
+                    // fromClientId contract), so pin it false here. The
+                    // in-process sandbox registers directly on the bridge
+                    // and is unaffected.
                     const status = localShellBridge.setCapability(
-                      frame,
+                      { ...frame, sandbox: false },
                       (out) => {
                         send(ws, out)
                       },
