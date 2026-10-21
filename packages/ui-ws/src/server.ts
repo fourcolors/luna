@@ -2231,6 +2231,29 @@ export const startUIWebSocketServer = (
                     // fromClientId contract), so pin it false here. The
                     // in-process sandbox registers directly on the bridge
                     // and is unaffected.
+                    // The sandbox's well-known clientId ("server_sandbox",
+                    // the attachSandboxLocalShell default in apps/server) is
+                    // reserved: the bridge keys registrations by clientId, so
+                    // a wire frame claiming it would overwrite the sandbox's
+                    // registration (or delete it with enabled:false), and the
+                    // disconnect cleanup would then remove the entry with no
+                    // re-register — unattended threads would lose their only
+                    // shell. Reject such frames outright, before setCapability
+                    // and before the localShellClientIds bookkeeping below.
+                    if (frame.clientId === "server_sandbox") {
+                      console.log(
+                        `[ui-ws] rejected local-shell-capability claiming reserved clientId "${frame.clientId}"`,
+                      )
+                      send(ws, {
+                        type: "local-shell-status",
+                        clientId: frame.clientId,
+                        enabled: false,
+                        accepted: false,
+                        message:
+                          'clientId "server_sandbox" is reserved for the server sandbox',
+                      })
+                      return
+                    }
                     const status = localShellBridge.setCapability(
                       { ...frame, sandbox: false },
                       (out) => {

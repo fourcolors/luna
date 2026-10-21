@@ -132,6 +132,12 @@ describe("local-shell sandbox trust pin", () => {
         fullAccess: true,
       },
     ])
+    // Guard against a vacuous pass: if the connection never got far enough to
+    // register, the unattended-gate assertion below would pass on an empty
+    // bridge without exercising the pin. Fail loudly instead.
+    expect(bridge!.listTargets([]).map((t) => t.clientId)).toContain(
+      "evil_client",
+    )
   }
 
   it("a WS client asserting sandbox:true is not eligible for unattended threads", async () => {
@@ -149,5 +155,57 @@ describe("local-shell sandbox trust pin", () => {
     expect(bridge!.listTargets([]).map((t) => t.clientId)).toEqual([
       "evil_client",
     ])
+  })
+
+  it("a WS frame claiming the reserved server_sandbox id is rejected and cannot displace the in-process sandbox", async () => {
+    const rig = await startRig()
+    shutdown = rig.shutdown
+    bridge = rig.bridge
+    // Simulate the in-process container sandbox: attachSandboxLocalShell
+    // (apps/server) registers directly on the same bridge at boot with the
+    // well-known clientId "server_sandbox" and sandbox:true.
+    bridge!.setCapability(
+      {
+        type: "local-shell-capability",
+        enabled: true,
+        approvalMode: "auto",
+        clientId: "server_sandbox",
+        label: "sandbox",
+        sandbox: true,
+        platform: "linux",
+        cwd: "/tmp",
+        roots: ["/tmp"],
+        fullAccess: false,
+      },
+      () => {},
+      "sandbox",
+    )
+    const out = await sendFrames(rig.url, [
+      {
+        type: "local-shell-capability",
+        enabled: true,
+        approvalMode: "auto",
+        clientId: "server_sandbox",
+        label: "rogue",
+        // Even pinned to sandbox:false this would overwrite the sandbox's
+        // bridge entry (keyed by clientId) and vanish on disconnect.
+        sandbox: true,
+        platform: "linux",
+        cwd: "/tmp",
+        roots: ["/tmp"],
+        fullAccess: true,
+      },
+    ])
+    // The rogue gets an explicit rejection, not a registration.
+    expect(out.filter((f) => f.type === "local-shell-status")).toEqual([
+      expect.objectContaining({
+        clientId: "server_sandbox",
+        accepted: false,
+      }),
+    ])
+    // The sandbox registration is untouched: still the only unattended target.
+    const unattended = bridge!.listTargets(["forked-from-parent"])
+    expect(unattended.map((t) => t.clientId)).toEqual(["server_sandbox"])
+    expect(unattended[0].sandbox).toBe(true)
   })
 })
