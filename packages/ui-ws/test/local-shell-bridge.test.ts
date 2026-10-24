@@ -463,6 +463,28 @@ describe("local shell bridge", () => {
       expect((await pending).result.stdout).toBe("ok")
     })
 
+    it("does not wipe the live registration when the stale connection disables", async () => {
+      const bridge = createLocalShellBridge()
+      const oldSend: unknown[] = []
+      const newSend: unknown[] = []
+      bridge.setCapability(cap(), (f) => oldSend.push(f), "conn_old")
+      bridge.setCapability(cap(), (f) => newSend.push(f), "conn_new")
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "sleep 5",
+        timeoutMs: 5_000,
+      })
+      expect(newSend).toHaveLength(1)
+      // The OLD connection disables after the new registration: no-op.
+      bridge.setCapability(cap({ enabled: false }), () => undefined, "conn_old")
+      expect(bridge.listTargets().map((t) => t.clientId)).toEqual(["cli_1"])
+      bridge.acceptResult(
+        result(sentRequestId(newSend), "cli_1", { stdout: "ok" }),
+        "cli_1",
+      )
+      expect((await pending).result.stdout).toBe("ok")
+    })
+
     it("still removes the client when the owning connection tears down", () => {
       const bridge = createLocalShellBridge()
       bridge.setCapability(cap(), () => undefined, "conn_old")
