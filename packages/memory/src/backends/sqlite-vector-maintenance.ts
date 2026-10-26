@@ -839,15 +839,29 @@ function backfillMissingVectors(args: {
       // front and the embedding calls between the scan and this row are
       // slow, so a concurrent put() may have written the vector
       // meanwhile, and a concurrent delete() may have removed the keyed
-      // row. INSERT OR IGNORE turns both races into a no-op instead of
-      // failing the whole reembed run with a UNIQUE/FK constraint
-      // error; the concurrent writer already stored the correct vector,
-      // so there is nothing to backfill. An ignored insert fires no
-      // AFTER INSERT trigger, so FTS/HNSW stay consistent.
+      // row. INSERT OR IGNORE turns the concurrent-write race into a
+      // no-op instead of failing the whole reembed run with a UNIQUE
+      // constraint error; the concurrent writer already stored the
+      // correct vector, so there is nothing to backfill. An ignored
+      // insert fires no AFTER INSERT trigger, so FTS/HNSW stay
+      // consistent. The delete race needs its own check below: OR IGNORE
+      // does not apply to foreign-key violations, so inserting for a
+      // deleted keyed row would still raise SQLITE_CONSTRAINT_FOREIGNKEY.
       const backfillOutcome = yield* Effect.try({
         try: (): "inserted" | "concurrent-write" | "deleted" => {
           args.db.run("BEGIN IMMEDIATE")
           try {
+            // Re-check the keyed row inside the transaction: a
+            // concurrent delete() may have removed it since the scan.
+            // BEGIN IMMEDIATE holds the write lock, so the check is
+            // stable through the INSERT below.
+            const keyed = args.db
+              .query(`SELECT id FROM memory_keyed WHERE id = ?`)
+              .get(row.id) as { id: string } | null | undefined
+            if (keyed == null) {
+              args.db.run("COMMIT")
+              return "deleted"
+            }
             const result = args.db
               .query(
                 `INSERT OR IGNORE INTO memory_vectors

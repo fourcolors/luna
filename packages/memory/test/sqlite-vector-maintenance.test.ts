@@ -710,4 +710,82 @@ d("sqlite-vector maintenance", () => {
       cleanup()
     }
   })
+
+  it("reembed backfill skips a row deleted since the scan", async () => {
+    // Lost-update guard, backfill half, delete race: the missing-vector
+    // snapshot is taken up front and the embedding calls are slow, so a
+    // concurrent delete() can remove the keyed row between the scan and
+    // the row's INSERT. INSERT OR IGNORE does NOT suppress foreign-key
+    // violations (SQLite applies OR IGNORE only to UNIQUE/NOT NULL/CHECK
+    // constraints), so without a guard the insert raises
+    // SQLITE_CONSTRAINT_FOREIGNKEY and the whole reembed Effect fails.
+    // The backfill must skip the row instead.
+    //
+    // Same missing-vector fixture as the concurrent-write test above.
+    const { dbPath, cleanup } = await makeOldVectorDb()
+    try {
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            all: (...p: unknown[]) => unknown[]
+          }
+          close: () => void
+        }
+      }
+      const raw = new bunSqlite.Database(dbPath)
+      try {
+        raw.run("DELETE FROM memory_vectors WHERE id = 'legacy-1'")
+      } finally {
+        raw.close()
+      }
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const { result, raced } = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            let raced = false
+            const racingEmbedder: EmbedderApi = {
+              provider: "replacement",
+              model: "replacement",
+              dimension: 64,
+              embeddingFormat: "memory-note-v1",
+              embed: (_input) =>
+                Effect.gen(function* () {
+                  if (!raced) {
+                    raced = true
+                    // Simulate the concurrent deleter: the keyed row is
+                    // removed while the reembed is busy embedding the
+                    // backfill row.
+                    yield* Effect.orDie(b.delete("legacy-1"))
+                  }
+                  return new Float32Array(64).fill(1 / 8)
+                }),
+            }
+            const result = yield* reembedMemoryVectors({
+              dbPath,
+              embedder: racingEmbedder,
+              dryRun: false,
+            })
+            return { result, raced }
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(raced).toBe(true)
+      expect(result.backfilled).toBe(0)
+      expect(result.skipped).toBe(1)
+      expect(result.rows).toEqual([
+        expect.objectContaining({
+          id: "legacy-1",
+          action: "skipped",
+          skipReason: expect.stringContaining("deleted since the scan"),
+        }),
+      ])
+    } finally {
+      cleanup()
+    }
+  })
 })
