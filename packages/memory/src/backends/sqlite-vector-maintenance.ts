@@ -834,13 +834,23 @@ function backfillMissingVectors(args: {
         tags: parseTags(row.tags_json),
         ...(scope !== undefined ? { scope } : {}),
       } as MemoryRecord)
-      yield* Effect.try({
-        try: () => {
+      // Lost-update guard (mirrors the stale-row path in
+      // reembedMemoryVectors): the missing-vector snapshot was taken up
+      // front and the embedding calls between the scan and this row are
+      // slow, so a concurrent put() may have written the vector
+      // meanwhile, and a concurrent delete() may have removed the keyed
+      // row. INSERT OR IGNORE turns both races into a no-op instead of
+      // failing the whole reembed run with a UNIQUE/FK constraint
+      // error; the concurrent writer already stored the correct vector,
+      // so there is nothing to backfill. An ignored insert fires no
+      // AFTER INSERT trigger, so FTS/HNSW stay consistent.
+      const backfillOutcome = yield* Effect.try({
+        try: (): "inserted" | "concurrent-write" | "deleted" => {
           args.db.run("BEGIN IMMEDIATE")
           try {
-            args.db
+            const result = args.db
               .query(
-                `INSERT INTO memory_vectors
+                `INSERT OR IGNORE INTO memory_vectors
                    (id, namespace, embedding, dimension, text, ts,
                     embedding_provider, embedding_model, embedding_format,
                     embedding_input_hash, embedded_at, enrichment,
@@ -864,7 +874,18 @@ function backfillMissingVectors(args: {
                 effectiveScope.subjectId,
                 effectiveScope.visibility,
               )
+            if (result.changes === 0) {
+              // Distinguish the two races: a vector row now present
+              // means the concurrent writer won; absent means the keyed
+              // row was deleted since the scan.
+              const existing = args.db
+                .query(`SELECT id FROM memory_vectors WHERE id = ?`)
+                .get(row.id) as { id: string } | null | undefined
+              args.db.run("COMMIT")
+              return existing != null ? "concurrent-write" : "deleted"
+            }
             args.db.run("COMMIT")
+            return "inserted"
           } catch (txnErr) {
             try {
               args.db.run("ROLLBACK")
@@ -876,6 +897,20 @@ function backfillMissingVectors(args: {
         },
         catch: (cause) => asError("reembed.backfill.insert", cause),
       })
+      if (backfillOutcome !== "inserted") {
+        skipped++
+        rows.push({
+          id: row.id,
+          namespace: row.namespace,
+          reasons: ["missing-vector"],
+          action: "skipped",
+          skipReason:
+            backfillOutcome === "concurrent-write"
+              ? "row already has a vector (concurrent write); the concurrent writer already stored fresh vectors"
+              : "row deleted since the scan (concurrent delete)",
+        })
+        continue
+      }
       backfilled++
       rows.push({
         id: row.id,

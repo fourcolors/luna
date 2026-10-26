@@ -611,4 +611,103 @@ d("sqlite-vector maintenance", () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("reembed backfill skips a row whose vector was written since the scan", async () => {
+    // Lost-update guard, backfill half: the missing-vector snapshot is
+    // taken up front and the embedding calls are slow, so a concurrent
+    // put() can land between the scan and a row's INSERT. The plain
+    // INSERT then hits UNIQUE constraint failed and the whole reembed
+    // Effect fails. The backfill must skip the row instead: the
+    // concurrent writer already stored the correct vector.
+    //
+    // Plant the missing-vector shape with the old-schema fixture (a
+    // keyed row with no vector row, as left by an embedder outage or a
+    // pre-extraction write). The vector row is deleted BEFORE any
+    // backend connection opens, so no connection holds a stale in-memory
+    // HNSW graph for the row.
+    const { dbPath, cleanup } = await makeOldVectorDb()
+    try {
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            all: (...p: unknown[]) => unknown[]
+          }
+          close: () => void
+        }
+      }
+      const raw = new bunSqlite.Database(dbPath)
+      try {
+        raw.run("DELETE FROM memory_vectors WHERE id = 'legacy-1'")
+      } finally {
+        raw.close()
+      }
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const { result, raced } = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            let raced = false
+            const racingEmbedder: EmbedderApi = {
+              provider: "replacement",
+              model: "replacement",
+              dimension: 64,
+              embeddingFormat: "memory-note-v1",
+              embed: (_input) =>
+                Effect.gen(function* () {
+                  if (!raced) {
+                    raced = true
+                    // Simulate the concurrent writer: a fresh put() lands
+                    // while the reembed is busy embedding the backfill row.
+                    yield* Effect.orDie(
+                      b.put(
+                        makeRecord({
+                          id: "legacy-1",
+                          namespace: "notes",
+                          kind: "note",
+                          content: { text: "concurrent fresh text" },
+                        }),
+                      ),
+                    )
+                  }
+                  return new Float32Array(64).fill(1 / 8)
+                }),
+            }
+            const result = yield* reembedMemoryVectors({
+              dbPath,
+              embedder: racingEmbedder,
+              dryRun: false,
+            })
+            return { result, raced }
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(raced).toBe(true)
+      expect(result.backfilled).toBe(0)
+      expect(result.skipped).toBe(1)
+      expect(result.rows).toEqual([
+        expect.objectContaining({ id: "legacy-1", action: "skipped" }),
+      ])
+
+      // The concurrent writer's vector must survive: no clobber by the
+      // stale scan snapshot, and no duplicate row.
+      const check = new bunSqlite.Database(dbPath)
+      try {
+        const vecs = check
+          .query(
+            "SELECT text FROM memory_vectors WHERE id = 'legacy-1'",
+          )
+          .all() as { text: string }[]
+        expect(vecs).toHaveLength(1)
+        expect(vecs[0]?.text).toBe("concurrent fresh text")
+      } finally {
+        check.close()
+      }
+    } finally {
+      cleanup()
+    }
+  })
 })
