@@ -25,7 +25,7 @@
  * factory returning the same object literal, so every `this.` resolves as
  * before.
  *
- * FIVE INJECTED DEPENDENCIES, enumerated by scanning the body for FREE
+ * SIX INJECTED DEPENDENCIES, enumerated by scanning the body for FREE
  * identifiers rather than grepping for a guessed list. S19c paid for that
  * lesson: a guessed list missed three helpers and surfaced 521 tests later as
  * `undefined is not a function` deep inside a handler.
@@ -38,13 +38,18 @@ export interface ArtifactsEngineDeps {
   readonly DOM: any
   readonly State: any
   readonly WebSocketEngine: { send: (frame: unknown) => void }
+  /** Engine-aware connectivity predicate: PoolEngine, the default since #489,
+   *  never assigns State.ws, so a raw readyState check always reads
+   *  "offline" while the pool adapter is connected (same #500 class fixed
+   *  in secretPromptEngine.ts and feedbackEngine.ts). */
+  readonly isConnected: () => boolean
   /** The audited sanitizer from vendor/moon-markdown.js. */
   readonly renderMarkdown: (md: string) => string
   readonly enhanceCodeBlocks: (root: unknown) => void
 }
 
 export function createArtifactsEngine(deps: ArtifactsEngineDeps) {
-  const { DOM, State, WebSocketEngine, renderMarkdown, enhanceCodeBlocks } = deps
+  const { DOM, State, WebSocketEngine, isConnected, renderMarkdown, enhanceCodeBlocks } = deps
   return {
   _selectedId: null,
 
@@ -123,7 +128,7 @@ export function createArtifactsEngine(deps: ArtifactsEngineDeps) {
   },
 
   pin(artifact) {
-    if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) return;
+    if (!isConnected()) return;
     WebSocketEngine.send({
       type: 'artifact-pin',
       id: artifact.id,
@@ -135,7 +140,7 @@ export function createArtifactsEngine(deps: ArtifactsEngineDeps) {
   },
 
   unpin(id) {
-    if (!(State.ws && State.ws.readyState === WebSocket.OPEN)) return;
+    if (!isConnected()) return;
     WebSocketEngine.send({ type: 'artifact-unpin', id });
   },
 
