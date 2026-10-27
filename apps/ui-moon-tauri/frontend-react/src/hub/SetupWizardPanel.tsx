@@ -33,13 +33,17 @@ export function SetupWizardPanel({ controller, state }: SetupWizardPanelProps): 
   useEffect(() => {
     if (!wizard.active) return
     if (wizard.current === "connect") {
-      controller.prefillConnect(wizard.chosenPath)
+      // Use the values prefillConnect/loadLocalToken return: the render
+      // closure's wizard.connectUrl/connectToken are still the pre-prefill
+      // values here (empty on a fresh first run), so testing with them
+      // always fails spuriously with "Enter a server address first."
+      const url = controller.prefillConnect(wizard.chosenPath, wizard.connectUrl)
       const auto = wizard.autoTest
       controller.dispatchSetAutoTestFalse()
       controller
         .loadLocalToken(wizard.chosenPath, wizard.connectToken)
-        .then(() => {
-          if (auto) void controller.runConnectTest(wizard.connectUrl, wizard.connectToken)
+        .then((token) => {
+          if (auto) void controller.runConnectTest(url, token)
         })
     } else if (wizard.current === "remote") {
       controller.renderRemoteCmd(wizard.remoteHost)
