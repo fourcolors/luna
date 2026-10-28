@@ -1238,6 +1238,254 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
    */
   const makePollLoop = (transport: TelegramHttpTransport): Effect.Effect<never, never> => {
     const offsetRef = Ref.makeUnsafe<number>(0)
+    // Per-update inbound processing, with DEFECT CONTAINMENT.
+    //
+    // A thrown exception (defect) in any single update's handling must never
+    // wedge the poll loop: Effect.retry does not retry defects, and the
+    // loop-level fallback keeps the OLD offset — so without this, one poison
+    // update (e.g. a contract-violating `message.chat: null`, where
+    // buildChannelMessage reads msg.chat.id) re-fetches at full speed forever:
+    // no backoff, no offset advance, surviving restarts (offsetRef starts at 0).
+    // The offset is advanced past each update BEFORE its body runs (see the
+    // poll loop below), so skipping the poison update preserves the
+    // consume-progress invariant; the failure is logged loudly with its
+    // update_id instead of killing the batch.
+    //
+    // Interruption is NOT swallowed: a pure-interruption cause re-interrupts,
+    // so stop()/fiber interruption still terminates the poll loop.
+    const processOneUpdate = (update: TelegramUpdate): Effect.Effect<void, never> =>
+      Effect.gen(function* () {
+            // Inline-button taps (tap-to-stop). Handled OUTSIDE the per-chat
+            // FIFO chain (dispatchChained/chatChains) deliberately: a stop
+            // must reach ChatService.interrupt immediately, never queued
+            // behind the very turn it exists to interrupt.
+            if (update.callback_query !== undefined) {
+              const cb = update.callback_query
+              // Answer every callback query immediately regardless of
+              // allowlist outcome — Telegram expires an unanswered callback
+              // after ~10s ("query is too old") and answering only dismisses
+              // the tapper's client-side loading spinner; it reveals nothing.
+              Effect.runFork(
+                transport("answerCallbackQuery", { callback_query_id: cb.id }).pipe(
+                  Effect.asVoid,
+                  Effect.catchCause(() => Effect.void),
+                ),
+              )
+              const cbMessage = cb.message
+              if (cb.data === STOP_CALLBACK_DATA && cbMessage !== undefined && messageHandler !== null) {
+                const cbChatId = String(cbMessage.chat.id)
+                const cbSenderId = String(cb.from.id)
+                // Gate through the SAME allowlist as messages — callback_data
+                // is attacker-controlled and never trusted on its own, and in
+                // groups any member can tap a button.
+                if (isIdAllowedPair(cbSenderId, cbChatId)) {
+                  const cbForumTopicId = forumTopicIdFor(
+                    cbMessage.chat,
+                    undefined,
+                    cbMessage.message_thread_id,
+                  )
+                  const stopMsg: ChannelMessage = {
+                    transport: "telegram" as const,
+                    channelId: cbChatId,
+                    senderId: cbSenderId,
+                    threadingKey: threadingKeyFor(cbChatId, cbForumTopicId),
+                    // Synthesized /stop reuses the EXISTING commands.ts path
+                    // (dedup, allowlist, "⏹ Stopped." delivery) rather than a
+                    // new interrupt code path.
+                    text: "/stop",
+                    // Derived from the callback's own update_id so dedup
+                    // (keyed on (transport, platformMessageId)) treats this
+                    // consistently with a typed message.
+                    platformMessageId: String(update.update_id),
+                    ts: new Date().toISOString(),
+                    metadata: {
+                      chatType: cbMessage.chat.type,
+                      messageId: cbMessage.message_id,
+                      userId: cb.from.id,
+                      username: cb.from.username,
+                      firstName: cb.from.first_name,
+                      ...(cbForumTopicId !== undefined ? { messageThreadId: cbForumTopicId } : {}),
+                    },
+                  }
+                  Effect.runFork(messageHandler(stopMsg))
+                }
+              }
+              return
+            }
+
+            const built = buildChannelMessage(update)
+            if (built === null) return   // non-ingestible or non-message update
+            const { msg: channelMsg, media } = built
+
+            // Inbound allowlist gate. Accept iff the sender id OR the chat id is
+            // allowlisted (union — see config.allowedIds); otherwise silently
+            // drop. Silent is deliberate: replying would confirm the bot exists
+            // to strangers. The offset was already advanced above, so a rejected
+            // update is consumed, not re-polled, and cannot wedge the loop. Drop
+            // logging is rate-limited to the first hit per (chat, sender).
+            // Media sits BEHIND this gate too: no getFile call or download
+            // bandwidth is ever spent on non-allowlisted senders.
+            if (!isInboundAllowed(channelMsg)) {
+              const dropKey = `${channelMsg.channelId}:${channelMsg.senderId}`
+              if (!loggedDrops.has(dropKey)) {
+                loggedDrops.add(dropKey)
+                console.warn(
+                  `[luna/channels] telegram: dropped message from non-allowlisted ` +
+                    `sender=${channelMsg.senderId} chat=${channelMsg.channelId} ` +
+                    `(chatType=${String(channelMsg.metadata?.["chatType"] ?? "?")})`,
+                )
+              }
+              return
+            }
+
+            // Group command addressing applies ONLY to true text messages:
+            // strip our own "@BotName" mention from "/verb@BotName"; drop
+            // commands addressed to a DIFFERENT bot. Media captions are user
+            // text for the LLM, never channel commands — running the null-drop
+            // on a caption would silently discard the photo/PDF it rides on
+            // (the exact failure mode this path exists to kill).
+            let msg = channelMsg
+            if (media === null) {
+              const normalizedText = normalizeCommandMention(channelMsg.text, botUsername)
+              if (normalizedText === null) return
+              if (normalizedText !== channelMsg.text) {
+                msg = { ...channelMsg, text: normalizedText }
+              }
+            }
+
+            if (media !== null && media._tag === "unsupported") {
+              // Explain instead of silently dropping (a silent drop makes the
+              // agent deny ever receiving the file). dmOnly media (voice,
+              // video, GIFs) stays silent in groups — ambient chatter, not bot
+              // input. Forked: a hung sendMessage must not stall the poll loop.
+              // NB: replies are at-least-once — a crash between this reply and
+              // the next getUpdates offset confirm can repeat one batch.
+              const isPrivate = channelMsg.metadata?.["chatType"] === "private"
+              if (media.userReply !== null && (isPrivate || !media.dmOnly)) {
+                const unsupportedMsgThreadId = msg.metadata?.["messageThreadId"] as number | undefined
+                Effect.runFork(
+                  sendFormatted(
+                    transport,
+                    "sendMessage",
+                    {
+                      chat_id: msg.channelId,
+                      ...(unsupportedMsgThreadId !== undefined
+                        ? { message_thread_id: unsupportedMsgThreadId }
+                        : {}),
+                    },
+                    media.userReply,
+                  ).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.sync(() => {
+                        try {
+                          console.warn(
+                            `[luna/channels] telegram: unsupported-media reply failed ` +
+                              `for chat=${msg.channelId}: ` + Cause.pretty(cause),
+                          )
+                        } catch {
+                          // logging must never fail the fiber
+                        }
+                      }),
+                    ),
+                  ),
+                )
+              }
+              return
+            }
+
+            if (media !== null) {
+              // Fork the whole media unit of work (download → reply-or-dispatch)
+              // off the poll fiber, onto the same per-chat FIFO chain as the
+              // handler dispatch below. Inline it would serialize up-to-60s
+              // downloads in front of getUpdates — one slow CDN or an
+              // allowlisted spammer would starve EVERY chat's inbound,
+              // including the pager path.
+              // The semaphore bounds concurrent downloads so a flood degrades
+              // to queuing, never to poll-loop starvation or unbounded memory.
+              const mediaMsg = msg
+              const mediaMsgThreadId = mediaMsg.metadata?.["messageThreadId"] as number | undefined
+              const mediaUnit = Effect.gen(function* () {
+                // Typing indicator covers the download — a 20 MB PDF on a slow
+                // link takes seconds and the user should see the bot working.
+                const createdTyping = startTyping(transport, mediaMsg.channelId, mediaMsgThreadId)
+                // Best-effort "I'm on it" reaction on the Chairman's own
+                // inbound message — fire-and-forget, never blocks the download.
+                const mediaMessageId = mediaMsg.metadata?.["messageId"]
+                if (typeof mediaMessageId === "number") {
+                  Effect.runFork(
+                    reactWorking(transport, mediaMsg.channelId, mediaMessageId, (description) =>
+                      warnReactionFailed(mediaMsg.channelId, description),
+                    ),
+                  )
+                }
+                const outcome = yield* downloadSemaphore.withPermits(1)(
+                  fetchTelegramAttachment(transport, resolvedFileTransport, media),
+                )
+                if (outcome._tag === "failed") {
+                  // Only cancel the typing fiber this unit created — an earlier
+                  // in-flight turn in the same chat may still own it.
+                  if (createdTyping) yield* stopTyping(mediaMsg.channelId, mediaMsgThreadId)
+                  // At-least-once (see unsupported-reply note above).
+                  yield* sendFormatted(
+                    transport,
+                    "sendMessage",
+                    {
+                      chat_id: mediaMsg.channelId,
+                      ...(mediaMsgThreadId !== undefined ? { message_thread_id: mediaMsgThreadId } : {}),
+                    },
+                    outcome.userReply,
+                  )
+                  return
+                }
+                if (messageHandler !== null) {
+                  yield* messageHandler({ ...mediaMsg, attachments: [outcome.attachment] })
+                }
+              })
+              // Chained per chat: a follow-up text in the same chat queues
+              // behind this download instead of racing past it.
+              dispatchChained(mediaMsg.channelId, mediaUnit)
+              return
+            }
+
+            // Loading indication: show "typing…" until the first reply (the
+            // placeholder or a step-indicator edit) lands for this chat.
+            const msgThreadId = msg.metadata?.["messageThreadId"] as number | undefined
+            startTyping(transport, msg.channelId, msgThreadId)
+            // Best-effort "I'm on it" reaction on the Chairman's own inbound
+            // message — fire-and-forget, never blocks dispatch.
+            const inboundMessageIdForReaction = msg.metadata?.["messageId"]
+            if (typeof inboundMessageIdForReaction === "number") {
+              Effect.runFork(
+                reactWorking(transport, msg.channelId, inboundMessageIdForReaction, (description) =>
+                  warnReactionFailed(msg.channelId, description),
+                ),
+              )
+            }
+
+            if (messageHandler !== null) {
+              // Per-chat FIFO dispatch (fire-and-forget relative to the poll
+              // loop): the installed handler is a pure Effect<void> closure
+              // over all service dependencies. Same-chat messages run in
+              // arrival order behind any in-flight media download; a chat with
+              // no in-flight work dispatches immediately, and different chats
+              // never wait on each other.
+              const handlerMsg = msg
+              dispatchChained(handlerMsg.channelId, messageHandler(handlerMsg))
+            }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.sync(() =>
+                console.error(
+                  `[luna/channels] telegram: defect while processing update ` +
+                    `${String(update.update_id)}; skipping it (offset already advanced): ` +
+                    Cause.pretty(cause),
+                ),
+              ),
+        ),
+      )
+
 
     // A single getUpdates call. Returns the new offset after consuming updates.
     // Error channel is `Error` (non-ok responses are surfaced as failures so
@@ -1260,228 +1508,22 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
 
         let nextOffset = currentOffset
         for (const update of updates) {
+          // Validate the envelope BEFORE reading update_id: a null/malformed
+          // element throws here, before processOneUpdate's per-update
+          // containment can run, and the loop-level fallback would then keep
+          // re-fetching this same batch at the old offset forever.
+          if (update === null || update === undefined || typeof update.update_id !== "number") {
+            console.warn(
+              `[luna/channels] telegram: skipping malformed update envelope ` +
+                `(missing numeric update_id); cannot advance the offset past it`,
+            )
+            continue
+          }
           // Advance offset past this update regardless of whether we handle it.
           if (update.update_id >= nextOffset) {
             nextOffset = update.update_id + 1
           }
-
-          // Inline-button taps (tap-to-stop). Handled OUTSIDE the per-chat
-          // FIFO chain (dispatchChained/chatChains) deliberately: a stop
-          // must reach ChatService.interrupt immediately, never queued
-          // behind the very turn it exists to interrupt.
-          if (update.callback_query !== undefined) {
-            const cb = update.callback_query
-            // Answer every callback query immediately regardless of
-            // allowlist outcome — Telegram expires an unanswered callback
-            // after ~10s ("query is too old") and answering only dismisses
-            // the tapper's client-side loading spinner; it reveals nothing.
-            Effect.runFork(
-              transport("answerCallbackQuery", { callback_query_id: cb.id }).pipe(
-                Effect.asVoid,
-                Effect.catchCause(() => Effect.void),
-              ),
-            )
-            const cbMessage = cb.message
-            if (cb.data === STOP_CALLBACK_DATA && cbMessage !== undefined && messageHandler !== null) {
-              const cbChatId = String(cbMessage.chat.id)
-              const cbSenderId = String(cb.from.id)
-              // Gate through the SAME allowlist as messages — callback_data
-              // is attacker-controlled and never trusted on its own, and in
-              // groups any member can tap a button.
-              if (isIdAllowedPair(cbSenderId, cbChatId)) {
-                const cbForumTopicId = forumTopicIdFor(
-                  cbMessage.chat,
-                  undefined,
-                  cbMessage.message_thread_id,
-                )
-                const stopMsg: ChannelMessage = {
-                  transport: "telegram" as const,
-                  channelId: cbChatId,
-                  senderId: cbSenderId,
-                  threadingKey: threadingKeyFor(cbChatId, cbForumTopicId),
-                  // Synthesized /stop reuses the EXISTING commands.ts path
-                  // (dedup, allowlist, "⏹ Stopped." delivery) rather than a
-                  // new interrupt code path.
-                  text: "/stop",
-                  // Derived from the callback's own update_id so dedup
-                  // (keyed on (transport, platformMessageId)) treats this
-                  // consistently with a typed message.
-                  platformMessageId: String(update.update_id),
-                  ts: new Date().toISOString(),
-                  metadata: {
-                    chatType: cbMessage.chat.type,
-                    messageId: cbMessage.message_id,
-                    userId: cb.from.id,
-                    username: cb.from.username,
-                    firstName: cb.from.first_name,
-                    ...(cbForumTopicId !== undefined ? { messageThreadId: cbForumTopicId } : {}),
-                  },
-                }
-                Effect.runFork(messageHandler(stopMsg))
-              }
-            }
-            continue
-          }
-
-          const built = buildChannelMessage(update)
-          if (built === null) continue   // non-ingestible or non-message update
-          const { msg: channelMsg, media } = built
-
-          // Inbound allowlist gate. Accept iff the sender id OR the chat id is
-          // allowlisted (union — see config.allowedIds); otherwise silently
-          // drop. Silent is deliberate: replying would confirm the bot exists
-          // to strangers. The offset was already advanced above, so a rejected
-          // update is consumed, not re-polled, and cannot wedge the loop. Drop
-          // logging is rate-limited to the first hit per (chat, sender).
-          // Media sits BEHIND this gate too: no getFile call or download
-          // bandwidth is ever spent on non-allowlisted senders.
-          if (!isInboundAllowed(channelMsg)) {
-            const dropKey = `${channelMsg.channelId}:${channelMsg.senderId}`
-            if (!loggedDrops.has(dropKey)) {
-              loggedDrops.add(dropKey)
-              console.warn(
-                `[luna/channels] telegram: dropped message from non-allowlisted ` +
-                  `sender=${channelMsg.senderId} chat=${channelMsg.channelId} ` +
-                  `(chatType=${String(channelMsg.metadata?.["chatType"] ?? "?")})`,
-              )
-            }
-            continue
-          }
-
-          // Group command addressing applies ONLY to true text messages:
-          // strip our own "@BotName" mention from "/verb@BotName"; drop
-          // commands addressed to a DIFFERENT bot. Media captions are user
-          // text for the LLM, never channel commands — running the null-drop
-          // on a caption would silently discard the photo/PDF it rides on
-          // (the exact failure mode this path exists to kill).
-          let msg = channelMsg
-          if (media === null) {
-            const normalizedText = normalizeCommandMention(channelMsg.text, botUsername)
-            if (normalizedText === null) continue
-            if (normalizedText !== channelMsg.text) {
-              msg = { ...channelMsg, text: normalizedText }
-            }
-          }
-
-          if (media !== null && media._tag === "unsupported") {
-            // Explain instead of silently dropping (a silent drop makes the
-            // agent deny ever receiving the file). dmOnly media (voice,
-            // video, GIFs) stays silent in groups — ambient chatter, not bot
-            // input. Forked: a hung sendMessage must not stall the poll loop.
-            // NB: replies are at-least-once — a crash between this reply and
-            // the next getUpdates offset confirm can repeat one batch.
-            const isPrivate = channelMsg.metadata?.["chatType"] === "private"
-            if (media.userReply !== null && (isPrivate || !media.dmOnly)) {
-              const unsupportedMsgThreadId = msg.metadata?.["messageThreadId"] as number | undefined
-              Effect.runFork(
-                sendFormatted(
-                  transport,
-                  "sendMessage",
-                  {
-                    chat_id: msg.channelId,
-                    ...(unsupportedMsgThreadId !== undefined
-                      ? { message_thread_id: unsupportedMsgThreadId }
-                      : {}),
-                  },
-                  media.userReply,
-                ).pipe(
-                  Effect.catchCause((cause) =>
-                    Effect.sync(() => {
-                      try {
-                        console.warn(
-                          `[luna/channels] telegram: unsupported-media reply failed ` +
-                            `for chat=${msg.channelId}: ` + Cause.pretty(cause),
-                        )
-                      } catch {
-                        // logging must never fail the fiber
-                      }
-                    }),
-                  ),
-                ),
-              )
-            }
-            continue
-          }
-
-          if (media !== null) {
-            // Fork the whole media unit of work (download → reply-or-dispatch)
-            // off the poll fiber, onto the same per-chat FIFO chain as the
-            // handler dispatch below. Inline it would serialize up-to-60s
-            // downloads in front of getUpdates — one slow CDN or an
-            // allowlisted spammer would starve EVERY chat's inbound,
-            // including the pager path.
-            // The semaphore bounds concurrent downloads so a flood degrades
-            // to queuing, never to poll-loop starvation or unbounded memory.
-            const mediaMsg = msg
-            const mediaMsgThreadId = mediaMsg.metadata?.["messageThreadId"] as number | undefined
-            const mediaUnit = Effect.gen(function* () {
-              // Typing indicator covers the download — a 20 MB PDF on a slow
-              // link takes seconds and the user should see the bot working.
-              const createdTyping = startTyping(transport, mediaMsg.channelId, mediaMsgThreadId)
-              // Best-effort "I'm on it" reaction on the Chairman's own
-              // inbound message — fire-and-forget, never blocks the download.
-              const mediaMessageId = mediaMsg.metadata?.["messageId"]
-              if (typeof mediaMessageId === "number") {
-                Effect.runFork(
-                  reactWorking(transport, mediaMsg.channelId, mediaMessageId, (description) =>
-                    warnReactionFailed(mediaMsg.channelId, description),
-                  ),
-                )
-              }
-              const outcome = yield* downloadSemaphore.withPermits(1)(
-                fetchTelegramAttachment(transport, resolvedFileTransport, media),
-              )
-              if (outcome._tag === "failed") {
-                // Only cancel the typing fiber this unit created — an earlier
-                // in-flight turn in the same chat may still own it.
-                if (createdTyping) yield* stopTyping(mediaMsg.channelId, mediaMsgThreadId)
-                // At-least-once (see unsupported-reply note above).
-                yield* sendFormatted(
-                  transport,
-                  "sendMessage",
-                  {
-                    chat_id: mediaMsg.channelId,
-                    ...(mediaMsgThreadId !== undefined ? { message_thread_id: mediaMsgThreadId } : {}),
-                  },
-                  outcome.userReply,
-                )
-                return
-              }
-              if (messageHandler !== null) {
-                yield* messageHandler({ ...mediaMsg, attachments: [outcome.attachment] })
-              }
-            })
-            // Chained per chat: a follow-up text in the same chat queues
-            // behind this download instead of racing past it.
-            dispatchChained(mediaMsg.channelId, mediaUnit)
-            continue
-          }
-
-          // Loading indication: show "typing…" until the first reply (the
-          // placeholder or a step-indicator edit) lands for this chat.
-          const msgThreadId = msg.metadata?.["messageThreadId"] as number | undefined
-          startTyping(transport, msg.channelId, msgThreadId)
-          // Best-effort "I'm on it" reaction on the Chairman's own inbound
-          // message — fire-and-forget, never blocks dispatch.
-          const inboundMessageIdForReaction = msg.metadata?.["messageId"]
-          if (typeof inboundMessageIdForReaction === "number") {
-            Effect.runFork(
-              reactWorking(transport, msg.channelId, inboundMessageIdForReaction, (description) =>
-                warnReactionFailed(msg.channelId, description),
-              ),
-            )
-          }
-
-          if (messageHandler !== null) {
-            // Per-chat FIFO dispatch (fire-and-forget relative to the poll
-            // loop): the installed handler is a pure Effect<void> closure
-            // over all service dependencies. Same-chat messages run in
-            // arrival order behind any in-flight media download; a chat with
-            // no in-flight work dispatches immediately, and different chats
-            // never wait on each other.
-            const handlerMsg = msg
-            dispatchChained(handlerMsg.channelId, messageHandler(handlerMsg))
-          }
+          yield* processOneUpdate(update)
         }
 
         return nextOffset
