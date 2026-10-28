@@ -753,27 +753,38 @@ export class HubController {
     else this.goTo("remote")
   }
 
-  prefillConnect(chosenPath: ChosenPath): void {
-    const value =
-      chosenPath === "local"
+  // Returns the effective URL so the connect-step auto-test can test the
+  // prefilled value instead of the stale closure value it was rendered with.
+  // When a URL is already entered, prefill is a no-op (the reducer keeps the
+  // entered value), so the effective URL is the entered one.
+  prefillConnect(chosenPath: ChosenPath, currentUrl = ""): string {
+    const value = currentUrl.trim()
+      ? currentUrl
+      : chosenPath === "local"
         ? "ws://127.0.0.1:4753/ui"
         : this.State.wsUrl || "ws://127.0.0.1:4753/ui"
     this.dispatch({ type: "wizard-connect-prefill", value })
     this.setConnectStatus("", "")
     this.resetFinishGuard()
+    return value
   }
 
-  async loadLocalToken(chosenPath: ChosenPath, currentToken: string): Promise<void> {
-    if (chosenPath !== "local") return
-    if (currentToken.trim()) return
+  // Returns the effective token (the already-entered one, or the one just
+  // loaded from ~/.luna/.env) so the connect-step auto-test tests with the
+  // token that was just loaded, not the stale closure value.
+  async loadLocalToken(chosenPath: ChosenPath, currentToken: string): Promise<string> {
+    if (chosenPath !== "local") return currentToken
+    if (currentToken.trim()) return currentToken
     const r = await this.sh('grep "^UI_WS_TOKEN=" "$HOME/.luna/.env"')
-    if (!r || r.exitCode !== 0) return
+    if (!r || r.exitCode !== 0) return currentToken
     const m = /^UI_WS_TOKEN=(.+)$/m.exec(r.stdout || "")
     const token = m?.[1]?.trim()
     if (token) {
       this.dispatch({ type: "wizard-connect-token", value: token })
       this.resetFinishGuard()
+      return token
     }
+    return currentToken
   }
 
   resetFinishGuard(): void {
