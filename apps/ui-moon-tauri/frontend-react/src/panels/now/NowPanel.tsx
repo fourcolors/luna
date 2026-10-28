@@ -16,7 +16,10 @@
  *   - Answer sends job-input-result {requestId, answer}; empty input is
  *     blocked with an inline hint. Dismiss sends
  *     job-input-result {requestId, cancelled:true} and removes the card
- *     immediately (no round trip).
+ *     immediately (no round trip). A send that fails (socket not OPEN)
+ *     leaves the card in place with a retry hint instead: the frame never
+ *     went out, so nothing will ever settle it, and dropping it would
+ *     strand the job server-side.
  *   - job-input-status settles the card ("answered ✓" / server message),
  *     removed ~2s later. An unanswered request past its own timeoutMs
  *     shows "expired", removed the same ~2s later.
@@ -134,8 +137,11 @@ function WorkflowRow({ wf }: { wf: WorkflowGalleryItem }) {
 
 interface AnswerCardProps {
   req: PendingInputRequest
-  onAnswer: (requestId: string, answer: string) => void
-  onDismiss: (requestId: string) => void
+  // Boolean return: whether the frame actually went out (client.send()
+  // returns false when the socket is not OPEN). The card must not settle
+  // itself on a failed send - nothing will ever arrive to settle it.
+  onAnswer: (requestId: string, answer: string) => boolean
+  onDismiss: (requestId: string) => boolean
   onExpire: (requestId: string) => void
   onRemove: (requestId: string) => void
 }
@@ -184,13 +190,28 @@ function AnswerCard({ req, onAnswer, onDismiss, onExpire, onRemove }: AnswerCard
     }
     setHint(null)
     setSubmitting(true)
-    onAnswer(req.requestId, val)
+    // send() returns false when the socket is not OPEN (vendor/moon-ws.js):
+    // the frame never went out, so no job-input-status will ever settle
+    // this card - and with no timeoutMs nothing else can either. Re-enable
+    // the card (keeping the typed answer) instead of leaving it disabled
+    // forever with no error and no way to retry.
+    if (!onAnswer(req.requestId, val)) {
+      setSubmitting(false)
+      setHint("Couldn't send, check the connection and try again.")
+      return
+    }
     // Wipe the input value (clear after send - per spec).
     setValue("")
   }
 
   function handleDismiss() {
-    onDismiss(req.requestId)
+    // Same failed-send hole as handleAnswer: dropping the card when the
+    // cancel frame never went out leaves the job waiting server-side with
+    // no card left to answer it from.
+    if (!onDismiss(req.requestId)) {
+      setHint("Couldn't send, check the connection and try again.")
+      return
+    }
   }
 
   return (
@@ -296,14 +317,17 @@ export function NowPanel({ ctx: ctxProp }: NowPanelProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- store/ctxProp are stable per mount
   }, [])
 
-  function handleAnswer(requestId: string, answer: string) {
-    clientRef.current?.send({ type: "job-input-result", requestId, answer })
+  function handleAnswer(requestId: string, answer: string): boolean {
+    return clientRef.current?.send({ type: "job-input-result", requestId, answer }) ?? false
   }
 
-  function handleDismiss(requestId: string) {
-    clientRef.current?.send({ type: "job-input-result", requestId, cancelled: true })
+  function handleDismiss(requestId: string): boolean {
+    if (!(clientRef.current?.send({ type: "job-input-result", requestId, cancelled: true }) ?? false)) {
+      return false
+    }
     // Removed immediately - no round trip needed for a dismiss.
     store.dispatch({ tag: "remove-input-request", requestId })
+    return true
   }
 
   function handleExpire(requestId: string) {

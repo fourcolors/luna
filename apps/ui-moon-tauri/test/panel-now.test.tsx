@@ -69,7 +69,14 @@ let currentRegistry: LunaFrameRegistry | null = null
 let sentFrames: any[] = []
 let closeCalls = 0
 
-function makeCtx(invokeImpl?: (cmd: string, args?: any) => any): { ctx: PanelCtx; invoke: ReturnType<typeof vi.fn> } {
+function makeCtx(
+  invokeImpl?: (cmd: string, args?: any) => any,
+  // Overrides the client's send(); defaults to recording the frame and
+  // returning true (the socket-OPEN path). A test passes `() => false` to
+  // drive the vendor/moon-ws.js not-OPEN path, where the frame never goes
+  // out and send() reports the failure.
+  sendImpl?: (frame: any) => boolean,
+): { ctx: PanelCtx; invoke: ReturnType<typeof vi.fn> } {
   const invoke = vi.fn(async (cmd: string, args?: any) => {
     if (cmd === 'load_connection') return { wsUrl: 'ws://test-host/ui', wsToken: 'test-tok' }
     return invokeImpl ? invokeImpl(cmd, args) : null
@@ -86,6 +93,7 @@ function makeCtx(invokeImpl?: (cmd: string, args?: any) => any): { ctx: PanelCtx
       const client: LunaWsClient = {
         connect: () => null,
         send: (frame) => {
+          if (sendImpl) return sendImpl(frame)
           sentFrames.push(frame)
           return true
         },
@@ -205,6 +213,16 @@ const INPUT_REQ_2 = {
   prompt: 'What tone should I use?',
   timeoutMs: 30000,
 }
+// Same request with no timeoutMs: the client-side expiry effect returns
+// early, so nothing but a job-input-status frame can ever settle the card.
+const INPUT_REQ_NO_TIMEOUT = {
+  type: 'job-input-request',
+  requestId: 'req-1',
+  runId: 42,
+  jobId: 'wf-1',
+  jobName: 'Draft Report',
+  prompt: 'Which draft should I finalize?',
+}
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -294,6 +312,50 @@ describe('NowPanel (React port of panels/now.js)', () => {
     const hint = el.querySelector('.now-card-hint')
     expect(hint).toBeTruthy()
     expect(hint!.textContent).toContain('Please type an answer')
+  })
+
+  it('answer: failed send re-enables the card, keeps the typed answer, and shows a retry hint', async () => {
+    vi.useFakeTimers()
+    // send() returning false is the vendor/moon-ws.js not-OPEN path: the
+    // frame never went out, so no job-input-status will ever settle this
+    // card - and with no timeoutMs nothing else can either.
+    const { ctx } = makeCtx(undefined, () => false)
+    const el = renderPanel(ctx)
+    fireFrame({ type: 'hello', capabilities: { workflows: true } })
+    fireFrame(INPUT_REQ_NO_TIMEOUT)
+    const input = el.querySelector('.now-answer-card input') as HTMLInputElement
+    typeInto(input, 'PDF')
+    const answerBtn = el.querySelector('.now-answer-btn') as HTMLButtonElement
+    act(() => {
+      answerBtn.click()
+    })
+    expect(sentFrames).toHaveLength(0)
+    const hint = el.querySelector('.now-card-hint')
+    expect(hint).toBeTruthy()
+    expect(hint!.textContent).toContain("Couldn't send")
+    expect((el.querySelector('.now-answer-card input') as HTMLInputElement).value).toBe('PDF')
+    expect((el.querySelector('.now-answer-card input') as HTMLInputElement).disabled).toBe(false)
+    expect((el.querySelector('.now-answer-btn') as HTMLButtonElement).disabled).toBe(false)
+    // Still pending, and still enabled, a minute later.
+    await advance(60000)
+    expect(el.querySelector('.now-answer-card')).toBeTruthy()
+    expect((el.querySelector('.now-answer-card input') as HTMLInputElement).disabled).toBe(false)
+  })
+
+  it('dismiss: failed send keeps the card instead of orphaning the job server-side', () => {
+    const { ctx } = makeCtx(undefined, () => false)
+    const el = renderPanel(ctx)
+    fireFrame({ type: 'hello', capabilities: { workflows: true } })
+    fireFrame(INPUT_REQ_1)
+    const dismissBtn = el.querySelector('.now-dismiss-btn') as HTMLButtonElement
+    act(() => {
+      dismissBtn.click()
+    })
+    expect(sentFrames).toHaveLength(0)
+    expect(el.querySelector('.now-answer-card')).toBeTruthy()
+    const hint = el.querySelector('.now-card-hint')
+    expect(hint).toBeTruthy()
+    expect(hint!.textContent).toContain("Couldn't send")
   })
 
   it('dismiss: sends job-input-result with cancelled:true and removes the card immediately', () => {
