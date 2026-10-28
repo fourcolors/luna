@@ -204,6 +204,13 @@ export const createLocalShellBridge = (): LocalShellBridge => {
     }
 
     if (!frame.enabled) {
+      const cur = clients.get(frame.clientId)
+      // Only the CURRENT registration's own connection may remove it, same
+      // guard as removeClient: a stale connection disabling after a reconnect
+      // must not wipe the live registration or reject its in-flight requests.
+      if (cur !== undefined && cur.connId !== connId) {
+        return { ...base, enabled: false, accepted: true, message: "local shell disabled" }
+      }
       if (clients.delete(frame.clientId)) {
         rejectPendingForClient(
           frame.clientId,
