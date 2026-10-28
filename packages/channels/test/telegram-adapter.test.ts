@@ -1331,6 +1331,56 @@ describe("reconnection: transient poll errors are retried", () => {
     // Second call (the retry): same offset 0 — not advanced past the failed poll.
     expect(getUpdatesOffsets[1]).toBe(0)
   }, 10_000)
+
+  it("a non-array getUpdates result is a typed failure, so the retry schedule backs off instead of spinning", async () => {
+    // A malformed ok:true response whose result is not an array used to throw
+    // TypeError out of pollOnce's for...of. That throw is a defect, not a
+    // typed failure, so Effect.retry never engaged and the loop-level
+    // catchCause resumed at the same offset immediately — thousands of
+    // getUpdates calls per second, all at offset 0, logging "retrying with
+    // backoff" while doing no backoff at all (and eventually blowing the
+    // stack on the unbounded synchronous recursion).
+    const getUpdatesOffsets: number[] = []
+    const receivedMessages: ChannelMessage[] = []
+
+    // Script the malformed result repeatedly: the queue must outlast the
+    // 2.5s window post-fix (only ~2 polls fire, at t=0 and t=1s), while
+    // pre-fix it exhausts in milliseconds and the loop falls back to
+    // empty polls — still thousands of calls, so the assertion below
+    // fails on the unfixed code either way.
+    const malformed = { ok: true, result: { update_id: 1 } }
+    const { transport: baseTransport } = makeFakeTransport(
+      [],
+      { getUpdates: Array.from({ length: 10 }, () => malformed) },
+    )
+    const recordingTransport: TelegramHttpTransport = (method, params) =>
+      Effect.sync(() => {
+        if (method === "getUpdates") {
+          getUpdatesOffsets.push(params["offset"] as number)
+        }
+      }).pipe(
+        Effect.flatMap(() => baseTransport(method, params)),
+      )
+
+    const adapter = makeTelegramAdapter({ id: "tg-nonarray", httpTransport: recordingTransport })
+    adapter.setMessageHandler((msg) =>
+      Effect.sync(() => { receivedMessages.push(msg) }),
+    )
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(Effect.scoped(adapter.start()))
+        // First poll fails typed at once; retry schedule is exponential from
+        // 1s, so in 2.5s at most the t=0 and t=1s polls can fire.
+        yield* Effect.sleep("2500 millis")
+        yield* Fiber.interrupt(fiber)
+      }),
+    )
+
+    expect(receivedMessages).toHaveLength(0)
+    expect(getUpdatesOffsets.length).toBeLessThanOrEqual(3)
+    expect(getUpdatesOffsets.every((o) => o === 0)).toBe(true)
+  }, 10_000)
 })
 
 /* -------------------------------------------------------------------------- */
