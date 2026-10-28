@@ -135,6 +135,8 @@ function WorkflowRow({ wf }: { wf: WorkflowGalleryItem }) {
 
 // ── Answer card ──────────────────────────────────────────────────────────
 
+const SEND_FAILED_HINT = "Couldn't send. Check your connection and try again."
+
 interface AnswerCardProps {
   req: PendingInputRequest
   // Boolean return: whether the frame actually went out (client.send()
@@ -197,7 +199,7 @@ function AnswerCard({ req, onAnswer, onDismiss, onExpire, onRemove }: AnswerCard
     // forever with no error and no way to retry.
     if (!onAnswer(req.requestId, val)) {
       setSubmitting(false)
-      setHint("Couldn't send, check the connection and try again.")
+      setHint(SEND_FAILED_HINT)
       return
     }
     // Wipe the input value (clear after send - per spec).
@@ -209,7 +211,7 @@ function AnswerCard({ req, onAnswer, onDismiss, onExpire, onRemove }: AnswerCard
     // cancel frame never went out leaves the job waiting server-side with
     // no card left to answer it from.
     if (!onDismiss(req.requestId)) {
-      setHint("Couldn't send, check the connection and try again.")
+      setHint(SEND_FAILED_HINT)
       return
     }
   }
@@ -245,7 +247,11 @@ function AnswerCard({ req, onAnswer, onDismiss, onExpire, onRemove }: AnswerCard
           onClick={handleDismiss}
         />
       </div>
-      {hint && <div className="now-card-hint error">{hint}</div>}
+      {hint && (
+        <div className="now-card-hint error" role="alert">
+          {hint}
+        </div>
+      )}
     </div>
   )
 }

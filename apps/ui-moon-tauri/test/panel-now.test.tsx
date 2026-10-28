@@ -332,7 +332,8 @@ describe('NowPanel (React port of panels/now.js)', () => {
     expect(sentFrames).toHaveLength(0)
     const hint = el.querySelector('.now-card-hint')
     expect(hint).toBeTruthy()
-    expect(hint!.textContent).toContain("Couldn't send")
+    expect(hint!.textContent).toBe("Couldn't send. Check your connection and try again.")
+    expect(hint!.getAttribute('role')).toBe('alert')
     expect((el.querySelector('.now-answer-card input') as HTMLInputElement).value).toBe('PDF')
     expect((el.querySelector('.now-answer-card input') as HTMLInputElement).disabled).toBe(false)
     expect((el.querySelector('.now-answer-btn') as HTMLButtonElement).disabled).toBe(false)
@@ -355,7 +356,8 @@ describe('NowPanel (React port of panels/now.js)', () => {
     expect(el.querySelector('.now-answer-card')).toBeTruthy()
     const hint = el.querySelector('.now-card-hint')
     expect(hint).toBeTruthy()
-    expect(hint!.textContent).toContain("Couldn't send")
+    expect(hint!.textContent).toBe("Couldn't send. Check your connection and try again.")
+    expect(hint!.getAttribute('role')).toBe('alert')
   })
 
   it('dismiss: sends job-input-result with cancelled:true and removes the card immediately', () => {

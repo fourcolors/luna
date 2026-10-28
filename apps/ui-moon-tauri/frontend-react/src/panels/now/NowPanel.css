@@ -64,6 +64,7 @@ html[data-theme="dark"] .now-answer-card-job {
 }
 .now-card-hint {
   font-size: 0.68rem;
+  line-height: 1.4;
   color: #9a6b1f;
 }
 html[data-theme="dark"] .now-card-hint {
