@@ -1504,6 +1504,21 @@ export const makeTelegramAdapter = (config: TelegramAdapterConfig): ChannelAdapt
           return yield* Effect.fail(new Error(`getUpdates not ok: ${desc}`))
         }
 
+        // A malformed non-array result would throw TypeError out of the
+        // for...of below. That throw is a defect, not a typed failure, so
+        // Effect.retry never engages and the loop-level catchCause resumes
+        // at the same offset immediately — a tight spin that logs
+        // "retrying with backoff" while doing no backoff at all. Fail
+        // typed instead so the retry schedule backs off and the loop
+        // self-heals if Telegram recovers. A missing result still means
+        // "no updates" (the ?? [] below); only a present non-array is
+        // malformed.
+        if (result.result !== undefined && !Array.isArray(result.result)) {
+          return yield* Effect.fail(
+            new Error(`getUpdates returned a non-array result: ${typeof result.result}`),
+          )
+        }
+
         const updates = (result.result ?? []) as TelegramUpdate[]
 
         let nextOffset = currentOffset
