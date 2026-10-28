@@ -194,7 +194,10 @@ export class FakeWebSocket {
    * so the engine under test has a chance to construct its NEXT socket
    * before the following flap. Throws if no socket exists to flap (i.e. the
    * engine never called `new WebSocket(...)` — connect() was never invoked,
-   * or a previous reconnect never fired).
+   * or a previous reconnect never fired). It also throws if the latest
+   * socket is the same instance the previous iteration dropped: that means
+   * no reconnect happened, and flapping it again would only resurrect it
+   * via simulateOpen().
    *
    * `stepMs` defaults to 20_000ms, comfortably clearing chat.html's 16s
    * exponential-backoff ceiling so each flap iteration always lands on a
@@ -202,11 +205,22 @@ export class FakeWebSocket {
    */
   static simulateFlap(n: number, opts: { advance: (ms: number) => void; stepMs?: number }): void {
     const stepMs = opts.stepMs ?? 20_000
+    let prev: FakeWebSocket | undefined
     for (let i = 0; i < n; i++) {
       const sock = FakeWebSocket.latest()
       if (!sock) {
         throw new Error(`FakeWebSocket.simulateFlap: no socket instance to flap on iteration ${i}`)
       }
+      // A flap iteration must run on a socket the engine created for it. If
+      // the latest instance is the same one the previous iteration dropped,
+      // the engine never reconnected — and simulateOpen() would silently
+      // resurrect that dead socket (OPEN after CLOSED, a state a real
+      // WebSocket never produces), letting the flap complete as if the
+      // reconnect had happened. Fail loudly instead of false-passing.
+      if (prev !== undefined && sock === prev) {
+        throw new Error(`FakeWebSocket.simulateFlap: no fresh socket on iteration ${i} — the engine under test did not reconnect after the previous drop`)
+      }
+      prev = sock
       sock.simulateOpen()
       sock.simulateDrop()
       opts.advance(stepMs)
