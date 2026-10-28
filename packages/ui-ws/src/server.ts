@@ -2219,8 +2219,43 @@ export const startUIWebSocketServer = (
                     return
                   case "local-shell-capability": {
                     if (localShellBridge === null) return
+                    // Trust boundary: `sandbox` is true ONLY for the server's
+                    // own in-process container sandbox (registered via
+                    // attachSandboxLocalShell, never over the wire — see the
+                    // protocol.ts doc on LocalShellCapabilityFrame.sandbox).
+                    // A WS client asserting sandbox:true would pass the
+                    // unattended-thread gate in the bridge's eligibleFor and
+                    // become reachable from forked/channel/agent-created
+                    // threads, an injection surface. The transport vouches
+                    // for identity, never the frame (cf. acceptResult's
+                    // fromClientId contract), so pin it false here. The
+                    // in-process sandbox registers directly on the bridge
+                    // and is unaffected.
+                    // The sandbox's well-known clientId ("server_sandbox",
+                    // the attachSandboxLocalShell default in apps/server) is
+                    // reserved: the bridge keys registrations by clientId, so
+                    // a wire frame claiming it would overwrite the sandbox's
+                    // registration (or delete it with enabled:false), and the
+                    // disconnect cleanup would then remove the entry with no
+                    // re-register — unattended threads would lose their only
+                    // shell. Reject such frames outright, before setCapability
+                    // and before the localShellClientIds bookkeeping below.
+                    if (frame.clientId === "server_sandbox") {
+                      console.log(
+                        `[ui-ws] rejected local-shell-capability claiming reserved clientId "${frame.clientId}"`,
+                      )
+                      send(ws, {
+                        type: "local-shell-status",
+                        clientId: frame.clientId,
+                        enabled: false,
+                        accepted: false,
+                        message:
+                          'clientId "server_sandbox" is reserved for the server sandbox',
+                      })
+                      return
+                    }
                     const status = localShellBridge.setCapability(
-                      frame,
+                      { ...frame, sandbox: false },
                       (out) => {
                         send(ws, out)
                       },
