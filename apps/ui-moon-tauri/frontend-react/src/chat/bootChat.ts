@@ -361,6 +361,9 @@ export function bootChat() {
       },
       State: getChatHost()?.state(),
       WebSocketEngine: { send: (frame: unknown) => getChatHost()?.send(frame as never) },
+      // Engine-aware connectivity: PoolEngine never assigns State.ws, so the
+      // artifact pin/unpin guards must read this, not the raw socket (#500 class).
+      isConnected: () => getChatHost()?.isConnected() ?? false,
       renderMarkdown: (md: string) =>
         (window as unknown as { LunaMarkdown: { renderMarkdown: (m: string) => string } }).LunaMarkdown.renderMarkdown(md),
       enhanceCodeBlocks: (root: unknown) =>
