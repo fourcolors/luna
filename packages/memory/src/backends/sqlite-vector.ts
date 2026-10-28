@@ -623,6 +623,19 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
           }
         } else {
           warnFallbackOnce(vlInit.reason)
+          // A previous HNSW-enabled open leaves the sync triggers (and the
+          // vectorlite v-table) in the schema. SQLite compiles trigger bodies
+          // at prepare time, and those bodies reference the vectorlite
+          // module, so preparing ANY statement against memory_vectors would
+          // throw 'no such module: vectorlite'. Drop them (best-effort) so
+          // the naive path can open the file. A later HNSW-enabled open
+          // recreates them (all creates are IF NOT EXISTS) and rebuilds the
+          // graph from the sidecar / memory_vectors.
+          try {
+            dropHnswObjects()
+          } catch {
+            /* best-effort */
+          }
         }
 
         // Prepared statements
