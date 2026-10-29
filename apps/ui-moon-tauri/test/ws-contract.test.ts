@@ -193,7 +193,10 @@ describe('Moon WS-contract harness (frontend-react/chat.html WebSocketEngine)', 
       // Late frame on the now-superseded sock0 — must be ignored (fix-6 gen
       // gate). This is the "cross-thread frame bleed" / stale-socket race
       // the batch is tracking; the harness pins the expected contract.
-      sock0.injectServerMessage({ type: 'hello', capabilities: { artifacts: true } })
+      // The engine's reconnect closed sock0, so the contract-shaped
+      // injectServerMessage refuses it (a real socket never delivers after
+      // close); fire() is the documented escape hatch for this scenario.
+      sock0.fire('message', { data: JSON.stringify({ type: 'hello', capabilities: { artifacts: true } }) })
       expect(m.State.serverSupportsArtifacts).toBe(false)
 
       // The live socket's frame IS applied — exactly once.

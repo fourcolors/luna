@@ -266,12 +266,15 @@ describe('PoolEngine against the WS contract (dark flag ON)', () => {
       const sock0 = await bringUp()
       expect(internals().State.serverSupportsArtifacts).toBe(false)
 
-      // A second connect() supersedes the first without sock0 closing first.
+      // A second connect() supersedes the first; the engine's reconnect
+      // closes sock0, so the late frame below is delivered via fire() (the
+      // escape hatch: the contract-shaped injectServerMessage refuses a
+      // closed socket, as a real socket never delivers after close).
       void pool().connect()
       await settle()
 
       // A late frame on the now-superseded socket must be ignored.
-      sock0.injectServerMessage({ type: 'hello', capabilities: { artifacts: true } })
+      sock0.fire('message', { data: JSON.stringify({ type: 'hello', capabilities: { artifacts: true } }) })
       await settle()
       expect(
         internals().State.serverSupportsArtifacts,

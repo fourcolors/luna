@@ -30,3 +30,65 @@ describe("FakeWebSocket.simulateFlap", () => {
     expect(FakeWebSocket.instances.length).toBe(4)
   })
 })
+
+describe("FakeWebSocket.simulateMessage readyState gate", () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+  })
+
+  it("throws while CONNECTING (a real socket never delivers before open)", () => {
+    const sock = new FakeWebSocket("ws://test")
+    expect(() => sock.simulateMessage({ type: "hello" })).toThrow(/not OPEN/)
+    expect(() => sock.injectServerMessage({ type: "hello" })).toThrow(/not OPEN/)
+  })
+
+  it("throws after close (a real socket never delivers after close)", () => {
+    const sock = new FakeWebSocket("ws://test")
+    sock.simulateOpen()
+    sock.simulateDrop()
+    expect(() => sock.simulateMessage({ type: "hello" })).toThrow(/not OPEN/)
+  })
+
+  it("delivers after simulateOpen", () => {
+    const sock = new FakeWebSocket("ws://test")
+    const seen: any[] = []
+    sock.addEventListener("message", (evt) => seen.push(evt))
+    sock.simulateOpen()
+    sock.simulateMessage({ type: "hello" })
+    expect(seen).toHaveLength(1)
+    expect(JSON.parse(seen[0].data)).toEqual({ type: "hello" })
+  })
+})
+
+describe("FakeWebSocket.close wasClean", () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+  })
+
+  it("fires wasClean:false when closing from CONNECTING (failed connection, never clean)", () => {
+    const sock = new FakeWebSocket("ws://test")
+    const seen: any[] = []
+    sock.addEventListener("close", (evt) => seen.push(evt))
+    sock.close()
+    expect(seen).toHaveLength(1)
+    expect(seen[0].wasClean).toBe(false)
+  })
+
+  it("keeps wasClean:true for a code-1000 close from OPEN", () => {
+    const sock = new FakeWebSocket("ws://test")
+    const seen: any[] = []
+    sock.addEventListener("close", (evt) => seen.push(evt))
+    sock.simulateOpen()
+    sock.close()
+    expect(seen[0].wasClean).toBe(true)
+  })
+
+  it("fires wasClean:false for an abnormal close code from OPEN", () => {
+    const sock = new FakeWebSocket("ws://test")
+    const seen: any[] = []
+    sock.addEventListener("close", (evt) => seen.push(evt))
+    sock.simulateOpen()
+    sock.close(1006, "abnormal")
+    expect(seen[0].wasClean).toBe(false)
+  })
+})
