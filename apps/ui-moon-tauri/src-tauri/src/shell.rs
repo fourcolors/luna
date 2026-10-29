@@ -19,6 +19,11 @@
 
 const LOCAL_SHELL_MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const LOCAL_SHELL_FORCE_KILL_GRACE_MS: u64 = 250;
+/// How long the pipe drains may run after the child exits before they are
+/// cut short. Pipes normally hit EOF within milliseconds of child death;
+/// anything longer means a surviving background child holds them open, and
+/// waiting for it would hang the command indefinitely (see exec_local).
+const LOCAL_SHELL_DRAIN_GRACE_MS: u64 = 1_000;
 const LOCAL_SHELL_DEFAULT_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(serde::Serialize)]
@@ -56,35 +61,65 @@ fn is_secret_env_key(key: &str) -> bool {
         || k.contains("PRIVATE-KEY")
 }
 
-/// Drain a child pipe fully, retaining at most `cap` bytes and counting the rest
-/// as omitted — bounds memory without ever deadlocking on a full pipe.
-async fn read_capped<R>(mut reader: R, cap: usize) -> (Vec<u8>, usize)
+/// Byte-capped capture shared between a drain task and the executor, so the
+/// executor can snapshot what arrived even when a drain task is cut short
+/// (a background child holding the pipes open). Same cap accounting as the
+/// old read_capped: retain the first `cap` bytes, count the rest as omitted.
+struct CappedSink {
+    retained: Vec<u8>,
+    omitted: usize,
+    cap: usize,
+}
+
+impl CappedSink {
+    fn new(cap: usize) -> Self {
+        Self {
+            retained: Vec::new(),
+            omitted: 0,
+            cap,
+        }
+    }
+
+    fn push(&mut self, chunk: &[u8]) {
+        if self.retained.len() < self.cap {
+            let room = self.cap - self.retained.len();
+            if chunk.len() <= room {
+                self.retained.extend_from_slice(chunk);
+            } else {
+                self.retained.extend_from_slice(&chunk[..room]);
+                self.omitted += chunk.len() - room;
+            }
+        } else {
+            self.omitted += chunk.len();
+        }
+    }
+}
+
+/// Drain one child pipe into a shared sink until EOF or read error. The
+/// sink (not the task's return value) owns the bytes, so the executor can
+/// snapshot partial output if it has to cut this task short.
+async fn drain_capped<R>(reader: Option<R>, sink: std::sync::Arc<std::sync::Mutex<CappedSink>>)
 where
     R: tokio::io::AsyncRead + Unpin,
 {
     use tokio::io::AsyncReadExt;
-    let mut retained: Vec<u8> = Vec::new();
-    let mut omitted = 0usize;
+    let Some(mut reader) = reader else { return };
     let mut chunk = [0u8; 8192];
     loop {
         match reader.read(&mut chunk).await {
             Ok(0) | Err(_) => break,
             Ok(n) => {
-                if retained.len() < cap {
-                    let room = cap - retained.len();
-                    if n <= room {
-                        retained.extend_from_slice(&chunk[..n]);
-                    } else {
-                        retained.extend_from_slice(&chunk[..room]);
-                        omitted += n - room;
-                    }
-                } else {
-                    omitted += n;
-                }
+                sink.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(&chunk[..n]);
             }
         }
     }
-    (retained, omitted)
+}
+
+fn snapshot_sink(sink: &std::sync::Mutex<CappedSink>) -> (Vec<u8>, usize) {
+    let guard = sink.lock().unwrap_or_else(|e| e.into_inner());
+    (guard.retained.clone(), guard.omitted)
 }
 
 fn format_captured(bytes: Vec<u8>, omitted: usize) -> String {
@@ -145,20 +180,20 @@ async fn exec_local(
     };
 
     let pid = child.id();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let stdout_task = tokio::spawn(async move {
-        match stdout {
-            Some(r) => read_capped(r, LOCAL_SHELL_MAX_OUTPUT_BYTES).await,
-            None => (Vec::new(), 0),
-        }
-    });
-    let stderr_task = tokio::spawn(async move {
-        match stderr {
-            Some(r) => read_capped(r, LOCAL_SHELL_MAX_OUTPUT_BYTES).await,
-            None => (Vec::new(), 0),
-        }
-    });
+    let stdout_sink = std::sync::Arc::new(std::sync::Mutex::new(CappedSink::new(
+        LOCAL_SHELL_MAX_OUTPUT_BYTES,
+    )));
+    let stderr_sink = std::sync::Arc::new(std::sync::Mutex::new(CappedSink::new(
+        LOCAL_SHELL_MAX_OUTPUT_BYTES,
+    )));
+    let mut stdout_task = tokio::spawn(drain_capped(
+        child.stdout.take(),
+        std::sync::Arc::clone(&stdout_sink),
+    ));
+    let mut stderr_task = tokio::spawn(drain_capped(
+        child.stderr.take(),
+        std::sync::Arc::clone(&stderr_sink),
+    ));
 
     let mut timed_out = false;
     let mut exit_code: Option<i32> = None;
@@ -183,13 +218,40 @@ async fn exec_local(
         }
     }
 
-    let (out_bytes, out_omitted) = stdout_task.await.unwrap_or((Vec::new(), 0));
-    let (err_bytes, err_omitted) = stderr_task.await.unwrap_or((Vec::new(), 0));
+    // Bound the pipe drains. After the child exits, a surviving background
+    // child — daemonized on the normal path, or setsid'd out of the process
+    // group the timeout path just killed — can hold the pipes open
+    // indefinitely, and awaiting the drains unbounded would hang this command
+    // forever (past the timeout path too, which already killed and waited).
+    // Give the drains a short grace for in-flight bytes to land, then cut
+    // them short and report what was captured.
+    let drained = timeout(Duration::from_millis(LOCAL_SHELL_DRAIN_GRACE_MS), async {
+        let _ = (&mut stdout_task).await;
+        let _ = (&mut stderr_task).await;
+    })
+    .await;
+    let stdout_cut = drained.is_err() && !stdout_task.is_finished();
+    let stderr_cut = drained.is_err() && !stderr_task.is_finished();
+    if drained.is_err() {
+        stdout_task.abort();
+        stderr_task.abort();
+    }
+
+    let (out_bytes, out_omitted) = snapshot_sink(&stdout_sink);
+    let (err_bytes, err_omitted) = snapshot_sink(&stderr_sink);
+    let mut stdout = format_captured(out_bytes, out_omitted);
+    let mut stderr = format_captured(err_bytes, err_omitted);
+    if stdout_cut {
+        stdout.push_str("\n[output cut short: a background process still holds the stream open]");
+    }
+    if stderr_cut {
+        stderr.push_str("\n[output cut short: a background process still holds the stream open]");
+    }
 
     LocalShellExecResult {
         exit_code,
-        stdout: format_captured(out_bytes, out_omitted),
-        stderr: format_captured(err_bytes, err_omitted),
+        stdout,
+        stderr,
         duration_ms: elapsed_ms(),
         timed_out,
     }
@@ -311,6 +373,27 @@ mod tests {
         assert!(
             started.elapsed().as_millis() < 1_500,
             "must not wait the full 5s"
+        );
+    }
+
+    #[tokio::test]
+    async fn returns_promptly_when_a_background_child_holds_the_pipes() {
+        // A daemonizing command exits at once, but its background child
+        // keeps the stdio pipes open. The old code awaited the pipe drains
+        // with no bound, so the result never arrived until the background
+        // child exited; the drain grace must cut it short instead.
+        let started = std::time::Instant::now();
+        let r = exec_local("(sleep 30 &)".into(), None, Some(10_000)).await;
+        assert_eq!(r.exit_code, Some(0));
+        assert!(!r.timed_out);
+        assert!(
+            started.elapsed().as_millis() < 5_000,
+            "must return within the drain grace, not when the background child exits"
+        );
+        assert!(
+            r.stdout.contains("still holds the stream open"),
+            "cut-short output must say so, got: {:?}",
+            r.stdout
         );
     }
 
