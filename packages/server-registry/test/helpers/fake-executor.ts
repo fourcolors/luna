@@ -44,11 +44,19 @@ export class FakeShellExecutor implements ShellExecutor {
   }
 
   getCallLog(): ReadonlyArray<{ argv: string[]; stdin?: string }> {
-    return this.callLog
+    // Defensive copies: the ReadonlyArray type is compile-time only, so
+    // returning the live array (or its mutable entry objects) would let a
+    // consumer corrupt the executor's record and later assertions.
+    return this.callLog.map((entry) => ({
+      ...entry,
+      argv: [...entry.argv],
+    }))
   }
 
   getWrittenFiles(): ReadonlyMap<string, string> {
-    return this.files
+    // Same live-collection leak as getCallLog: copy the map so a consumer
+    // mutating the result cannot corrupt the executor's record.
+    return new Map(this.files)
   }
 
   async exec(req: ExecRequest): Promise<ExecResult> {
