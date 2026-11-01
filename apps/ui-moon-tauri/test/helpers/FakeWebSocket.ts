@@ -123,9 +123,21 @@ export class FakeWebSocket {
 
   // ── Contract-shaped scripting API — the surface follow-on WS fixes drive ──
 
-  /** Transition CONNECTING -> OPEN and fire 'open'. No-op if already OPEN. */
+  /**
+   * Transition CONNECTING -> OPEN and fire 'open'. No-op if already OPEN.
+   * Throws on CLOSED/CLOSING: a real WebSocket never reopens — a fresh
+   * instance is required — so silently re-opening a dead socket would
+   * resurrect it and let a test pass against 'open' events production
+   * code could never receive (the same false-pass shape simulateFlap's
+   * fresh-socket guard exists to prevent).
+   */
   simulateOpen(): void {
     if (this.readyState === FakeWebSocket.OPEN) return
+    if (this.readyState !== FakeWebSocket.CONNECTING) {
+      throw new Error(
+        `FakeWebSocket.simulateOpen: socket is not CONNECTING (readyState=${this.readyState}) — a closed socket cannot reopen`,
+      )
+    }
     this.readyState = FakeWebSocket.OPEN
     this.dispatch('open', {})
   }
