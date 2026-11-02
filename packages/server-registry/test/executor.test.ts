@@ -86,6 +86,27 @@ describe("FakeShellExecutor", () => {
     expect(files.get("/b")).toBe("bbb")
   })
 
+  it("mutating the returned call log does not corrupt the executor record", async () => {
+    const exe = new FakeShellExecutor()
+    await exe.exec({ argv: ["git", "status"] })
+    await exe.exec({ argv: ["git", "diff"] })
+    const log = exe.getCallLog() as Array<{ argv: string[] }>
+    log.push({ argv: ["bogus"] })
+    log[0]?.argv.push("bogus-arg")
+    expect(exe.getCallLog()).toHaveLength(2)
+    expect(exe.getCallLog()[0]?.argv).toEqual(["git", "status"])
+  })
+
+  it("mutating the returned files map does not corrupt the executor record", async () => {
+    const exe = new FakeShellExecutor()
+    await exe.writeFile("/a", "aaa")
+    const files = exe.getWrittenFiles() as Map<string, string>
+    files.set("/evil", "x")
+    files.delete("/a")
+    expect(exe.getWrittenFiles().get("/a")).toBe("aaa")
+    expect(exe.getWrittenFiles().has("/evil")).toBe(false)
+  })
+
   it("setDefault changes fallback result", async () => {
     const exe = new FakeShellExecutor()
     exe.setDefault({ code: 42, stdout: "default-out", stderr: "", timedOut: false })

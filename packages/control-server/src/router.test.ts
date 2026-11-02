@@ -10,8 +10,25 @@ import { afterEach, describe, it, expect, vi } from "vitest"
 import { appRouter } from "./router.js"
 
 // ── Mock child_process.spawnSync so restart never calls launchctl ──────────
+// The `spawn` mock stands in for the detached updater child in
+// control.updateServer: it captures the 'error' listener so tests can fire
+// the spawn-failure event without ever executing the real updater script.
+const spawnState = vi.hoisted(() => ({
+  errorHandler: null as ((err: Error) => void) | null,
+}))
+
 vi.mock("node:child_process", () => ({
   spawnSync: vi.fn(() => ({ status: 0, stdout: "", stderr: "" })),
+  spawn: vi.fn(() => {
+    const child = {
+      unref: vi.fn(),
+      on: vi.fn((event: string, fn: (err: Error) => void) => {
+        if (event === "error") spawnState.errorHandler = fn
+        return child
+      }),
+    }
+    return child
+  }),
 }))
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -263,5 +280,34 @@ describe("control.updateServer", () => {
     const result = await caller.control.updateServer({ tag: "server-v0.5.0; rm -rf /" })
     expect(result.ok).toBe(false)
     expect(result.message).toContain("malformed tag")
+  })
+
+  it("a failed updater spawn logs instead of crashing the process", async () => {
+    const { spawn } = await import("node:child_process")
+    const spawnMock = spawn as unknown as ReturnType<typeof vi.fn>
+    spawnMock.mockClear()
+    spawnState.errorHandler = null
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      const result = await caller.control.updateServer({ tag: "server-v1.2.3" })
+      expect(result.ok).toBe(true)
+      expect(spawnMock).toHaveBeenCalledOnce()
+      const args = spawnMock.mock.calls[0]!
+      expect(String(args[0])).toContain("luna-update-server")
+      expect(args[1]).toEqual(["--ref", "server-v1.2.3"])
+      expect(spawnState.errorHandler).not.toBeNull()
+      // Pre-fix there was no 'error' listener, so this event was an
+      // unhandled 'error' that crashed the process (verified under both
+      // Node and Bun with a standalone spawn repro). Post-fix it is a
+      // logged failure and the process survives.
+      expect(() =>
+        spawnState.errorHandler!(new Error("spawn scripts/luna-update-server ENOENT")),
+      ).not.toThrow()
+      expect(errSpy).toHaveBeenCalledWith(
+        expect.stringContaining("control.updateServer: failed to start updater"),
+      )
+    } finally {
+      errSpy.mockRestore()
+    }
   })
 })
