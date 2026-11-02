@@ -27,6 +27,12 @@
  *    throws (InvalidStateError-equivalent), send() while CLOSING/CLOSED is a
  *    silent no-op (per spec — data is discarded, no exception), and a client
  *    -initiated close() transitions CLOSING->CLOSED before firing 'close'.
+ *  - `simulateMessage()` / `injectServerMessage()` require OPEN and throw
+ *    otherwise: a real socket never delivers a message while CONNECTING or
+ *    after close, and silently delivering one let tests pass against frames
+ *    the production engine could never receive. `close()` from CONNECTING
+ *    fires 'close' with `wasClean: false` (a connection that never opened
+ *    is never a clean close); from OPEN it keeps `wasClean: code === 1000`.
  *  - `simulateDrop()` is deliberately distinct from `close()`: a network
  *    drop / server-initiated teardown goes straight from OPEN to CLOSED
  *    without ever visiting CLOSING, and always fires with `wasClean: false`
@@ -108,9 +114,14 @@ export class FakeWebSocket {
   /** Client-initiated close — goes through CLOSING before CLOSED. */
   close(code = 1000, reason = ''): void {
     if (this.readyState === FakeWebSocket.CLOSED) return
+    // A close before the connection ever opened is a failed connection,
+    // never a clean close — per spec wasClean is false (mirrors
+    // simulateDrop's wasClean: false).
+    const wasClean =
+      this.readyState !== FakeWebSocket.CONNECTING && code === 1000
     this.readyState = FakeWebSocket.CLOSING
     this.readyState = FakeWebSocket.CLOSED
-    this.dispatch('close', { code, reason, wasClean: code === 1000 })
+    this.dispatch('close', { code, reason, wasClean })
   }
 
   // ── Low-level scripting escape hatch (kept for parity with the inline
@@ -132,6 +143,14 @@ export class FakeWebSocket {
 
   /** Fire a 'message' event. Accepts a pre-serialized string or a value to JSON.stringify. */
   simulateMessage(data: unknown): void {
+    // A real socket never delivers a message while CONNECTING or after
+    // close; fail loudly instead of letting a test pass against a frame
+    // the production engine could never receive.
+    if (this.readyState !== FakeWebSocket.OPEN) {
+      throw new Error(
+        `FakeWebSocket.simulateMessage: socket is not OPEN (readyState=${this.readyState})`,
+      )
+    }
     const payload = typeof data === 'string' ? data : JSON.stringify(data)
     this.dispatch('message', { data: payload })
   }
