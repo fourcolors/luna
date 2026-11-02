@@ -335,6 +335,17 @@ export const createAppRouter = (buildSha: string = "unknown") =>
           stdio: "ignore",
           cwd: repoRoot,
         })
+        // A spawn failure (updater missing, non-executable, or otherwise
+        // unspawnable) surfaces as an async 'error' event AFTER this
+        // mutation has already returned ok:true — and with no listener
+        // an unhandled 'error' event crashes the process (verified under
+        // both Node and Bun). Log it instead so a failed update degrades
+        // to a logged failure, not a dead control plane.
+        child.on("error", (err) => {
+          console.error(
+            `control.updateServer: failed to start updater: ${err.message}`,
+          )
+        })
         child.unref()
 
         return {
