@@ -122,8 +122,14 @@ export function makeRouter(
       return backendFor(q.namespace).query(q)
     }
     // No namespace filter → fan out across all backends and merge.
+    // Each backend applies `limit` to its own results, so without a
+    // cap here the merged stream returns up to limit-per-backend.
+    // Cap the merged stream at the requested limit, mirroring the
+    // per-backend contract (a limit of 0/unset means uncapped, as the
+    // backends treat it).
     const streams = rules.map((r) => r.backend.query(q))
-    return Stream.mergeAll(streams, { concurrency: rules.length })
+    const merged = Stream.mergeAll(streams, { concurrency: rules.length })
+    return q.limit ? merged.pipe(Stream.take(q.limit)) : merged
   }
 
   const del: MemoryRouter["delete"] = (id) =>
@@ -193,9 +199,14 @@ export function makeRouter(
       return Stream.mergeAll(streams, { concurrency: vecBackends.length })
     })()
 
+    // Without a scope the per-backend topK cap is not a total cap: fan-out
+    // would return up to topK-per-backend. Cap the merged stream at the
+    // requested topK, exactly as the scoped path does after its filter.
+    // (With a namespace the single backend already caps at topK, so the
+    // take is a no-op there.)
     const scoped =
       args.scope === undefined
-        ? inner
+        ? inner.pipe(Stream.take(requestedTopK))
         : inner.pipe(
             Stream.filter((hit) => matchesMemoryScope(hit.record, args.scope!)),
             Stream.take(requestedTopK),
