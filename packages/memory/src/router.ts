@@ -106,6 +106,29 @@ export function makeRouter(
     throw new Error(`MemoryRouter: no backend matched namespace ${namespace}`)
   }
 
+  // Fan-out ranking: Stream.mergeAll interleaves the per-backend streams
+  // without comparing scores or timestamps, so a plain take() on the
+  // merged stream would keep the first arrivals instead of the best rows
+  // (e.g. a 0.2 hit emitted before a 0.9 hit wins topK: 1). Each backend
+  // already caps its own output at the requested limit/topK, so the
+  // merged set is bounded (limit/topK per backend); collect it, rank it
+  // globally, then take. A backend failure still fails the whole stream
+  // via runCollect, matching mergeAll's failure behavior (minus partial
+  // emission before the failure, which no caller relies on).
+  const takeRanked = <A>(
+    stream: Stream.Stream<A, MemoryBackendError>,
+    limit: number,
+    compare: (a: A, b: A) => number,
+  ): Stream.Stream<A, MemoryBackendError> =>
+    Stream.unwrap(
+      stream.pipe(
+        Stream.runCollect,
+        Effect.map((chunk) =>
+          Stream.fromIterable(Array.from(chunk).sort(compare).slice(0, limit)),
+        ),
+      ),
+    )
+
   const put: MemoryRouter["put"] = (rec) => backendFor(rec.namespace).put(rec)
 
   const get: MemoryRouter["get"] = (id) =>
@@ -124,12 +147,19 @@ export function makeRouter(
     // No namespace filter → fan out across all backends and merge.
     // Each backend applies `limit` to its own results, so without a
     // cap here the merged stream returns up to limit-per-backend.
-    // Cap the merged stream at the requested limit, mirroring the
-    // per-backend contract (a limit of 0/unset means uncapped, as the
-    // backends treat it).
+    // Cap the merged stream at the requested limit, ranked newest-first
+    // (each backend already orders its own results by updatedAt desc, so
+    // the global newest-first order is the merge of those orders).
+    // Note on limit 0: an unset limit means uncapped; a limit of 0 is
+    // NOT uniformly uncapped across backends (in-memory treats 0 as
+    // uncapped, sqlite-vector applies LIMIT 0 and returns no rows), so
+    // the router only treats an unset limit as uncapped here and leaves
+    // the 0 contract to the backends.
     const streams = rules.map((r) => r.backend.query(q))
     const merged = Stream.mergeAll(streams, { concurrency: rules.length })
-    return q.limit ? merged.pipe(Stream.take(q.limit)) : merged
+    return q.limit
+      ? takeRanked(merged, q.limit, (a, b) => b.updatedAt - a.updatedAt)
+      : merged
   }
 
   const del: MemoryRouter["delete"] = (id) =>
@@ -201,12 +231,16 @@ export function makeRouter(
 
     // Without a scope the per-backend topK cap is not a total cap: fan-out
     // would return up to topK-per-backend. Cap the merged stream at the
-    // requested topK, exactly as the scoped path does after its filter.
-    // (With a namespace the single backend already caps at topK, so the
-    // take is a no-op there.)
+    // requested topK, ranked by score desc across backends (see
+    // takeRanked: a plain take would keep first arrivals, not best hits).
+    // With a namespace the single backend already caps at topK, so the
+    // take is a no-op there. The scoped path keeps its existing
+    // filter-then-take shape (pre-existing behavior, unchanged here).
     const scoped =
       args.scope === undefined
-        ? inner.pipe(Stream.take(requestedTopK))
+        ? args.namespace === undefined
+          ? takeRanked(inner, requestedTopK, (a, b) => b.score - a.score)
+          : inner.pipe(Stream.take(requestedTopK))
         : inner.pipe(
             Stream.filter((hit) => matchesMemoryScope(hit.record, args.scope!)),
             Stream.take(requestedTopK),
