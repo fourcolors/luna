@@ -164,6 +164,32 @@ export function clearBusy(ctx: ThreadCacheCtx, threadId: string | null | undefin
   }
 }
 
+/**
+ * Clear EVERY thread's busy flag, with a single strip repaint.
+ *
+ * WHY THIS EXISTS: a turn abandoned by a socket drop never gets a
+ * turn-complete / assistant-error / delivery frame - the only three paths
+ * that clear a busy flag - so without this, the strip's busy dot (and the
+ * face, via onRowClick's `setBusy(!!busyThreads[id])`) sticks forever on
+ * every thread that was in flight when the socket died. The wire calls this
+ * on close/disconnect and on (re)connect: a turn that is still running
+ * server-side re-marks itself busy on its next delta after resubscribe, so
+ * clearing never misreports a turn this client can still observe.
+ *
+ * No-op (no repaint) when nothing was busy, mirroring clearBusy.
+ */
+export function clearAllBusy(ctx: ThreadCacheCtx): void {
+  if (!ctx.state) return
+  const ids = Object.keys(ctx.state.busyThreads)
+  if (ids.length === 0) return
+  for (const id of ids) delete ctx.state.busyThreads[id]
+  try {
+    ctx.requestRender()
+  } catch {
+    /* sidebar may be closed */
+  }
+}
+
 export function isBusy(ctx: ThreadCacheCtx, threadId: string | null | undefined): boolean {
   if (!threadId || !ctx.state) return false
   return !!ctx.state.busyThreads[threadId]
