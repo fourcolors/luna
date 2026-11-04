@@ -917,6 +917,125 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
+  it("HNSW-era reopen with a scope-less vector row does not crash on open", async () => {
+    // The vectorlite extension must be loaded before ANY statement
+    // against memory_vectors is prepared: a previous HNSW-enabled open
+    // leaves the sync triggers in the schema, and preparing the scope
+    // backfill UPDATE resolves those trigger bodies. With the extension
+    // not yet loaded that throws 'no such module: vectorlite', so a
+    // scope-less row (e.g. written by an external writer that omits the
+    // scope columns, which default to '') made the backend unbootable
+    // instead of being backfilled. Regression test: seed one row via the
+    // backend, insert a scope-less vector row externally, reopen, and
+    // assert the backend boots and still searches the seeded row.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-scope-reopen] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-scope-reopen-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    try {
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "seed",
+                namespace: "rs",
+                kind: "note",
+                content: { text: "seed payload keyword echo" },
+              }),
+            )
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+
+      // External writer (loads the extension, like maintenance openDb)
+      // inserts a vector row WITHOUT scope columns -> defaults ''.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            get: (...p: unknown[]) => unknown
+            all: (...p: unknown[]) => unknown[]
+            run: (...p: unknown[]) => { changes: number }
+          }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const direct = new bunSqlite.Database(dbPath)
+      direct.loadExtension(probe.path)
+      const now = Date.now()
+      direct
+        .query(
+          `INSERT INTO memory_keyed
+             (id, namespace, kind, content_json, schema_version,
+              created_at, updated_at, tags_json)
+           VALUES (?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          "external-1",
+          "rs",
+          "note",
+          JSON.stringify({ text: "external payload keyword echo" }),
+          1,
+          now,
+          now,
+          "[]",
+        )
+      const emb = Buffer.alloc(64 * 4) // 64-dim zero embedding (StubEmbedder dim)
+      direct
+        .query(
+          `INSERT INTO memory_vectors
+             (id, namespace, embedding, dimension, text, ts)
+           VALUES (?,?,?,?,?,?)`,
+        )
+        .run("external-1", "rs", emb, 64, "external payload keyword echo", now)
+      const row = direct
+        .query(`SELECT subject_id FROM memory_vectors WHERE id='external-1'`)
+        .get() as { subject_id: string }
+      expect(row.subject_id).toBe("")
+      direct.close()
+
+      const layer2 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const ids = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            const arr = yield* Stream.runCollect(
+              b.search({
+                queryText: "payload keyword echo",
+                namespace: "rs",
+                topK: 10,
+                mode: "vec",
+              }),
+            )
+            return Array.from(arr).map((h) => h.record.id)
+          }),
+        ).pipe(Effect.provide(layer2)),
+      )
+      expect(ids).toContain("seed")
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
   it("Scenario 7k: HNSW v-table rebuilds from memory_vectors across close/reopen", async () => {
     // The HNSW sidecar flush on db.close() is best-effort: certain
     // prepared-statement combinations prevent vectorlite from serializing

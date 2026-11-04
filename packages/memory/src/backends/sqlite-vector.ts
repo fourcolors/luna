@@ -281,6 +281,49 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         // Wait for a contended write lock (e.g. a concurrent `luna memory`
         // maintenance connection) rather than failing fast with SQLITE_BUSY.
         db.run("PRAGMA busy_timeout = 5000")
+        // Load the vectorlite extension (or drop the stale HNSW objects)
+        // BEFORE any statement against memory_vectors is prepared: a
+        // previous HNSW-enabled open leaves the sync triggers in the
+        // schema, and preparing a statement that touches memory_vectors
+        // resolves those trigger bodies. With the extension not yet
+        // loaded that throws 'no such module: vectorlite' — e.g. the
+        // scope backfill below dies on any pre-existing scope-less row
+        // instead of backfilling it, so the backend cannot boot at all.
+        // (Each Database needs its own loadExtension() call even when
+        // vlInit succeeded process-wide; see the setup block below.)
+        // Drop the HNSW v-table + its three sync triggers. Defined here
+        // (not in the setup block below) so the open-time extension
+        // handling above can also use it; the setup block's
+        // spec-mismatch path, corruption recovery, and catch-block
+        // teardown share this one definition so the four DROPs can't
+        // drift out of sync.
+        const dropHnswObjects = (): void => {
+          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+          db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+        }
+        if (vlInit.ok) {
+          try {
+            ;(db as unknown as { loadExtension: (p: string) => void })
+              .loadExtension(vlInit.path)
+          } catch {
+            // The setup block below falls back to naive cosine ranking
+            // when v-table setup fails; the early load is best-effort
+            // here so its failure mode stays that same fallback.
+          }
+        } else {
+          // Same prepare-time hazard on the naive path: drop the stale
+          // triggers/v-table up front so the schema and backfill work
+          // below never resolve a vectorlite trigger body. Best-effort:
+          // the triggers are dropped first, so even if the v-table DROP
+          // itself throws, no later statement can hit a stale trigger.
+          try {
+            dropHnswObjects()
+          } catch {
+            /* best-effort */
+          }
+        }
         ensureMemoryVectorSchema(db)
         // Denormalized scope columns predate some vector rows; backfill once
         // (no-op when every row already carries its effective scope).
@@ -358,24 +401,16 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         }
         yield* Effect.addFinalizer(() => Effect.sync(closeAndRecordSidecar))
 
-        // Try to load the extension on this connection. Even if vlInit
-        // succeeded earlier (process-wide setCustomSQLite), each Database
-        // needs its own loadExtension() call.
+        // The extension was loaded on this connection right after open
+        // (see above). Even if vlInit succeeded earlier (process-wide
+        // setCustomSQLite), each Database needs its own loadExtension()
+        // call, which is why the load lives at open time rather than here.
         let hnswEnabled = false
-        // Drop the HNSW v-table + its three sync triggers. Shared by the
-        // spec-mismatch path, corruption recovery, and the catch-block
-        // teardown so the four DROPs can't drift out of sync. Defined out
-        // here (not inside the try) so the catch handler can see it.
-        const dropHnswObjects = (): void => {
-          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
-          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
-          db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
-          db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
-        }
         if (vlInit.ok) {
           try {
-            ;(db as unknown as { loadExtension: (p: string) => void })
-              .loadExtension(vlInit.path)
+            // The extension was already loaded on this connection right
+            // after open (see above) so trigger bodies resolve during
+            // the schema/scope work; do not load it a second time here.
             // Baseline for "did another connection commit while we were open"
             // (checked at close, see closeAndRecordSidecar). Read before any
             // open-time validation so a concurrent write cannot slip between.
