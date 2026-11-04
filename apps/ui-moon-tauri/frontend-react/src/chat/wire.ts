@@ -59,6 +59,7 @@ export interface WireCtx {
   readonly MoonBar: Record<string, unknown>
   readonly MoonFace: Record<string, unknown>
   readonly ThreadCreateState: Record<string, unknown>
+  readonly ThreadCache: Record<string, unknown>
   readonly ThreadDrawerEngine: Record<string, unknown>
   readonly MOON_EXPECTED_PROTOCOL_VERSION: number
   readonly SPAWN_FRESH: boolean
@@ -69,7 +70,7 @@ export interface WireCtx {
 export function createWire(ctx: WireCtx) {
   const {
     Logger, DOM, State, MoonFrames, ChatEngine, ChatState, ChatLoop,
-    ComposerConfig, MoonBar, MoonFace, ThreadCreateState, ThreadDrawerEngine,
+    ComposerConfig, MoonBar, MoonFace, ThreadCreateState, ThreadCache, ThreadDrawerEngine,
     MOON_EXPECTED_PROTOCOL_VERSION, SPAWN_FRESH, PINNED_THREAD, winLabel,
   } = ctx
 
@@ -171,6 +172,10 @@ const WebSocketEngine = {
       // `?.` for the same boot-order reason as updateStatus below: a first
       // connect() can precede the module, and `_busy` already defaults to false.
       MoonFace?.setBusy(false);
+      // Same invariant for the per-thread busy map: a dropped turn never gets
+      // turn-complete, so its strip dot would otherwise stick forever. A live
+      // turn re-marks itself on its next delta after resubscribe.
+      ThreadCache?.clearAllBusy?.();
 
       // fix-6: each connect() bumps the generation. Handlers attached below
       // capture this gen; a superseded socket's late async events (which
@@ -237,6 +242,9 @@ const WebSocketEngine = {
         this.clearTurnTimeout();                         // fix-3 — no leaked timer across reconnects
         this.clearSubscribeTimeout();                    // socket gone → the close path owns recovery now
         ThreadCreateState.onDisconnect();                // preserve an in-flight fresh-thread intent
+        // A turn abandoned by this drop never gets turn-complete; clear the
+        // per-thread busy map now or its strip dot sticks forever.
+        ThreadCache?.clearAllBusy?.();
         // Close hooks (registerCloseHook seam): secret/Vault wipe policies
         // live with the engines that own those inputs, so they can travel
         // to whichever window hosts them after the panel split. Runs at
@@ -282,6 +290,9 @@ const WebSocketEngine = {
       // A turn abandoned by a drop/teardown never gets a turn-complete frame;
       // settle the face here so it doesn't resurface as "thinking" on reconnect.
       MoonFace.setBusy(false);
+      // Same for the per-thread busy map, or the dropped turn's strip dot
+      // sticks forever (and onRowClick would re-light the face from it).
+      ThreadCache?.clearAllBusy?.();
       if (State.reconnectTimer) { clearTimeout(State.reconnectTimer); State.reconnectTimer = null; }
       if (State.ws) {
         Logger.info("Disconnecting WebSocket client manually");
@@ -800,6 +811,11 @@ const WebSocketEngine = {
       // `?.` for the same boot-order reason as updateStatus below: a first
       // connect() can precede the module, and `_busy` already defaults to false.
       MoonFace?.setBusy(false);
+      // A (re)connect means no turn from a prior socket is in flight; clear
+      // the per-thread busy map with the face, or a dropped turn's strip dot
+      // sticks forever (it never gets turn-complete). A live turn re-marks
+      // itself on its next delta after resubscribe.
+      ThreadCache?.clearAllBusy?.();
       this.updateStatus('connecting', 'Connecting…');
       // Arm close hooks HERE, at the start of the attempt, not on 'ready'.
       // The shipped hook wipes a typed-but-unsent secret, and a secret typed
@@ -1216,6 +1232,9 @@ const WebSocketEngine = {
       if (!this._hooksArmed) return; // not connected since last disconnect — skip
       this._hooksArmed = false;
       ThreadCreateState.onDisconnect();
+      // A turn abandoned by this drop never gets turn-complete; clear the
+      // per-thread busy map or its strip dot sticks forever.
+      ThreadCache?.clearAllBusy?.();
       for (const hook of this._closeHooks) {
         try { hook(); } catch (e) { Logger.warn('[PoolEngine] close hook failed:', e); }
       }
@@ -1253,6 +1272,9 @@ const WebSocketEngine = {
       this.clearSubscribeTimeout();
       ThreadCreateState.onDisconnect();
       MoonFace.setBusy(false);
+      // A turn abandoned by this teardown never gets turn-complete; clear
+      // the per-thread busy map or its strip dot sticks forever.
+      ThreadCache?.clearAllBusy?.();
       if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null; }
       this._teardownAdapter();
       this._isConnected = false;

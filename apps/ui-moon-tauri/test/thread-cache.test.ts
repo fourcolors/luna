@@ -18,6 +18,7 @@ import { describe, it, expect, vi } from "vitest"
 import {
   appendMessage,
   clear,
+  clearAllBusy,
   clearBusy,
   get,
   isBusy,
@@ -268,6 +269,47 @@ describe("threadCache", () => {
     })
   })
 
+  describe("clearAllBusy", () => {
+    it("clears every thread's busy flag with a single repaint", () => {
+      const { ctx, state, requestRender } = makeCtx()
+      markBusy(ctx, "a")
+      markBusy(ctx, "b")
+      requestRender.mockClear()
+      clearAllBusy(ctx)
+      expect(isBusy(ctx, "a")).toBe(false)
+      expect(isBusy(ctx, "b")).toBe(false)
+      expect(requestRender).toHaveBeenCalledTimes(1)
+      expect(state.busyThreads).toEqual({})
+    })
+
+    it("does not repaint when nothing was busy", () => {
+      const { ctx, requestRender } = makeCtx()
+      clearAllBusy(ctx)
+      expect(requestRender).not.toHaveBeenCalled()
+    })
+
+    it("still clears when the repaint throws - the sidebar may be closed", () => {
+      const requestRender = vi.fn(() => {
+        throw new Error("no sidebar")
+      })
+      const { ctx } = makeCtx({ requestRender })
+      markBusy(ctx, "a")
+      expect(() => clearAllBusy(ctx)).not.toThrow()
+      expect(isBusy(ctx, "a")).toBe(false)
+    })
+
+    it("is the drop path: a turn abandoned by a socket close loses its dot", () => {
+      // Frames clear busy only on turn-complete / assistant-error / delivery.
+      // A turn in flight when the socket dies gets none of those, so the wire
+      // calls clearAllBusy on close/disconnect/(re)connect - without it the
+      // strip dot (and the face, via onRowClick's busyThreads read) sticks.
+      const { ctx } = makeCtx()
+      markBusy(ctx, "bg-thread")
+      clearAllBusy(ctx)
+      expect(isBusy(ctx, "bg-thread")).toBe(false)
+    })
+  })
+
   describe("absent state", () => {
     it("every entry point degrades to a no-op when State is not wired yet", () => {
       // The harness mounts modules BEFORE the classic script defines State.
@@ -277,6 +319,7 @@ describe("threadCache", () => {
       expect(paint(ctx, "a")).toBe(false)
       expect(() => markBusy(ctx, "a")).not.toThrow()
       expect(() => clearBusy(ctx, "a")).not.toThrow()
+      expect(() => clearAllBusy(ctx)).not.toThrow()
       expect(() => clear(ctx, "a")).not.toThrow()
       expect(isBusy(ctx, "a")).toBe(false)
     })

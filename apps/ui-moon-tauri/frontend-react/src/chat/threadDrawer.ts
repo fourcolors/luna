@@ -131,6 +131,7 @@ export function createThreadDrawer(ctx: ThreadDrawerCtx) {
     appendMessage(threadId, message) { return ThreadCacheLogic.appendMessage(this._ctx(), threadId, message); },
     markBusy(threadId) { return ThreadCacheLogic.markBusy(this._ctx(), threadId); },
     clearBusy(threadId) { return ThreadCacheLogic.clearBusy(this._ctx(), threadId); },
+    clearAllBusy() { return ThreadCacheLogic.clearAllBusy(this._ctx()); },
     isBusy(threadId) { return ThreadCacheLogic.isBusy(this._ctx(), threadId); },
   }
 

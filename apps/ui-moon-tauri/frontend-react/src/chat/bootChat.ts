@@ -839,6 +839,7 @@ export function bootChat() {
     MoonBar: moonBar as never,
     MoonFace: moonFace as never,
     ThreadCreateState: threadDrawer.ThreadCreateState as never,
+    ThreadCache: threadDrawer.ThreadCache as never,
     ThreadDrawerEngine: threadDrawer.ThreadDrawerEngine as never,
     MOON_EXPECTED_PROTOCOL_VERSION: (window as unknown as { LunaProtocol?: { PROTOCOL_VERSION: number } })
       .LunaProtocol?.PROTOCOL_VERSION ?? 2,
