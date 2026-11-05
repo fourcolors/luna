@@ -837,9 +837,13 @@ export const subscribeAndDeliver = (
                   yield* Ref.set(lastEditedText, "")
                   yield* Ref.set(currentStatusLine, "")
                   yield* Ref.set(toolSteps, [])
-                  // The turn is over; drop its target snapshot.
-                  yield* Ref.set(turnTarget, null)
                 }
+                // The turn is over for every capability: a failed
+                // final-only / discrete-chunks turn ends with
+                // assistant-error and no turn-complete, so the snapshot
+                // must be dropped here too, or the next turn keeps
+                // replying against the failed turn's message.
+                yield* Ref.set(turnTarget, null)
                 break
               }
 
