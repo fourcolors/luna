@@ -239,6 +239,61 @@ describe("sandbox local shell", () => {
     }
   }, 15_000)
 
+  it("returns promptly when a background child holds stdio open", async () => {
+    const root = tempDir()
+    try {
+      const startedAt = Date.now()
+      const result = await executeSandboxLocalShellRequest({
+        type: "local-shell-request",
+        requestId: "req_daemon",
+        threadId: "thr_1",
+        // The shell exits at once, but the background sleeper inherits stdio,
+        // so Node's "close" never fires. The executor must settle on "exit"
+        // plus a short drain grace instead of waiting out the whole timeout
+        // and reporting a false timeout (same defect class #814 fixed in Rust).
+        command: "(sleep 29 &)",
+        timeoutMs: 5_000,
+      }, {
+        cwd: root,
+        sandboxRoot: root,
+        env: { PATH: process.env.PATH },
+        timeoutMs: 5_000,
+      })
+      expect(Date.now() - startedAt).toBeLessThan(3_000)
+      expect(result).toMatchObject({ approved: true, timedOut: false, exitCode: 0 })
+    } finally {
+      // Reap the background sleeper the repro command leaves behind.
+      try {
+        execFileSync("pkill", ["-f", "sleep 29"])
+      } catch { /* already gone */ }
+    }
+  }, 15_000)
+
+  it("releases the stdio pipes so the process can exit after a daemonizing command", async () => {
+    // A background grandchild holds the write ends of stdio open. If the
+    // executor settles without destroying its read ends, the event loop
+    // stays alive and the host process never exits (Devin review on #823).
+    // Drive the executor in a throwaway bun process and assert it exits.
+    const root = tempDir()
+    const src = new URL("../sandbox-local-shell.ts", import.meta.url).pathname
+    const script = [
+      `const { executeSandboxLocalShellRequest } = await import(${JSON.stringify(src)})`,
+      `const r = await executeSandboxLocalShellRequest({`,
+      `  type: "local-shell-request", requestId: "req_daemon", threadId: "thr_1",`,
+      `  command: "(sleep 29 &)", cwd: ${JSON.stringify(root)}, timeoutMs: 5_000,`,
+      `}, { cwd: ${JSON.stringify(root)}, sandboxRoot: ${JSON.stringify(root)}, env: { PATH: process.env.PATH }, timeoutMs: 5_000 })`,
+      `if (r.exitCode !== 0 || r.timedOut) { console.error(JSON.stringify(r)); process.exit(1) }`,
+    ].join("\n")
+    try {
+      execFileSync("bun", ["-e", script], { timeout: 8_000, stdio: "pipe" })
+    } finally {
+      // Reap the background sleeper the repro command leaves behind.
+      try {
+        execFileSync("pkill", ["-f", "sleep 29"])
+      } catch { /* already gone */ }
+    }
+  }, 15_000)
+
   it("strips secrets from the command environment", () => {
     expect(sanitizeSandboxCommandEnv({
       PATH: "/bin",
