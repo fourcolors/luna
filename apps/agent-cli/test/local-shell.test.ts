@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { execFileSync, existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -309,6 +309,36 @@ describe("executeLocalCommand", () => {
     expect(result.approved).toBe(true)
     expect(result.exitCode).toBeNull()
     expect(result.timedOut).toBe(true)
+  })
+
+  it("returns promptly when a background child holds stdio open", async () => {
+    const startedAt = Date.now()
+    try {
+      const result = await executeLocalCommand({
+        ...baseCommandOptions(cwd),
+        request: {
+          ...baseCommandOptions(cwd).request,
+          // The shell exits at once, but the background sleeper inherits
+          // stdio, so Node's "close" never fires. The executor must settle
+          // on "exit" plus a short drain grace instead of waiting out the
+          // whole timeout and reporting a false timeout (same defect class
+          // #814 fixed in Rust).
+          command: "(sleep 29 &)",
+          cwd,
+          timeoutMs: 5_000,
+        },
+      })
+
+      expect(Date.now() - startedAt).toBeLessThan(3_000)
+      expect(result.approved).toBe(true)
+      expect(result.exitCode).toBe(0)
+      expect(result.timedOut).toBe(false)
+    } finally {
+      // Reap the background sleeper the repro command leaves behind.
+      try {
+        execFileSync("pkill", ["-f", "sleep 29"])
+      } catch { /* already gone */ }
+    }
   })
 
   it("uses per-request cwd and timeout overrides", async () => {
