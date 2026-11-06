@@ -270,6 +270,13 @@ export const executeSandboxLocalShellRequest = async (
       if (settled) return
       settled = true
       clearTimers()
+      // Release the stdio pipes: a background grandchild may still hold the
+      // write ends open, so without this the read handles and their `data`
+      // listeners stay active after the result returns (accumulating handles
+      // on the server, and keeping a CLI event loop alive). On the normal
+      // `close` path the pipes are already closed, so this is a no-op.
+      child.stdout?.destroy()
+      child.stderr?.destroy()
       resolve({
         type: "local-shell-result",
         requestId: request.requestId,

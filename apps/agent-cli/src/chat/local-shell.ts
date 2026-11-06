@@ -347,6 +347,13 @@ export const executeLocalCommand = async (
       settled = true
       clearTimers()
       removeAbortListener()
+      // Release the stdio pipes: a background grandchild may still hold the
+      // write ends open, so without this the read handles and their `data`
+      // listeners stay active after the result returns (keeping the CLI
+      // event loop alive and accumulating handles on the server). On the
+      // normal `close` path the pipes are already closed, so this is a no-op.
+      child.stdout?.destroy()
+      child.stderr?.destroy()
       resolve({
         ...baseResult(),
         approved: true,

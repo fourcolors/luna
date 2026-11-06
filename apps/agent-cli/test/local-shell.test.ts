@@ -1,4 +1,5 @@
-import { execFileSync, existsSync, mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -340,6 +341,31 @@ describe("executeLocalCommand", () => {
       } catch { /* already gone */ }
     }
   })
+
+  it("releases the stdio pipes so the process can exit after a daemonizing command", async () => {
+    // A background grandchild holds the write ends of stdio open. If the
+    // executor settles without destroying its read ends, the event loop
+    // stays alive and the host process never exits (Devin review on #823).
+    // Drive the executor in a throwaway bun process and assert it exits.
+    const src = new URL("../src/chat/local-shell.ts", import.meta.url).pathname
+    const script = [
+      `const { executeLocalCommand } = await import(${JSON.stringify(src)})`,
+      `const r = await executeLocalCommand({`,
+      `  request: { requestId: "req-1", threadId: "thread-1", command: "(sleep 29 &)", cwd: ${JSON.stringify(cwd)} },`,
+      `  clientId: "cli_test", cwd: ${JSON.stringify(cwd)}, timeoutMs: 5_000, maxOutputBytes: 64 * 1024,`,
+      `  approve: async () => true,`,
+      `})`,
+      `if (r.exitCode !== 0 || r.timedOut) { console.error(JSON.stringify(r)); process.exit(1) }`,
+    ].join("\n")
+    try {
+      execFileSync("bun", ["-e", script], { timeout: 8_000, stdio: "pipe" })
+    } finally {
+      // Reap the background sleeper the repro command leaves behind.
+      try {
+        execFileSync("pkill", ["-f", "sleep 29"])
+      } catch { /* already gone */ }
+    }
+  }, 15_000)
 
   it("uses per-request cwd and timeout overrides", async () => {
     const result = await executeLocalCommand({
