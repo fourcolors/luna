@@ -30,7 +30,8 @@
     "@luna/vault": "workspace:*",
     "@luna/widget-tools": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "effect": "4.0.0-rc.111"
+    "effect": "4.0.0-rc.111",
+    "qrcode-terminal": "0.12.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",
