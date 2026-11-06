@@ -98,6 +98,13 @@ export interface LocalShellRequestInput {
 interface PendingRequest {
   readonly threadId: string
   readonly clientId: string
+  /**
+   * The connection the request was dispatched over (the registering
+   * connection's owner id at dispatch time). A reconnect re-registers the
+   * same clientId under a new connId, so clientId alone cannot tell a
+   * request dispatched on the dead connection from one on the live one.
+   */
+  readonly connId: string
   readonly dispatchedTo: LocalShellDispatchIdentity
   readonly resolve: (outcome: LocalShellRequestOutcome) => void
   readonly reject: (error: Error) => void
@@ -117,10 +124,14 @@ export interface LocalShellBridge {
     connId: string,
   ) => LocalShellStatusFrame
   /**
-   * Drop a client on connection teardown. No-op unless `connId` matches the
-   * CURRENT registration — a stale connection closing after a reconnect (same
-   * clientId, newer connection already active) does not wipe the live
-   * registration or reject the live connection's in-flight requests.
+   * Drop a client on connection teardown. No-op for the REGISTRATION unless
+   * `connId` matches the CURRENT one — a stale connection closing after a
+   * reconnect (same clientId, newer connection already active) does not wipe
+   * the live registration or reject the live connection's in-flight requests.
+   * It does reject the requests dispatched over the DEPARTING connection:
+   * that socket is dead, so no result can ever arrive for them, and leaving
+   * them to the bridge timeout (up to 120s) misreports a dead client as a
+   * slow command.
    */
   readonly removeClient: (clientId: string, connId: string) => void
   /** Every machine addressable from this thread, newest-per-label, deduped. */
@@ -147,6 +158,21 @@ export const createLocalShellBridge = (): LocalShellBridge => {
   const rejectPendingForClient = (clientId: string, message: string): void => {
     for (const [requestId, request] of pending) {
       if (request.clientId !== clientId) continue
+      clearTimeout(request.timer)
+      pending.delete(requestId)
+      request.reject(new Error(message))
+    }
+  }
+
+  /**
+   * Reject only the requests dispatched over one (now dead) connection.
+   * A reconnect re-registers the same clientId under a new connId, so
+   * rejecting by clientId here would kill the live connection's requests
+   * too; the connId recorded at dispatch time is what separates them.
+   */
+  const rejectPendingForConn = (connId: string, message: string): void => {
+    for (const [requestId, request] of pending) {
+      if (request.connId !== connId) continue
       clearTimeout(request.timer)
       pending.delete(requestId)
       request.reject(new Error(message))
@@ -233,9 +259,18 @@ export const createLocalShellBridge = (): LocalShellBridge => {
     const cur = clients.get(clientId)
     // Only the CURRENT registration's own connection may remove it. A stale
     // connection closing after a reconnect (newer conn already active for the
-    // same clientId) is a no-op — it must not wipe the live registration or
-    // reject the live connection's in-flight requests.
-    if (cur === undefined || cur.connId !== connId) return
+    // same clientId) must not wipe the live registration — but the requests
+    // dispatched over the departing connection can never be answered (that
+    // socket is dead), so reject those, and only those, instead of leaving
+    // them to hang until the bridge timeout.
+    if (cur === undefined) return
+    if (cur.connId !== connId) {
+      rejectPendingForConn(
+        connId,
+        `local shell client connection closed: ${clientId}`,
+      )
+      return
+    }
     clients.delete(clientId)
     rejectPendingForClient(clientId, `local shell client removed: ${clientId}`)
   }
@@ -305,6 +340,7 @@ export const createLocalShellBridge = (): LocalShellBridge => {
       pending.set(requestId, {
         threadId: input.threadId,
         clientId: client.capability.clientId,
+        connId: client.connId,
         dispatchedTo,
         resolve: res,
         reject: rej,
