@@ -193,6 +193,25 @@ describe("DreamReasonerDefault", () => {
     expect((after.content as { confidence: number }).confidence).toBe(RAW_BELIEF_OP.confidence)
   })
 
+  it("normalizes a miscased/whitespace-padded belief domain so the id cannot fork", async () => {
+    // A text-path model reply with domain " User " must land on the canonical
+    // "user" belief id: otherwise the same claim forks into a second belief
+    // (different id) whose domain misses the survey allow-list exactly, so it
+    // sits proposed forever and is never validated.
+    const raw = { ...RAW_BELIEF_OP, domain: " User " }
+    const json = JSON.stringify([raw])
+    const ops = await Effect.runPromise(
+      runReason(EMPTY_INPUTS, fakeClientWithResult(json), FakeMemory()),
+    )
+    expect(ops).toHaveLength(1)
+    const op = ops[0]!
+    const canonicalId = deriveBeliefId("user", RAW_BELIEF_OP.statement)
+    expect(op.targetId).toBe(canonicalId)
+    const after = op.after as MemoryRecord
+    expect(after.id).toBe(canonicalId)
+    expect((after.content as { domain: string }).domain).toBe("user")
+  })
+
   it("parses a well-formed skill_improvement create op", async () => {
     const raw = {
       kind: "skill_improvement",
