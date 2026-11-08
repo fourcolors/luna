@@ -239,6 +239,35 @@ describe("sandbox local shell", () => {
     }
   }, 15_000)
 
+  it("nulls exitCode when a TERM trap exits 0 after the timeout", async () => {
+    const root = tempDir()
+    try {
+      const result = await executeSandboxLocalShellRequest({
+        type: "local-shell-request",
+        requestId: "req_term_trap",
+        threadId: "thr_1",
+        // The TERM trap exits 0 immediately on the timeout SIGTERM, well
+        // inside the 250ms SIGKILL grace, so `close` settles first with
+        // code 0. A timed-out result must never report a real exit code:
+        // the CLI executor already nulls it in this case.
+        command: "trap 'exit 0' TERM; sleep 30",
+        timeoutMs: 500,
+      }, {
+        cwd: root,
+        sandboxRoot: root,
+        env: { PATH: process.env.PATH },
+        timeoutMs: 500,
+      })
+      expect(result).toMatchObject({ timedOut: true, exitCode: null })
+    } finally {
+      // Reap the sleeper the repro command leaves behind if the trap
+      // never fires.
+      try {
+        execFileSync("pkill", ["-f", "sleep 30"])
+      } catch { /* already gone */ }
+    }
+  }, 15_000)
+
   it("strips secrets from the command environment", () => {
     expect(sanitizeSandboxCommandEnv({
       PATH: "/bin",

@@ -262,7 +262,10 @@ export const executeSandboxLocalShellRequest = async (
         requestId: request.requestId,
         threadId: request.threadId,
         approved: true,
-        exitCode,
+        // A timed-out run has no meaningful exit code: the child may have
+        // exited 0 via a TERM trap after the timeout fired, so null it
+        // (mirrors the CLI executor) instead of reporting a contradiction.
+        exitCode: timedOut ? null : exitCode,
         stdout: stdout.toString(),
         stderr: stderr.toString(),
         durationMs: Date.now() - startedAt,
