@@ -220,12 +220,15 @@ export class FakeWebSocket {
     // event currently being dispatched — that is the DOM's rule, and the
     // two registration halves of this fake should not disagree about it.
     const handler = (this as unknown as Record<string, unknown>)[`on${type}`]
-    for (const fn of (this.listeners[type] || []).slice()) fn(evt)
+    for (const fn of (this.listeners[type] || []).slice()) fn.call(this, evt)
     // The `on*` property handler fires after the addEventListener
     // listeners, matching the DOM order when the property was assigned
     // after the listeners were registered (the usual shape: listeners at
     // engine construction, on* assigned by the code under test).
-    if (typeof handler === "function") (handler as (evt: any) => void)(evt)
+    // Both halves are invoked with the socket as `this`, like the DOM:
+    // a `function` handler that reads `this` must see the socket, not
+    // `undefined` (a bare call in a strict-mode module).
+    if (typeof handler === "function") (handler as (evt: any) => void).call(this, evt)
   }
 
   // ── Static helpers ───────────────────────────────────────────────────────

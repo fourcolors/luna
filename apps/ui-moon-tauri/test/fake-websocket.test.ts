@@ -165,6 +165,22 @@ describe("FakeWebSocket on* property handlers", () => {
     expect(listenerCalls).toBe(1)
   })
 
+  it("binds `this` to the socket inside on* handlers and listeners", () => {
+    const sock = new FakeWebSocket("ws://test")
+    const seen: unknown[] = []
+    sock.onmessage = function (this: any) {
+      seen.push(this)
+    }
+    sock.addEventListener("message", function (this: any) {
+      seen.push(this)
+    })
+    sock.simulateOpen()
+    sock.simulateMessage({ type: "hello" })
+    // A browser binds `this` to the socket for both halves; a bare call
+    // in a strict-mode module would leave it `undefined` instead.
+    expect(seen).toEqual([sock, sock])
+  })
+
   it("does not fire an on* handler assigned mid-dispatch for that same event", () => {
     const sock = new FakeWebSocket("ws://test")
     let propCalls = 0
