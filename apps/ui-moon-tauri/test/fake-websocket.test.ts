@@ -164,4 +164,17 @@ describe("FakeWebSocket on* property handlers", () => {
     expect(propCalls).toBe(1)
     expect(listenerCalls).toBe(1)
   })
+
+  it("does not fire an on* handler assigned mid-dispatch for that same event", () => {
+    const sock = new FakeWebSocket("ws://test")
+    let propCalls = 0
+    sock.addEventListener("message", () => {
+      sock.onmessage = () => propCalls++
+    })
+    sock.simulateOpen()
+    sock.simulateMessage({ type: "hello" })
+    expect(propCalls).toBe(0)
+    sock.simulateMessage({ type: "hello" })
+    expect(propCalls).toBe(1)
+  })
 })

@@ -214,12 +214,17 @@ export class FakeWebSocket {
   }
 
   private dispatch(type: string, evt: any): void {
+    // Snapshot the `on*` handler up front, like the `.slice()` below
+    // snapshots the listeners: a handler assigned mid-dispatch (by a
+    // listener, or by the `on*` handler itself) must not fire for the
+    // event currently being dispatched — that is the DOM's rule, and the
+    // two registration halves of this fake should not disagree about it.
+    const handler = (this as unknown as Record<string, unknown>)[`on${type}`]
     for (const fn of (this.listeners[type] || []).slice()) fn(evt)
     // The `on*` property handler fires after the addEventListener
     // listeners, matching the DOM order when the property was assigned
     // after the listeners were registered (the usual shape: listeners at
     // engine construction, on* assigned by the code under test).
-    const handler = (this as unknown as Record<string, unknown>)[`on${type}`]
     if (typeof handler === "function") (handler as (evt: any) => void)(evt)
   }
 
