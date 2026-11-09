@@ -75,6 +75,16 @@ export class FakeWebSocket {
   readonly protocols?: string | string[]
   readyState: number = FakeWebSocket.CONNECTING
 
+  // DOM `on*` property handlers. A real WebSocket delivers events to these
+  // exactly like to addEventListener listeners, and production code relies
+  // on them (hubEngines.ts's testConnection assigns sock.onmessage /
+  // sock.onclose). Until now dispatch() only invoked addEventListener
+  // listeners, so an assigned on* handler silently never fired.
+  onopen: ((evt: any) => void) | null = null
+  onmessage: ((evt: any) => void) | null = null
+  onclose: ((evt: any) => void) | null = null
+  onerror: ((evt: any) => void) | null = null
+
   private listeners: Record<string, Listener[]> = {}
   private sentRaw: string[] = []
 
@@ -205,6 +215,12 @@ export class FakeWebSocket {
 
   private dispatch(type: string, evt: any): void {
     for (const fn of (this.listeners[type] || []).slice()) fn(evt)
+    // The `on*` property handler fires after the addEventListener
+    // listeners, matching the DOM order when the property was assigned
+    // after the listeners were registered (the usual shape: listeners at
+    // engine construction, on* assigned by the code under test).
+    const handler = (this as unknown as Record<string, unknown>)[`on${type}`]
+    if (typeof handler === "function") (handler as (evt: any) => void)(evt)
   }
 
   // ── Static helpers ───────────────────────────────────────────────────────

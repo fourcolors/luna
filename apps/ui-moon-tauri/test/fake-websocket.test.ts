@@ -123,3 +123,45 @@ describe("FakeWebSocket.close wasClean", () => {
     expect(seen[0].wasClean).toBe(false)
   })
 })
+
+describe("FakeWebSocket on* property handlers", () => {
+  beforeEach(() => {
+    FakeWebSocket.reset()
+  })
+
+  it("delivers open/message/close/error to assigned on* handlers", () => {
+    const sock = new FakeWebSocket("ws://test")
+    const seen: string[] = []
+    sock.onopen = () => seen.push("open")
+    sock.onmessage = (evt: any) => seen.push(`message:${JSON.parse(evt.data).type}`)
+    sock.onclose = () => seen.push("close")
+    sock.onerror = () => seen.push("error")
+    sock.simulateOpen()
+    sock.simulateMessage({ type: "hello" })
+    sock.simulateError()
+    sock.simulateDrop()
+    expect(seen).toEqual(["open", "message:hello", "error", "close"])
+  })
+
+  it("assigning null clears the on* handler", () => {
+    const sock = new FakeWebSocket("ws://test")
+    let calls = 0
+    sock.onmessage = () => calls++
+    sock.onmessage = null
+    sock.simulateOpen()
+    sock.simulateMessage({ type: "hello" })
+    expect(calls).toBe(0)
+  })
+
+  it("fires both the on* handler and addEventListener listeners, once each", () => {
+    const sock = new FakeWebSocket("ws://test")
+    let propCalls = 0
+    let listenerCalls = 0
+    sock.onmessage = () => propCalls++
+    sock.addEventListener("message", () => listenerCalls++)
+    sock.simulateOpen()
+    sock.simulateMessage({ type: "hello" })
+    expect(propCalls).toBe(1)
+    expect(listenerCalls).toBe(1)
+  })
+})
