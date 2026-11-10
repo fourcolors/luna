@@ -702,6 +702,55 @@ describe("LunaWsAdapter", () => {
       await adapter.dispose()
     }, 10_000)
 
+    it("drop during new-thread create: pending create rejects instead of hanging", async () => {
+      // Server records the new-thread frame but never answers it, so the
+      // create stays pending until the socket drops.
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        recordFrames: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "drop-mid-new-thread", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        10_000,
+        { baseMs: 10, maxMs: 50, jitterMs: 0 },
+      )
+      await adapter.attach()
+
+      const openPromise = adapter.openSession({})
+      // Wait until the server saw the new-thread frame.
+      const start = Date.now()
+      while (server.lastNewThreadFrame === undefined) {
+        if (Date.now() - start > 2000) throw new Error("server never saw new-thread")
+        await new Promise((r) => setTimeout(r, 10))
+      }
+
+      // Drop the socket mid-create: the pending create must reject
+      // promptly instead of hanging forever (the create frame went out on
+      // the dead socket, so no thread-created can ever arrive for it).
+      server.dropClients()
+      await expect(openPromise).rejects.toThrow(
+        /socket closed while creating thread/,
+      )
+
+      // The gate must be cleared: a second create must wait for the server
+      // instead of rejecting immediately as "concurrent new-thread".
+      const second = adapter.openSession({})
+      const secondOutcome = await Promise.race([
+        second.then(
+          () => "resolved" as const,
+          (e: unknown) =>
+            `rejected: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+        new Promise<"STILL-PENDING">((r) => setTimeout(() => r("STILL-PENDING"), 300)),
+      ])
+      expect(secondOutcome).toBe("STILL-PENDING")
+
+      await adapter.dispose()
+    }, 10_000)
+
     it("re-subscribes open sessions and sends on the LIVE socket after reconnect", async () => {
       const waitFor = async (pred: () => boolean, timeoutMs = 2500) => {
         const start = Date.now()
