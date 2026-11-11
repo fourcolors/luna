@@ -2859,13 +2859,18 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend embedder-change re-embed", (
   // Salted stub-style embedder: same 64-dim bag-of-tokens sketch as the
   // core stub, but each model hashes tokens into different slots, so
   // cross-model cosine is near zero (distinct vector spaces).
-  const makeModelEmbedder = (provider: string, model: string, salt: string): EmbedderApi => {
+  const makeModelEmbedder = (
+    provider: string,
+    model: string,
+    salt: string,
+    format: string = DEFAULT_MEMORY_EMBEDDING_FORMAT,
+  ): EmbedderApi => {
     const dimension = 64
     return {
       provider,
       model,
       dimension,
-      embeddingFormat: DEFAULT_MEMORY_EMBEDDING_FORMAT,
+      embeddingFormat: format,
       embed: (text) =>
         Effect.sync(() => {
           const v = new Float32Array(dimension)
@@ -2887,7 +2892,11 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend embedder-change re-embed", (
     }
   }
 
-  it("re-putting an unchanged record under a different model re-embeds it", async () => {
+  // Put r1 under embedder A, then re-put r1 and put r2 under embedder B,
+  // and return the stored r1 row plus the search scores. A re-embed under
+  // B is proven by the stored provider/model/format columns and by r1
+  // ranking identically to r2 (same text, same vector space).
+  const swapAndSearch = async (embedderA: EmbedderApi, embedderB: EmbedderApi) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-embedder-change-"))
     const dbPath = path.join(dir, "mem.db")
     const rec = (id: string) =>
@@ -2902,26 +2911,21 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend embedder-change re-embed", (
       eff: Effect.Effect<A, unknown, SqliteVectorBackend>,
     ) =>
       Effect.runPromise(Effect.scoped(eff).pipe(Effect.provide(layer)) as Effect.Effect<A, never, never>)
-
-    const layerA = Layer.provideMerge(
-      SqliteVectorBackend.fromPath(dbPath),
-      Layer.merge(Layer.succeed(EmbedderService, makeModelEmbedder("model-a", "model-a", "a")), LunaSqliteBootstrapLive),
-    )
+    const layerFor = (embedder: EmbedderApi) =>
+      Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(Layer.succeed(EmbedderService, embedder), LunaSqliteBootstrapLive),
+      )
     await runWith(
-      layerA,
+      layerFor(embedderA),
       Effect.gen(function* () {
         const b = yield* SqliteVectorBackend
         yield* b.put(rec("r1"))
         yield* b.close()
       }),
     )
-
-    const layerB = Layer.provideMerge(
-      SqliteVectorBackend.fromPath(dbPath),
-      Layer.merge(Layer.succeed(EmbedderService, makeModelEmbedder("model-b", "model-b", "b")), LunaSqliteBootstrapLive),
-    )
     const hits = await runWith(
-      layerB,
+      layerFor(embedderB),
       Effect.gen(function* () {
         const b = yield* SqliteVectorBackend
         yield* b.put(rec("r1"))
@@ -2931,18 +2935,52 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend embedder-change re-embed", (
         return out
       }),
     )
-
     const { Database } = await import("bun:sqlite")
     const db = new Database(dbPath)
-    const row = db.query("SELECT embedding_provider, embedding_model FROM memory_vectors WHERE id = ?").get("r1") as
-      | { embedding_provider: string; embedding_model: string }
+    const row = db.query(
+      "SELECT embedding_provider, embedding_model, embedding_format FROM memory_vectors WHERE id = ?",
+    ).get("r1") as
+      | { embedding_provider: string; embedding_model: string; embedding_format: string }
       | null
     db.close()
+    const byId = new Map(hits.map((h) => [h.record.id, h.score]))
+    fs.rmSync(dir, { recursive: true, force: true })
+    return { row, byId }
+  }
+
+  it("re-putting an unchanged record under a different model re-embeds it", async () => {
+    const { row, byId } = await swapAndSearch(
+      makeModelEmbedder("model-a", "model-a", "a"),
+      makeModelEmbedder("model-b", "model-b", "b"),
+    )
     expect(row?.embedding_provider).toBe("model-b")
     expect(row?.embedding_model).toBe("model-b")
-    const byId = new Map(hits.map((h) => [h.record.id, h.score]))
     // Identical text must rank identically once both vectors are in B's space.
     expect(byId.get("r1")).toBeCloseTo(byId.get("r2")!, 6)
-    fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it("re-putting an unchanged record under a different model of the same provider re-embeds it", async () => {
+    // Provider is unchanged here, so only the model comparison can force
+    // the re-embed; a provider-only guard would keep the stale vector.
+    const { row, byId } = await swapAndSearch(
+      makeModelEmbedder("acme", "model-a", "a"),
+      makeModelEmbedder("acme", "model-b", "b"),
+    )
+    expect(row?.embedding_provider).toBe("acme")
+    expect(row?.embedding_model).toBe("model-b")
+    expect(byId.get("r1")).toBeCloseTo(byId.get("r2")!, 6)
+  })
+
+  it("re-putting an unchanged record under a different embedding format re-embeds it", async () => {
+    // Provider, model, and vector space are unchanged here; only the
+    // format differs, so only the format comparison can force the re-embed.
+    const { row, byId } = await swapAndSearch(
+      makeModelEmbedder("acme", "model-a", "a", "memory-note-v1"),
+      makeModelEmbedder("acme", "model-a", "a", "memory-note-v2"),
+    )
+    expect(row?.embedding_provider).toBe("acme")
+    expect(row?.embedding_model).toBe("model-a")
+    expect(row?.embedding_format).toBe("memory-note-v2")
+    expect(byId.get("r1")).toBeCloseTo(byId.get("r2")!, 6)
   })
 })
