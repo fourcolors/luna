@@ -176,6 +176,20 @@ describe("markdownToTelegramHtml — block structure", () => {
     )
   })
 
+  it("does not let a shorter run close a longer block", () => {
+    // CommonMark: a closing fence must be at least as long as the opening
+    // one, so ``` lines inside a ```` block are content. The agent writes
+    // "markdown about markdown" constantly, so 4-backtick blocks holding
+    // ``` examples are ordinary input — the old run-length-blind scan
+    // shattered them into empty <pre> blocks and dropped the content.
+    expect(markdownToTelegramHtml("````\n```\ninner code\n```\n````\n")).toBe(
+      "<pre>```\ninner code\n```</pre>\n",
+    )
+    expect(markdownToTelegramHtml("~~~~\n~~~\ninner\n~~~\n~~~~\n")).toBe(
+      "<pre>~~~\ninner\n~~~</pre>\n",
+    )
+  })
+
   it("groups consecutive quote lines into one blockquote", () => {
     expect(markdownToTelegramHtml("> line one\n> line two")).toBe(
       "<blockquote>line one\nline two</blockquote>",
