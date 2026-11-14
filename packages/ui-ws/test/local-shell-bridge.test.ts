@@ -463,6 +463,60 @@ describe("local shell bridge", () => {
       expect((await pending).result.stdout).toBe("ok")
     })
 
+    it("rejects a request dispatched on the dead connection when the stale connection closes", async () => {
+      const bridge = createLocalShellBridge()
+      const oldSend: unknown[] = []
+      const newSend: unknown[] = []
+      bridge.setCapability(cap(), (f) => oldSend.push(f), "conn_old")
+      // Dispatched over the old connection and never answered: that socket
+      // is about to die, so no result can ever arrive for it.
+      const pending = bridge.request({
+        threadId: "thr_1",
+        command: "sleep 5",
+        timeoutMs: 1_000,
+      })
+      expect(oldSend).toHaveLength(1)
+      // Reconnect under a new owner id, then the old connection tears down.
+      bridge.setCapability(cap(), (f) => newSend.push(f), "conn_new")
+      bridge.removeClient("cli_1", "conn_old")
+      // The live registration survives, but the doomed request fails fast
+      // instead of hanging until the bridge timeout misreports it as slow.
+      expect(bridge.listTargets().map((t) => t.clientId)).toEqual(["cli_1"])
+      await expect(pending).rejects.toThrow(
+        "local shell client connection closed",
+      )
+    })
+
+    it("leaves the live connection's request alone when the stale connection closes", async () => {
+      const bridge = createLocalShellBridge()
+      const oldSend: unknown[] = []
+      const newSend: unknown[] = []
+      bridge.setCapability(cap(), (f) => oldSend.push(f), "conn_old")
+      const doomed = bridge.request({
+        threadId: "thr_1",
+        command: "sleep 5",
+        timeoutMs: 1_000,
+      })
+      bridge.setCapability(cap(), (f) => newSend.push(f), "conn_new")
+      const live = bridge.request({
+        threadId: "thr_1",
+        command: "pwd",
+        timeoutMs: 5_000,
+      })
+      expect(newSend).toHaveLength(1)
+      bridge.removeClient("cli_1", "conn_old")
+      // Only the dead connection's request is rejected; the live one still
+      // resolves when its client answers.
+      await expect(doomed).rejects.toThrow(
+        "local shell client connection closed",
+      )
+      bridge.acceptResult(
+        result(sentRequestId(newSend), "cli_1", { stdout: "ok" }),
+        "cli_1",
+      )
+      expect((await live).result.stdout).toBe("ok")
+    })
+
     it("does not wipe the live registration when the stale connection disables", async () => {
       const bridge = createLocalShellBridge()
       const oldSend: unknown[] = []
