@@ -75,6 +75,16 @@ export class FakeWebSocket {
   readonly protocols?: string | string[]
   readyState: number = FakeWebSocket.CONNECTING
 
+  // DOM `on*` property handlers. A real WebSocket delivers events to these
+  // exactly like to addEventListener listeners, and production code relies
+  // on them (hubEngines.ts's testConnection assigns sock.onmessage /
+  // sock.onclose). Until now dispatch() only invoked addEventListener
+  // listeners, so an assigned on* handler silently never fired.
+  onopen: ((evt: any) => void) | null = null
+  onmessage: ((evt: any) => void) | null = null
+  onclose: ((evt: any) => void) | null = null
+  onerror: ((evt: any) => void) | null = null
+
   private listeners: Record<string, Listener[]> = {}
   private sentRaw: string[] = []
 
@@ -204,7 +214,21 @@ export class FakeWebSocket {
   }
 
   private dispatch(type: string, evt: any): void {
-    for (const fn of (this.listeners[type] || []).slice()) fn(evt)
+    // Snapshot the `on*` handler up front, like the `.slice()` below
+    // snapshots the listeners: a handler assigned mid-dispatch (by a
+    // listener, or by the `on*` handler itself) must not fire for the
+    // event currently being dispatched — that is the DOM's rule, and the
+    // two registration halves of this fake should not disagree about it.
+    const handler = (this as unknown as Record<string, unknown>)[`on${type}`]
+    for (const fn of (this.listeners[type] || []).slice()) fn.call(this, evt)
+    // The `on*` property handler fires after the addEventListener
+    // listeners, matching the DOM order when the property was assigned
+    // after the listeners were registered (the usual shape: listeners at
+    // engine construction, on* assigned by the code under test).
+    // Both halves are invoked with the socket as `this`, like the DOM:
+    // a `function` handler that reads `this` must see the socket, not
+    // `undefined` (a bare call in a strict-mode module).
+    if (typeof handler === "function") (handler as (evt: any) => void).call(this, evt)
   }
 
   // ── Static helpers ───────────────────────────────────────────────────────
