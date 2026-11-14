@@ -1377,6 +1377,29 @@ describe("repairSplitFences", () => {
     expect(repaired[0]).toBe("intro\n```ts\nconst a = 1\n```")
     expect(repaired[1]).toBe("```ts\n```\ndone")
   })
+
+  // A shorter run must not close a longer block (CommonMark: the closing
+  // fence is at least as long as the opener), and the inserted closer and
+  // reopen must echo the opening run's length — a 3-char closer would not
+  // close a 4-backtick block, and a 3-char reopen would silently renest it.
+  it("keeps a shorter run from closing a longer block across a split", () => {
+    const chunks = [
+      "````markdown\nHere is an",
+      "example:\n```\ncode\n```\nmore\ntext\n````",
+    ]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("````markdown\nHere is an\n````")
+    expect(repaired[1]).toBe(
+      "````markdown\nexample:\n```\ncode\n```\nmore\ntext\n````",
+    )
+  })
+
+  it("reopens a split 4-tilde block with a 4-tilde marker", () => {
+    const chunks = ["intro\n~~~~python\nx = 1", "y = 2\n~~~~\ndone"]
+    const repaired = repairSplitFences(chunks)
+    expect(repaired[0]).toBe("intro\n~~~~python\nx = 1\n~~~~")
+    expect(repaired[1]).toBe("~~~~python\ny = 2\n~~~~\ndone")
+  })
 })
 
 /* -------------------------------------------------------------------------- */
