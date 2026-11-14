@@ -239,6 +239,41 @@ describe("sandbox local shell", () => {
     }
   }, 15_000)
 
+  it("nulls exitCode when a TERM trap exits 0 after the timeout", async () => {
+    const root = tempDir()
+    try {
+      const result = await executeSandboxLocalShellRequest({
+        type: "local-shell-request",
+        requestId: "req_term_trap",
+        threadId: "thr_1",
+        // The TERM trap exits 0 immediately on the timeout SIGTERM, well
+        // inside the 250ms SIGKILL grace, so `close` settles first with
+        // code 0. A timed-out result must never report a real exit code:
+        // the CLI executor already nulls it in this case.
+        // NOTE: the sleep duration is deliberately 47, not 30: `pkill -f`
+        // matches any process whose cmdline contains the pattern, and the
+        // adapter-sdk workflow-worker suite runs `sleep 30` grandchild
+        // sleepers in the same vitest run - a `sleep 30` pattern here
+        // would kill theirs and fail that suite's process-group tests.
+        command: "trap 'exit 0' TERM; sleep 47",
+        timeoutMs: 500,
+      }, {
+        cwd: root,
+        sandboxRoot: root,
+        env: { PATH: process.env.PATH },
+        timeoutMs: 500,
+      })
+      expect(result).toMatchObject({ timedOut: true, exitCode: null })
+    } finally {
+      // Reap the sleeper the repro command leaves behind if the trap
+      // never fires. The pattern must match only this test's sleeper:
+      // see the note on the 47s duration above.
+      try {
+        execFileSync("pkill", ["-f", "sleep 47"])
+      } catch { /* already gone */ }
+    }
+  }, 15_000)
+
   it("strips secrets from the command environment", () => {
     expect(sanitizeSandboxCommandEnv({
       PATH: "/bin",
