@@ -36,6 +36,8 @@ interface TestServer {
   close(): Promise<void>
   dropClients(): void
   lastNewThreadFrame?: Record<string, unknown>
+  /** Count of new-thread frames received (proves a create reached the server). */
+  newThreadFrames: number
   sessionFrames: Array<Record<string, unknown>>
   /** Every raw `req.url` this server has seen a client connect with, in
    *  order - F3 (opus review): distinguishes "no token param" from "token
@@ -137,6 +139,7 @@ async function startTestServer(opts: {
             }
 
             if (frame["type"] === "new-thread") {
+              serverHandle.newThreadFrames++
               // Record the frame if requested.
               if (opts.recordFrames) {
                 serverHandle.lastNewThreadFrame = frame
@@ -183,6 +186,7 @@ async function startTestServer(opts: {
         url: `ws://127.0.0.1:${port}/ui`,
         port,
         lastNewThreadFrame: undefined,
+        newThreadFrames: 0,
         sessionFrames: [],
         capturedUrls: [],
         dropClients: () => {
@@ -735,18 +739,98 @@ describe("LunaWsAdapter", () => {
         /socket closed while creating thread/,
       )
 
-      // The gate must be cleared: a second create must wait for the server
-      // instead of rejecting immediately as "concurrent new-thread".
-      const second = adapter.openSession({})
-      const secondOutcome = await Promise.race([
-        second.then(
+      // The gate must be cleared AND the retry must fail fast: the socket
+      // is dead, so a second create has no socket to send on. It must
+      // reject as "connection not open" without taking the gate — the old
+      // behavior silently dropped the frame and left the gate occupied,
+      // so every later create failed as "concurrent" even after the
+      // reconnect succeeded (see the next test).
+      await expect(adapter.openSession({})).rejects.toThrow(
+        /cannot create thread: connection not open/,
+      )
+
+      await adapter.dispose()
+    }, 10_000)
+
+    it("retry during reconnect backoff does not poison later creates", async () => {
+      // Regression test for the Devin note on #828. The server records
+      // new-thread frames but never answers them, so a healthy
+      // post-reconnect create stays pending AND delivers a second frame —
+      // the frame count, not just STILL-PENDING, proves recovery.
+      server = await startTestServer({
+        token: TOKEN,
+        sendDescriptor: true,
+        recordFrames: true,
+      })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "retry-backoff-poison", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        10_000,
+        // Wide backoff window (500ms) so the retry below lands inside it.
+        { baseMs: 500, maxMs: 1000, jitterMs: 0 },
+      )
+      await adapter.attach()
+
+      // First create in flight; server sees the frame but never answers.
+      const first = adapter.openSession({})
+      const start = Date.now()
+      while (server.newThreadFrames < 1) {
+        if (Date.now() - start > 2000) throw new Error("server never saw new-thread")
+        await new Promise((r) => setTimeout(r, 10))
+      }
+
+      // Drop the socket mid-create: the pending create must reject.
+      server.dropClients()
+      await expect(first).rejects.toThrow(/socket closed while creating thread/)
+
+      // Retry immediately, inside the reconnect backoff window. Pre-fix
+      // this took the gate on the dead socket and its frame was silently
+      // dropped, poisoning every later create. Post-fix it fails fast
+      // without taking the gate.
+      await expect(adapter.openSession({})).rejects.toThrow(
+        /cannot create thread: connection not open/,
+      )
+
+      // Wait for the reconnect to complete (recovering -> ready).
+      const states: string[] = []
+      const connIter = adapter.connection[Symbol.asyncIterator]()
+      const stateCollection = (async () => {
+        for await (const s of { [Symbol.asyncIterator]: () => connIter }) {
+          states.push(s.status)
+          if (s.status === "ready" && states.includes("recovering")) break
+          if (states.length > 20) break
+        }
+      })()
+      await Promise.race([
+        stateCollection,
+        new Promise<void>((_, rej) =>
+          setTimeout(() => rej(new Error("timeout waiting for reconnect")), 5000),
+        ),
+      ])
+      expect(states).toContain("recovering")
+      expect(states).toContain("ready")
+
+      // A fresh create after reconnect must reach the server (second
+      // frame) instead of rejecting immediately as "concurrent
+      // new-thread". The server never answers, so it stays pending.
+      const third = adapter.openSession({})
+      const waitStart = Date.now()
+      while (server.newThreadFrames < 2) {
+        if (Date.now() - waitStart > 2000) {
+          throw new Error("post-reconnect create never reached the server")
+        }
+        await new Promise((r) => setTimeout(r, 10))
+      }
+      const outcome = await Promise.race([
+        third.then(
           () => "resolved" as const,
           (e: unknown) =>
             `rejected: ${e instanceof Error ? e.message : String(e)}`,
         ),
         new Promise<"STILL-PENDING">((r) => setTimeout(() => r("STILL-PENDING"), 300)),
       ])
-      expect(secondOutcome).toBe("STILL-PENDING")
+      expect(outcome).toBe("STILL-PENDING")
 
       await adapter.dispose()
     }, 10_000)
