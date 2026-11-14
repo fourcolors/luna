@@ -10,11 +10,14 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { Effect, Stream, Layer } from "effect"
 import {
+  DEFAULT_MEMORY_EMBEDDING_FORMAT,
   EmbedderError,
   EmbedderService,
   LunaSqliteBootstrap,
   StubEmbedderLayer,
   bufferToFloat32,
+  fnv1a32,
+  type EmbedderApi,
 } from "@luna/core"
 import { SqliteVectorBackend } from "../src/backends/sqlite-vector.js"
 import { LunaSqliteBootstrapLive } from "../src/backends/vectorlite-bootstrap.js"
@@ -2845,4 +2848,139 @@ describe("Float32 ↔ BLOB roundtrip helper", () => {
     }
   })
 
+})
+
+// Regression: put() must re-embed when the embedder changes at the same
+// dimension. The skip-embed fast path used to compare only the input hash
+// and dimension, so a re-put under a new model kept the old model's vector
+// (stale by the audit's own definition) and ranked it against new-model
+// query embeddings.
+describe.skipIf(!hasBunSqlite)("SqliteVectorBackend embedder-change re-embed", () => {
+  // Salted stub-style embedder: same 64-dim bag-of-tokens sketch as the
+  // core stub, but each model hashes tokens into different slots, so
+  // cross-model cosine is near zero (distinct vector spaces).
+  const makeModelEmbedder = (
+    provider: string,
+    model: string,
+    salt: string,
+    format: string = DEFAULT_MEMORY_EMBEDDING_FORMAT,
+  ): EmbedderApi => {
+    const dimension = 64
+    return {
+      provider,
+      model,
+      dimension,
+      embeddingFormat: format,
+      embed: (text) =>
+        Effect.sync(() => {
+          const v = new Float32Array(dimension)
+          const tokens = text.toLowerCase().match(/[a-z0-9]+/g) ?? []
+          if (tokens.length === 0) {
+            v[0] = 1
+            return v
+          }
+          for (const tok of tokens) {
+            const slot = fnv1a32(`${salt}:${tok}`) % dimension
+            v[slot] = (v[slot] ?? 0) + 1
+          }
+          let mag = 0
+          for (let i = 0; i < dimension; i++) mag += (v[i] ?? 0) ** 2
+          const norm = Math.sqrt(mag) || 1
+          for (let i = 0; i < dimension; i++) v[i] = (v[i] ?? 0) / norm
+          return v
+        }),
+    }
+  }
+
+  // Put r1 under embedder A, then re-put r1 and put r2 under embedder B,
+  // and return the stored r1 row plus the search scores. A re-embed under
+  // B is proven by the stored provider/model/format columns and by r1
+  // ranking identically to r2 (same text, same vector space).
+  const swapAndSearch = async (embedderA: EmbedderApi, embedderB: EmbedderApi) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-embedder-change-"))
+    const dbPath = path.join(dir, "mem.db")
+    const rec = (id: string) =>
+      makeRecord({
+        id,
+        namespace: "notes",
+        kind: "note",
+        content: { text: "cats felines whiskers" },
+      })
+    const runWith = <A>(
+      layer: Layer.Layer<SqliteVectorBackend, unknown, never>,
+      eff: Effect.Effect<A, unknown, SqliteVectorBackend>,
+    ) =>
+      Effect.runPromise(Effect.scoped(eff).pipe(Effect.provide(layer)) as Effect.Effect<A, never, never>)
+    const layerFor = (embedder: EmbedderApi) =>
+      Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(Layer.succeed(EmbedderService, embedder), LunaSqliteBootstrapLive),
+      )
+    await runWith(
+      layerFor(embedderA),
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(rec("r1"))
+        yield* b.close()
+      }),
+    )
+    const hits = await runWith(
+      layerFor(embedderB),
+      Effect.gen(function* () {
+        const b = yield* SqliteVectorBackend
+        yield* b.put(rec("r1"))
+        yield* b.put(rec("r2"))
+        const out = yield* Stream.runCollect(b.search({ queryText: "cats felines whiskers", topK: 5 }))
+        yield* b.close()
+        return out
+      }),
+    )
+    const { Database } = await import("bun:sqlite")
+    const db = new Database(dbPath)
+    const row = db.query(
+      "SELECT embedding_provider, embedding_model, embedding_format FROM memory_vectors WHERE id = ?",
+    ).get("r1") as
+      | { embedding_provider: string; embedding_model: string; embedding_format: string }
+      | null
+    db.close()
+    const byId = new Map(hits.map((h) => [h.record.id, h.score]))
+    fs.rmSync(dir, { recursive: true, force: true })
+    return { row, byId }
+  }
+
+  it("re-putting an unchanged record under a different model re-embeds it", async () => {
+    const { row, byId } = await swapAndSearch(
+      makeModelEmbedder("model-a", "model-a", "a"),
+      makeModelEmbedder("model-b", "model-b", "b"),
+    )
+    expect(row?.embedding_provider).toBe("model-b")
+    expect(row?.embedding_model).toBe("model-b")
+    // Identical text must rank identically once both vectors are in B's space.
+    expect(byId.get("r1")).toBeCloseTo(byId.get("r2")!, 6)
+  })
+
+  it("re-putting an unchanged record under a different model of the same provider re-embeds it", async () => {
+    // Provider is unchanged here, so only the model comparison can force
+    // the re-embed; a provider-only guard would keep the stale vector.
+    const { row, byId } = await swapAndSearch(
+      makeModelEmbedder("acme", "model-a", "a"),
+      makeModelEmbedder("acme", "model-b", "b"),
+    )
+    expect(row?.embedding_provider).toBe("acme")
+    expect(row?.embedding_model).toBe("model-b")
+    expect(byId.get("r1")).toBeCloseTo(byId.get("r2")!, 6)
+  })
+
+  it("re-putting an unchanged record under a different embedding format re-embeds it", async () => {
+    // Provider, model, and vector space are unchanged here; only the
+    // format differs, so only the format comparison can force the re-embed.
+    const { row, byId } = await swapAndSearch(
+      makeModelEmbedder("acme", "model-a", "a", "memory-note-v1"),
+      makeModelEmbedder("acme", "model-a", "a", "memory-note-v2"),
+    )
+    expect(row?.embedding_provider).toBe("acme")
+    expect(row?.embedding_model).toBe("model-a")
+    expect(row?.embedding_format).toBe("memory-note-v2")
+    expect(byId.get("r1")).toBeCloseTo(byId.get("r2")!, 6)
+  })
 })
