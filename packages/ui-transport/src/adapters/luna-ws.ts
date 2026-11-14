@@ -652,12 +652,33 @@ export class LunaWsAdapter implements ClientTransportAdapter {
         reject(new Error(`LunaWsAdapter(${this.routeKey}): concurrent new-thread not supported`))
         return
       }
+      // The socket may already be dead: a caller retrying openSession()
+      // during the reconnect backoff reaches here with the closed socket
+      // still cached in #ws (a fresh socket only exists after #doReconnect
+      // runs). Sending on it silently drops the frame (ws package) or throws
+      // (browsers), and either way the gate below would stay set with no
+      // thread-created ever able to arrive — every later create then fails
+      // as concurrent even after the reconnect succeeds. Fail fast instead,
+      // without taking the gate, so the caller can retry once the socket
+      // is back.
+      if (ws.readyState !== ws.OPEN) {
+        reject(new Error(`LunaWsAdapter(${this.routeKey}): cannot create thread: connection not open`))
+        return
+      }
       this.#pendingNewThread = { resolve, reject }
       const frame: { type: string; model?: string } = {
         type: "new-thread",
         ...(model ? { model } : {}),
       }
-      ws.send(JSON.stringify(frame))
+      try {
+        ws.send(JSON.stringify(frame))
+      } catch (e) {
+        // send() threw before the frame went out: release the gate so the
+        // next create is not rejected as concurrent, and surface the
+        // failure to this caller.
+        this.#pendingNewThread = null
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
     })
   }
 
