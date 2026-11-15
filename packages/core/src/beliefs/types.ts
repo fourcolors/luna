@@ -99,9 +99,18 @@ export function makeBeliefRecord(input: {
   })
 }
 
-/** Read a record's belief content (callers guarantee kind:"belief"). */
+/**
+ * Read a record's belief content (callers guarantee kind:"belief").
+ * validationHistory was introduced 2026-09-24; beliefs written before then
+ * may not carry it. Normalize centrally so every downstream reader sees a
+ * defined array — recordValidation and beliefStrength would otherwise throw
+ * on a legacy record.
+ */
 export function readBelief(rec: MemoryRecord): BeliefContent {
-  return rec.content as BeliefContent
+  const content = rec.content as BeliefContent
+  return content.validationHistory === undefined
+    ? { ...content, validationHistory: [] }
+    : content
 }
 
 /** Is this record an active belief? */

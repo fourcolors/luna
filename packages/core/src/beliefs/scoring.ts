@@ -23,7 +23,10 @@ export function beliefStrength(
   const ageDays = Math.max(0, (now - updatedAt) / DAY)
   const recencyFactor = Math.max(RECENCY_FLOOR, 1 - ageDays / STALE_HORIZON_DAYS)
 
-  const h = content.validationHistory
+  // validationHistory was introduced 2026-09-24; legacy content may omit it
+  // (readBelief normalizes records, but beliefStrength is also called with
+  // content directly — match the survey.ts guard idiom).
+  const h = content.validationHistory ?? []
   let validationFactor = 1.0 // NEUTRAL when no validation yet
   if (h.length > 0) {
     let net = 0
