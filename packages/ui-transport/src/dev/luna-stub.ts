@@ -293,16 +293,24 @@ export function startLunaStub(opts?: LunaStubOptions): Promise<LunaStubHandle> {
       const addr = httpServer.address()
       const port = typeof addr === "object" && addr ? addr.port : 0
 
+      let stopPromise: Promise<void> | undefined
       const handle: LunaStubHandle = {
         url: `ws://127.0.0.1:${port}`,
         port,
         stop(): Promise<void> {
-          return new Promise<void>((res, rej) => {
+          // Idempotent and never hangs on a live client: terminate the
+          // connected sockets first (httpServer.close() waits for them
+          // otherwise) and cache the promise so concurrent/duplicate
+          // calls share the one close.
+          if (stopPromise !== undefined) return stopPromise
+          stopPromise = new Promise<void>((res, rej) => {
+            for (const c of wss.clients) c.terminate()
             wss.close((wsErr) => {
               if (wsErr) { rej(wsErr); return }
               httpServer.close((httpErr) => (httpErr ? rej(httpErr) : res()))
             })
           })
+          return stopPromise
         },
       }
 

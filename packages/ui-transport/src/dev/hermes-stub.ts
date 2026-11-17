@@ -226,13 +226,19 @@ export function startHermesStub(opts?: HermesStubOptions): Promise<HermesStubHan
       const addr = server.address()
       const port = typeof addr === "object" && addr ? addr.port : 0
 
+      let stopPromise: Promise<void> | undefined
       const handle: HermesStubHandle = {
         url: `http://127.0.0.1:${port}`,
         port,
         stop(): Promise<void> {
-          return new Promise<void>((res, rej) => {
+          // Idempotent: a second close() on an already-closed server throws
+          // ERR_SERVER_NOT_RUNNING, so cache the promise and share it across
+          // concurrent/duplicate calls.
+          if (stopPromise !== undefined) return stopPromise
+          stopPromise = new Promise<void>((res, rej) => {
             server.close((err) => (err ? rej(err) : res()))
           })
+          return stopPromise
         },
       }
 
