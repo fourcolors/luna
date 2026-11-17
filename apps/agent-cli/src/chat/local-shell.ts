@@ -98,6 +98,16 @@ export interface MakeLocalShellStateOptions {
 }
 
 const FORCE_KILL_GRACE_MS = 250
+/**
+ * How long the executor waits for the stdio pipes to drain after the child
+ * exits before settling with what was captured. Mirrors
+ * LOCAL_SHELL_DRAIN_GRACE_MS in apps/ui-moon-tauri/src-tauri/src/shell.rs
+ * (#814 fixed the same defect class there): a background grandchild that
+ * inherited stdio holds Node's "close" open indefinitely, so without this
+ * bound a command that daemonizes waits out the whole timeout and is
+ * misreported as timed out.
+ */
+const DRAIN_GRACE_MS = 1000
 const SECRET_ENV_KEY = /(TOKEN|SECRET|PASSWORD|PASS|API[_-]?KEY|PRIVATE[_-]?KEY|CREDENTIAL|AUTH|COOKIE|SESSION)/i
 
 export const makeLocalShellState = (
@@ -315,12 +325,15 @@ export const executeLocalCommand = async (
     let settled = false
     let timeoutTimer: ReturnType<typeof setTimeout> | undefined
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined
+    let drainTimer: ReturnType<typeof setTimeout> | undefined
 
     const clearTimers = (): void => {
       if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
       if (forceKillTimer !== undefined) clearTimeout(forceKillTimer)
+      if (drainTimer !== undefined) clearTimeout(drainTimer)
       timeoutTimer = undefined
       forceKillTimer = undefined
+      drainTimer = undefined
     }
 
     const removeAbortListener = (): void => {
@@ -334,6 +347,13 @@ export const executeLocalCommand = async (
       settled = true
       clearTimers()
       removeAbortListener()
+      // Release the stdio pipes: a background grandchild may still hold the
+      // write ends open, so without this the read handles and their `data`
+      // listeners stay active after the result returns (keeping the CLI
+      // event loop alive and accumulating handles on the server). On the
+      // normal `close` path the pipes are already closed, so this is a no-op.
+      child.stdout?.destroy()
+      child.stderr?.destroy()
       resolve({
         ...baseResult(),
         approved: true,
@@ -377,6 +397,26 @@ export const executeLocalCommand = async (
     child.on("error", (error) => {
       stderr.append(error.message)
       finish(null)
+    })
+
+    child.on("exit", (code) => {
+      if (settled) return
+      // The child is gone, but "close" waits for the stdio pipes to drain:
+      // a background grandchild that inherited them holds "close" open
+      // indefinitely. Give the pipes a short grace for in-flight bytes to
+      // land, then settle with the exit code and what was captured. The
+      // timeout must not fire during the grace and misreport this as a
+      // timeout, so disarm it here; the drain timer below bounds the wait.
+      // (If the timeout already fired, forceKillTimer still settles first.)
+      if (timeoutTimer !== undefined) clearTimeout(timeoutTimer)
+      timeoutTimer = undefined
+      drainTimer = setTimeout(() => {
+        if (settled) return
+        stderr.append(
+          "\n[local shell output may be cut short: a background process still holds stdio open]",
+        )
+        finish(code)
+      }, DRAIN_GRACE_MS)
     })
 
     child.on("close", (code) => {
