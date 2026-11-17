@@ -36,15 +36,22 @@ export const makeFakeQuery = (opts: FakeQueryOptions): FakeQueryInstance => {
   const state = { interrupts: { count: 0 }, modeChanges: [] as string[] }
 
   async function* gen(): AsyncGenerator<SDKMessage, void> {
-    let n = 0
-    for (const m of opts.messages) {
-      if (opts.gapMs) await new Promise((r) => setTimeout(r, opts.gapMs))
-      yield m
-      n++
+    // "Throw after yielding N messages": check before each yield so
+    // throwAfter: 0 throws before any message, and re-check after the loop
+    // so throwAfter equal to the message count still fires.
+    const throwIfDue = (n: number) => {
       if (opts.throwAfter !== undefined && n >= opts.throwAfter) {
         throw new Error(opts.throwMessage ?? "fake-sdk: simulated failure")
       }
     }
+    let n = 0
+    for (const m of opts.messages) {
+      throwIfDue(n)
+      if (opts.gapMs) await new Promise((r) => setTimeout(r, opts.gapMs))
+      yield m
+      n++
+    }
+    throwIfDue(n)
   }
 
   const iterator = gen()
