@@ -351,7 +351,7 @@ describe("executeLocalCommand", () => {
     const script = [
       `const { executeLocalCommand } = await import(${JSON.stringify(src)})`,
       `const r = await executeLocalCommand({`,
-      `  request: { requestId: "req-1", threadId: "thread-1", command: "(sleep 29 &)", cwd: ${JSON.stringify(cwd)} },`,
+      `  request: { requestId: "req-1", threadId: "thread-1", command: "(sleep 28 &)", cwd: ${JSON.stringify(cwd)} },`,
       `  clientId: "cli_test", cwd: ${JSON.stringify(cwd)}, timeoutMs: 5_000, maxOutputBytes: 64 * 1024,`,
       `  approve: async () => true,`,
       `})`,
@@ -362,7 +362,7 @@ describe("executeLocalCommand", () => {
     } finally {
       // Reap the background sleeper the repro command leaves behind.
       try {
-        execFileSync("pkill", ["-f", "sleep 29"])
+        execFileSync("pkill", ["-f", "sleep 28"])
       } catch { /* already gone */ }
     }
   }, 15_000)
