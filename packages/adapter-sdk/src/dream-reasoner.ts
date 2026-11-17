@@ -445,7 +445,15 @@ function validateRawOpsArray(raw: unknown): ReadonlyArray<RawOp> {
           throw new Error(`op[${i}] missing rationale string`)
         }
         if (kind === "belief_candidate") {
-          const domain = op["domain"]
+          // Normalize case/whitespace at the model-output boundary: belief
+          // identity is derived from (domain, statement) and the survey
+          // allow-list matches exact lowercase domains, so a text-path
+          // " User " must not fork a second belief that can never be
+          // surveyed. (The structured path's schema enum already enforces
+          // canonical domains; this is the text-path equivalent.)
+          const domainRaw = op["domain"]
+          const domain =
+            typeof domainRaw === "string" ? domainRaw.trim().toLowerCase() : domainRaw
           const statement = op["statement"]
           const confidence = op["confidence"]
           if (typeof domain !== "string" || domain.length === 0) {
