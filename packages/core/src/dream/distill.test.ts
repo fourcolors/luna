@@ -118,6 +118,25 @@ describe("distillMessage", () => {
       expect(distillMessage(msg)).toBeNull()
     })
 
+    it("given a content array containing a null element, when distilled, then skips it instead of throwing", () => {
+      // StoredMessage.payload is unknown ("Adapter-owned payload. Opaque to
+      // core"); a malformed/corrupt transcript can carry a null block. One
+      // bad element must not throw out of distillSession and stall runDream.
+      const msg = message({
+        kind: "user",
+        payload: { message: { role: "user", content: [null, { type: "text", text: "visible" }] } },
+      })
+      expect(distillMessage(msg)).toBe("[user] visible")
+    })
+
+    it("given a content array of only null elements, when distilled, then returns null", () => {
+      const msg = message({
+        kind: "assistant",
+        payload: { message: { role: "assistant", content: [null] } },
+      })
+      expect(distillMessage(msg)).toBeNull()
+    })
+
     it("given an assistant message with a tool_use block, when distilled, then renders a line containing [tool_use <name>] plus the JSON of input", () => {
       const msg = message({
         kind: "assistant",
@@ -186,6 +205,23 @@ describe("distillMessage", () => {
       const out = distillMessage(msg)
       expect(out).toContain("[tool_result]")
       expect(out).toContain("part a part b")
+    })
+
+    it("given a tool_result block whose content array contains a null element, when distilled, then skips it instead of throwing", () => {
+      // Same hole as the top-level content array, one level down:
+      // flattenTextBlocks dereferences b.type with no null guard.
+      const msg = message({
+        kind: "assistant",
+        payload: blocksPayload("assistant", [
+          {
+            type: "tool_result",
+            content: [null, { type: "text", text: "kept" }],
+          },
+        ]),
+      })
+      const out = distillMessage(msg)
+      expect(out).toContain("[tool_result]")
+      expect(out).toContain("kept")
     })
   })
 
