@@ -1055,6 +1055,172 @@ describe("delivery fiber management", () => {
     // One thread was created (session map reuse)
     expect(createCount).toBe(1)
   })
+
+  it("a later turn on the same thread delivers against its own message, not the first", async () => {
+    // The delivery fiber is forked once per (threadId, adapterId) and lives
+    // for the thread's lifetime, so its DeliveryTarget must track the
+    // latest inbound message: a second turn used to reply against the
+    // FIRST message (stale reply_parameters / turnKey on Telegram).
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fiber-target-1", "stream-edit")
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-1",
+              metadata: { chatType: "supergroup", messageId: 111 },
+            }),
+          )
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
+          yield* Effect.sleep("50 millis")
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "first answer"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-2",
+              text: "second question",
+              metadata: { chatType: "supergroup", messageId: 222 },
+            }),
+          )
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "second answer"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const turn2 = fakeCtx.deliveries.filter((d) => d.content.includes("second answer"))
+    expect(turn2.length).toBeGreaterThan(0)
+    expect(turn2.every((d) => d.target.inReplyTo.platformMessageId === "pm-2")).toBe(true)
+    expect(turn2.every((d) => d.target.address["messageId"] === 222)).toBe(true)
+  })
+
+  it("a failed discrete-chunks turn does not leave the next turn replying to the old message", async () => {
+    // A failed turn ends with assistant-error and no turn-complete (see
+    // ChatService.interrupt). The delivery fiber must drop the turn's
+    // target snapshot on assistant-error for every capability, not just
+    // stream-edit, or the next turn's replies keep addressing the failed
+    // turn's message.
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fiber-target-err", "discrete-chunks")
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-A",
+              metadata: { chatType: "supergroup", messageId: 111 },
+            }),
+          )
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
+          yield* Effect.sleep("50 millis")
+          // First turn delivers one chunk, then fails: no turn-complete.
+          yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "first answer"))
+          yield* PubSub.publish(pub, {
+            type: "assistant-error",
+            threadId,
+            turnId: "t1",
+            error: { kind: "sdk" as const, message: "model error" },
+          } satisfies ChatFrame)
+          yield* Effect.sleep("150 millis")
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-B",
+              text: "second question",
+              metadata: { chatType: "supergroup", messageId: 222 },
+            }),
+          )
+          yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "second answer"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const turn1 = fakeCtx.deliveries.filter((d) => d.content.includes("first answer"))
+    const turn2 = fakeCtx.deliveries.filter((d) => d.content.includes("second answer"))
+    expect(turn1.length).toBeGreaterThan(0)
+    expect(turn1.every((d) => d.target.inReplyTo.platformMessageId === "pm-A")).toBe(true)
+    expect(turn2.length).toBeGreaterThan(0)
+    expect(turn2.every((d) => d.target.inReplyTo.platformMessageId === "pm-B")).toBe(true)
+    expect(turn2.every((d) => d.target.address["messageId"] === 222)).toBe(true)
+  })
+
+  it("a message arriving mid-turn does not hijack the in-flight turn's target", async () => {
+    // The target is snapshotted once per turn: a second message that lands
+    // while turn 1 is still streaming must not reroute turn 1's remaining
+    // deliveries onto the second message.
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fiber-target-2", "stream-edit")
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-1",
+              metadata: { chatType: "supergroup", messageId: 111 },
+            }),
+          )
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
+          yield* Effect.sleep("50 millis")
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "first part"))
+          yield* Effect.sleep("50 millis")
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-2",
+              text: "second question",
+              metadata: { chatType: "supergroup", messageId: 222 },
+            }),
+          )
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "first part continued"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "second answer"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const turn1 = fakeCtx.deliveries.filter((d) => d.content.includes("first part"))
+    const turn2 = fakeCtx.deliveries.filter((d) => d.content.includes("second answer"))
+    expect(turn1.length).toBeGreaterThan(0)
+    expect(turn2.length).toBeGreaterThan(0)
+    expect(turn1.every((d) => d.target.inReplyTo.platformMessageId === "pm-1")).toBe(true)
+    expect(turn1.every((d) => d.target.address["messageId"] === 111)).toBe(true)
+    expect(turn2.every((d) => d.target.inReplyTo.platformMessageId === "pm-2")).toBe(true)
+    expect(turn2.every((d) => d.target.address["messageId"] === 222)).toBe(true)
+  })
 })
 
 /* -------------------------------------------------------------------------- */

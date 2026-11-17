@@ -576,10 +576,21 @@ const deliverFinalChunks = (
 /* Public: subscribeAndDeliver                                                 */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Subscribe to a thread's frames and deliver them through `adapter`.
+ *
+ * `targetRef` is a Ref because the delivery fiber is long-lived (one per
+ * thread+adapter, see ChannelService) while the delivery target belongs to
+ * the inbound message that triggered the current turn: ChannelService
+ * refreshes the Ref on every inbound message for the thread. The fiber
+ * snapshots it once per turn (see `turnTarget` below) so a message that
+ * arrives mid-turn cannot hijack the in-flight turn's reply routing, and a
+ * later turn never delivers against the first message's target.
+ */
 export const subscribeAndDeliver = (
   threadId: string,
   adapter: ChannelAdapter,
-  target: DeliveryTarget,
+  targetRef: Ref.Ref<DeliveryTarget>,
   serviceScope: Scope.Scope,
 ): Effect.Effect<Fiber.Fiber<void, never>, never, ChatService> =>
   Effect.gen(function* () {
@@ -600,6 +611,28 @@ export const subscribeAndDeliver = (
     const toolSteps = yield* Ref.make<ReadonlyArray<ToolStep>>([])
     // Current rendered tool-status block for stream-edit adapters.
     const currentStatusLine = yield* Ref.make<string>("")
+    // Delivery target for the CURRENT turn, snapshotted from targetRef at
+    // the turn's first delivery and cleared on turn-complete /
+    // assistant-error. The service refreshes targetRef on every inbound
+    // message, so resolving it per frame would let a message that arrives
+    // mid-turn hijack the in-flight turn's reply routing (Telegram turnKey
+    // + reply_parameters); resolving once per turn keeps the whole turn
+    // addressed to the message that triggered it.
+    const turnTarget = yield* Ref.make<DeliveryTarget | null>(null)
+
+    /**
+     * Target for the current turn: the cached snapshot, or the latest
+     * target from the service when no turn is in flight. Standalone
+     * (background-job) deliveries deliberately do NOT use this — they are
+     * not part of a turn and must not pin the next turn's snapshot.
+     */
+    const resolveTarget = Effect.gen(function* () {
+      const cached = yield* Ref.get(turnTarget)
+      if (cached !== null) return cached
+      const fresh = yield* Ref.get(targetRef)
+      yield* Ref.set(turnTarget, fresh)
+      return fresh
+    })
 
     const capability = adapter.capability
     const maxLen = adapter.maxMessageLength
@@ -618,7 +651,11 @@ export const subscribeAndDeliver = (
       return buildStreamEditText(current, status, maxLen)
     })
 
-    const deliverStreamEdit = (content: string, isFinal: boolean): Effect.Effect<void> =>
+    const deliverStreamEdit = (
+      content: string,
+      isFinal: boolean,
+      target: DeliveryTarget,
+    ): Effect.Effect<void> =>
       adapter
         .deliver(target, content.slice(0, maxLen), {
           isPartial: !isFinal,
@@ -628,21 +665,22 @@ export const subscribeAndDeliver = (
         })
         .pipe(Effect.catchCause(() => Effect.void))
 
-    const scheduleThrottledEdit = Effect.gen(function* () {
-      yield* cancelPendingEdit
+    const scheduleThrottledEdit = (target: DeliveryTarget): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* cancelPendingEdit
 
-      const editFiber = yield* Effect.gen(function* () {
-        yield* Effect.sleep(`${STREAM_EDIT_THROTTLE_MS} millis`)
-        const current = yield* renderCurrentEdit
-        const last = yield* Ref.get(lastEditedText)
-        if (current !== last) {
-          yield* deliverStreamEdit(current, false)
-          yield* Ref.set(lastEditedText, current)
-        }
-      }).pipe(Effect.forkChild)
+        const editFiber = yield* Effect.gen(function* () {
+          yield* Effect.sleep(`${STREAM_EDIT_THROTTLE_MS} millis`)
+          const current = yield* renderCurrentEdit
+          const last = yield* Ref.get(lastEditedText)
+          if (current !== last) {
+            yield* deliverStreamEdit(current, false, target)
+            yield* Ref.set(lastEditedText, current)
+          }
+        }).pipe(Effect.forkChild)
 
-      yield* Ref.set(throttleFiber, editFiber as Fiber.Fiber<void, never>)
-    })
+        yield* Ref.set(throttleFiber, editFiber as Fiber.Fiber<void, never>)
+      })
 
     /**
      * Deliver a status-only update (tool steps). For stream-edit adapters:
@@ -652,7 +690,7 @@ export const subscribeAndDeliver = (
      * The first status creates the placeholder immediately; follow-up status
      * edits share the same throttle path as assistant deltas.
      */
-    const deliverStatusLine = (statusLine: string): Effect.Effect<void> => {
+    const deliverStatusLine = (statusLine: string, target: DeliveryTarget): Effect.Effect<void> => {
       if (capability !== "stream-edit") return Effect.void
       if (statusLine.length === 0) return Effect.void
       return Effect.gen(function* () {
@@ -661,10 +699,10 @@ export const subscribeAndDeliver = (
         if (!started) {
           const content = yield* renderCurrentEdit
           yield* Ref.set(editStarted, true)
-          yield* deliverStreamEdit(content, false)
+          yield* deliverStreamEdit(content, false, target)
           yield* Ref.set(lastEditedText, content)
         } else {
-          yield* scheduleThrottledEdit
+          yield* scheduleThrottledEdit(target)
         }
       })
     }
@@ -680,6 +718,7 @@ export const subscribeAndDeliver = (
 
                 if (capability === "stream-edit") {
                   yield* Ref.set(currentDeltaText, text)
+                  const target = yield* resolveTarget
 
                   // Send placeholder on first delta
                   const started = yield* Ref.get(editStarted)
@@ -696,7 +735,7 @@ export const subscribeAndDeliver = (
                     yield* Ref.set(lastEditedText, "…")
                   }
 
-                  yield* scheduleThrottledEdit
+                  yield* scheduleThrottledEdit(target)
                 }
                 // For final-only and discrete-chunks we wait for assistant-done
                 break
@@ -718,6 +757,10 @@ export const subscribeAndDeliver = (
                 // a silent hole in the middle of the answer.
                 if (frame.message.delivery !== undefined) {
                   if (text.trim().length > 0) {
+                    // Standalone one-shots resolve the LATEST target without
+                    // touching the turn cache: they are not part of a turn
+                    // and must not pin the next turn's snapshot.
+                    const target = yield* Ref.get(targetRef)
                     const chunks = splitToChunks(text, maxLen)
                     yield* deliverFinalChunks(adapter, target, chunks, true)
                   }
@@ -732,6 +775,7 @@ export const subscribeAndDeliver = (
                   // Fires once per assistant-done, so stop-at-first is
                   // per-MESSAGE here. Worst case a marker is followed by more
                   // content later, which is strictly better than a hole.
+                  const target = yield* resolveTarget
                   const chunks = splitToChunks(text, maxLen)
                   yield* deliverFinalChunks(adapter, target, chunks)
                 }
@@ -753,7 +797,8 @@ export const subscribeAndDeliver = (
                   },
                 ])
                 const steps = yield* Ref.get(toolSteps)
-                yield* deliverStatusLine(buildWorkingBlock(steps))
+                const target = yield* resolveTarget
+                yield* deliverStatusLine(buildWorkingBlock(steps), target)
                 break
               }
 
@@ -767,7 +812,8 @@ export const subscribeAndDeliver = (
                   ),
                 )
                 const steps = yield* Ref.get(toolSteps)
-                yield* deliverStatusLine(buildWorkingBlock(steps))
+                const target = yield* resolveTarget
+                yield* deliverStatusLine(buildWorkingBlock(steps), target)
                 break
               }
 
@@ -784,17 +830,27 @@ export const subscribeAndDeliver = (
                   yield* cancelPendingEdit
                   const partial = yield* Ref.get(currentDeltaText)
                   const errText = partial.length > 0 ? `${partial}\n\n${notice}` : notice
-                  yield* deliverStreamEdit(errText.slice(0, maxLen), true)
+                  const target = yield* resolveTarget
+                  yield* deliverStreamEdit(errText.slice(0, maxLen), true, target)
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
                   yield* Ref.set(currentStatusLine, "")
                   yield* Ref.set(toolSteps, [])
                 }
+                // The turn is over for every capability: a failed
+                // final-only / discrete-chunks turn ends with
+                // assistant-error and no turn-complete, so the snapshot
+                // must be dropped here too, or the next turn keeps
+                // replying against the failed turn's message.
+                yield* Ref.set(turnTarget, null)
                 break
               }
 
               case "turn-complete": {
+                // Resolve (and snapshot) this turn's target before any
+                // finalize delivery below; cleared at the end of the case.
+                const target = yield* resolveTarget
                 // Cancel any pending throttle fiber
                 if (capability === "stream-edit") {
                   yield* cancelPendingEdit
@@ -849,6 +905,9 @@ export const subscribeAndDeliver = (
                 } else if (capability === "discrete-chunks") {
                   yield* Ref.set(turnBuffer, "")
                 }
+                // The turn is over; drop its target snapshot so the next
+                // turn resolves the (possibly newer) target from the service.
+                yield* Ref.set(turnTarget, null)
                 break
               }
 
