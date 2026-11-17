@@ -33,6 +33,7 @@ import {
 import {
   formatOauthConsentError,
   initialConnectorsState,
+  labelTaken,
   reduceConnectors,
 } from "../frontend-react/src/panels/settings-connectors/connectorsReducer"
 import type { LunaFrameRegistry, PanelCtx } from "../frontend-react/src/panels/panel-ctx"
@@ -787,6 +788,36 @@ describe("formatOauthConsentError", () => {
     const out = formatOauthConsentError(new Error("consent was declined by the provider: access_denied"))
     expect(out).toContain("access_denied")
     expect(out).toMatch(/test user/i)
+  })
+})
+
+// ── Pure helper: labelTaken (client preflight mirror of server labelSlug) ──
+describe("labelTaken", () => {
+  const inst = (label: string, definitionId = "google-workspace") => ({
+    id: `i-${label}`,
+    definitionId,
+    label,
+    status: "connected",
+  })
+
+  it("treats distinct symbol-only labels as distinct (server djb2 fallback)", () => {
+    // Server pins "!!!" vs "###" as two accounts (oauth-flow.test.ts);
+    // the client preflight used to slug both to "" and block the second.
+    expect(labelTaken([inst("!!!")], "google-workspace", "###")).toBe(false)
+    expect(labelTaken([inst("###")], "google-workspace", "!!!")).toBe(false)
+  })
+
+  it("still flags the same symbol-only label as taken", () => {
+    expect(labelTaken([inst("!!!")], "google-workspace", "!!!")).toBe(true)
+  })
+
+  it("still flags case-insensitive collisions on normal labels", () => {
+    expect(labelTaken([inst("work")], "google-workspace", "Work")).toBe(true)
+    expect(labelTaken([inst("work")], "google-workspace", "personal")).toBe(false)
+  })
+
+  it("scopes the check to the same definition", () => {
+    expect(labelTaken([inst("!!!", "other-def")], "google-workspace", "###")).toBe(false)
   })
 })
 

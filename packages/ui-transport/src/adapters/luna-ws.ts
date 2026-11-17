@@ -516,6 +516,15 @@ export class LunaWsAdapter implements ClientTransportAdapter {
         const code = closeEv.code ?? 0
         const reason = `code=${code} reason=${closeEv.reason ?? ""}`
 
+        // A new-thread create in flight on this socket can never be answered
+        // now — reject it so openSession() settles instead of hanging, and
+        // clear the gate so a later create is not rejected as concurrent.
+        // (Pending cannot exist before hello — new-thread is only sent after
+        // attach — but rejecting here covers both branches uniformly.)
+        this.#rejectPendingNewThread(
+          `socket closed while creating thread (${reason})`,
+        )
+
         if (!settled) {
           // Close before hello — reject the connect promise.
           settled = true
@@ -613,6 +622,27 @@ export class LunaWsAdapter implements ClientTransportAdapter {
   }
 
   /**
+   * Reject a pending new-thread create, if one is in flight. Called when the
+   * socket closes: the create frame went out on the dead socket and no
+   * thread-created can ever arrive for it, so the openSession() caller must
+   * hear about it instead of hanging forever. Also clears the gate so a
+   * later openSession() can create a thread instead of hitting the
+   * "concurrent new-thread not supported" rejection. The create is NOT
+   * re-issued after reconnect: the server may already have created the
+   * thread, and the client has no id to reconcile it with — the caller
+   * retries openSession() and gets a fresh thread.
+   */
+  #rejectPendingNewThread(reason: string): void {
+    if (this.#pendingNewThread) {
+      const pending = this.#pendingNewThread
+      this.#pendingNewThread = null
+      pending.reject(
+        new Error(`LunaWsAdapter(${this.routeKey}): ${reason}`),
+      )
+    }
+  }
+
+  /**
    * Send new-thread and wait for thread-created / thread-create-error.
    * Passes `model` to the server only if provided.
    */
@@ -622,12 +652,33 @@ export class LunaWsAdapter implements ClientTransportAdapter {
         reject(new Error(`LunaWsAdapter(${this.routeKey}): concurrent new-thread not supported`))
         return
       }
+      // The socket may already be dead: a caller retrying openSession()
+      // during the reconnect backoff reaches here with the closed socket
+      // still cached in #ws (a fresh socket only exists after #doReconnect
+      // runs). Sending on it silently drops the frame (ws package) or throws
+      // (browsers), and either way the gate below would stay set with no
+      // thread-created ever able to arrive — every later create then fails
+      // as concurrent even after the reconnect succeeds. Fail fast instead,
+      // without taking the gate, so the caller can retry once the socket
+      // is back.
+      if (ws.readyState !== ws.OPEN) {
+        reject(new Error(`LunaWsAdapter(${this.routeKey}): cannot create thread: connection not open`))
+        return
+      }
       this.#pendingNewThread = { resolve, reject }
       const frame: { type: string; model?: string } = {
         type: "new-thread",
         ...(model ? { model } : {}),
       }
-      ws.send(JSON.stringify(frame))
+      try {
+        ws.send(JSON.stringify(frame))
+      } catch (e) {
+        // send() threw before the frame went out: release the gate so the
+        // next create is not rejected as concurrent, and surface the
+        // failure to this caller.
+        this.#pendingNewThread = null
+        reject(e instanceof Error ? e : new Error(String(e)))
+      }
     })
   }
 

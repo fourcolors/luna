@@ -711,8 +711,16 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
         // unchanged (hash match) — select hash, dimension, and enrichment so
         // a dimension drift still forces a re-embed and a phrases-only change
         // still refreshes the FTS enrichment text without re-embedding.
+        // Also select the stored provider/model/format: a hash match alone
+        // does not mean the stored vector is in the active embedder's
+        // space (an embedder swap at the same dimension keeps the hash),
+        // so a provider/model/format mismatch must force a re-embed too.
+        // This mirrors the staleness definition in auditRow
+        // (sqlite-vector-maintenance.ts).
         const getVecHashStmt = db.query(
-          `SELECT embedding_input_hash AS h, dimension AS d, enrichment AS e
+          `SELECT embedding_input_hash AS h, dimension AS d, enrichment AS e,
+                  embedding_provider AS p, embedding_model AS m,
+                  embedding_format AS f
              FROM memory_vectors WHERE id = ?`,
         )
         const touchVecStmt = db.query(
@@ -853,8 +861,10 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
             // Step 1: embed first (only if needed). No DB state mutated yet.
             // Skip the embedder call entirely when the embedding input is
             // unchanged: the input hash covers namespace/kind/tags/text, so
-            // a hash match means the stored vector is still valid. The
-            // vector row's ts is still refreshed to track rec.updatedAt.
+            // a hash match — plus a match on the stored provider, model,
+            // format, and dimension — means the stored vector is still in
+            // the active embedder's space. The vector row's ts is still
+            // refreshed to track rec.updatedAt.
             let vecBuf: Uint8Array | null = null
             let embeddingInputHash: string | null = null
             let embeddedAt = 0
@@ -870,14 +880,17 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
               const existing = yield* Effect.try({
                 try: () =>
                   getVecHashStmt.get(rec.id) as
-                    | { h: string; d: number; e: string }
+                    | { h: string; d: number; e: string; p: string; m: string; f: string }
                     | null
                     | undefined,
                 catch: (cause) => asError("put.hash", cause),
               })
               if (
                 existing?.h === inputHash &&
-                existing.d === embedder.dimension
+                existing.d === embedder.dimension &&
+                existing.p === embedder.provider &&
+                existing.m === embedder.model &&
+                existing.f === embedder.embeddingFormat
               ) {
                 vecUnchanged = true
                 embeddingInputHash = inputHash

@@ -251,7 +251,7 @@ describe("sandbox local shell", () => {
         // so Node's "close" never fires. The executor must settle on "exit"
         // plus a short drain grace instead of waiting out the whole timeout
         // and reporting a false timeout (same defect class #814 fixed in Rust).
-        command: "(sleep 29 &)",
+        command: "(sleep 27 &)",
         timeoutMs: 5_000,
       }, {
         cwd: root,
@@ -264,7 +264,7 @@ describe("sandbox local shell", () => {
     } finally {
       // Reap the background sleeper the repro command leaves behind.
       try {
-        execFileSync("pkill", ["-f", "sleep 29"])
+        execFileSync("pkill", ["-f", "sleep 27"])
       } catch { /* already gone */ }
     }
   }, 15_000)
@@ -280,7 +280,7 @@ describe("sandbox local shell", () => {
       `const { executeSandboxLocalShellRequest } = await import(${JSON.stringify(src)})`,
       `const r = await executeSandboxLocalShellRequest({`,
       `  type: "local-shell-request", requestId: "req_daemon", threadId: "thr_1",`,
-      `  command: "(sleep 29 &)", cwd: ${JSON.stringify(root)}, timeoutMs: 5_000,`,
+      `  command: "(sleep 26 &)", cwd: ${JSON.stringify(root)}, timeoutMs: 5_000,`,
       `}, { cwd: ${JSON.stringify(root)}, sandboxRoot: ${JSON.stringify(root)}, env: { PATH: process.env.PATH }, timeoutMs: 5_000 })`,
       `if (r.exitCode !== 0 || r.timedOut) { console.error(JSON.stringify(r)); process.exit(1) }`,
     ].join("\n")
@@ -289,7 +289,7 @@ describe("sandbox local shell", () => {
     } finally {
       // Reap the background sleeper the repro command leaves behind.
       try {
-        execFileSync("pkill", ["-f", "sleep 29"])
+        execFileSync("pkill", ["-f", "sleep 26"])
       } catch { /* already gone */ }
     }
   }, 15_000)

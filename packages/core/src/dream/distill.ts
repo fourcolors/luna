@@ -58,31 +58,42 @@ const MESSAGE_TRUNCATION_MARKER = "… [truncated]"
 const TOOL_FIELD_CHARS = 200
 
 /** Concatenate the `text` of text blocks; non-text blocks contribute nothing. */
-const flattenTextBlocks = (blocks: ReadonlyArray<Record<string, unknown>>): string =>
+const flattenTextBlocks = (blocks: ReadonlyArray<unknown>): string =>
   blocks
-    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .filter(
+      (b): b is Record<string, unknown> =>
+        b !== null &&
+        typeof b === "object" &&
+        (b as Record<string, unknown>).type === "text" &&
+        typeof (b as Record<string, unknown>).text === "string",
+    )
     .map((b) => b.text as string)
     .join("")
 
 /**
  * Render one SDK content block, or null if it carries no surfaceable text.
  * tool_use/tool_result fields are capped at TOOL_FIELD_CHARS (S1b).
+ * Content arrays are adapter-owned payloads, so an element may be null or a
+ * non-object (malformed/corrupt transcript) — skip it instead of throwing;
+ * one bad element must not stall the whole dream cycle.
  */
-const renderBlock = (block: Record<string, unknown>): string | null => {
-  switch (block.type) {
+const renderBlock = (block: unknown): string | null => {
+  if (block === null || typeof block !== "object") return null
+  const b = block as Record<string, unknown>
+  switch (b.type) {
     case "text":
-      return typeof block.text === "string" ? block.text : null
+      return typeof b.text === "string" ? b.text : null
     case "tool_use": {
-      const name = typeof block.name === "string" ? block.name : "unknown"
-      const input = JSON.stringify(block.input ?? null).slice(0, TOOL_FIELD_CHARS)
+      const name = typeof b.name === "string" ? b.name : "unknown"
+      const input = JSON.stringify(b.input ?? null).slice(0, TOOL_FIELD_CHARS)
       return `[tool_use ${name}] ${input}`
     }
     case "tool_result": {
-      const raw = block.content
+      const raw = b.content
       const flat = typeof raw === "string"
         ? raw
         : Array.isArray(raw)
-          ? flattenTextBlocks(raw as ReadonlyArray<Record<string, unknown>>)
+          ? flattenTextBlocks(raw)
           : JSON.stringify(raw ?? null)
       return `[tool_result] ${flat.slice(0, TOOL_FIELD_CHARS)}`
     }
@@ -103,7 +114,7 @@ const extractSdkBody = (payload: unknown): string | null => {
   if (typeof content === "string") return content
   if (Array.isArray(content)) {
     return content
-      .map((b) => renderBlock(b as Record<string, unknown>))
+      .map((b) => renderBlock(b))
       .filter((part): part is string => part !== null)
       .join("")
   }

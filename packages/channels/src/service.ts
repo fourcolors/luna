@@ -141,11 +141,15 @@ export const ChannelServiceLayer: Layer.Layer<
     // startAdapters() call is a no-op for them. See startAdapters below.
     const startedAdapterIds = yield* Ref.make<ReadonlySet<string>>(new Set())
 
-    // Active delivery fibers: (threadId:adapterId) → Fiber
+    // Active delivery fibers: (threadId:adapterId) → { fiber, target }.
     // One fiber per (thread, adapter) pair. Idempotent — the second inbound
     // on the same thread+adapter reuses the existing fiber.
+    // `target` is a Ref because the delivery fiber is long-lived while the
+    // target belongs to the latest inbound message: handleMessage refreshes
+    // it on every inbound so later turns do not deliver against the first
+    // message's target (stale reply_parameters / turnKey).
     const deliveryFibers = yield* Ref.make<
-      ReadonlyMap<string, Fiber.Fiber<void, never>>
+      ReadonlyMap<string, { fiber: Fiber.Fiber<void, never>; target: Ref.Ref<DeliveryTarget> }>
     >(new Map())
 
     // ── Inbound message pipeline ────────────────────────────────────────────
@@ -232,7 +236,12 @@ export const ChannelServiceLayer: Layer.Layer<
         // we do NOT mark seen. The adapter will redeliver the message and
         // the next attempt may succeed once the service is healthy.
 
-        // 4. Spawn a delivery fiber per (threadId, adapter) — idempotent
+        // 4. Spawn a delivery fiber per (threadId, adapter) — idempotent.
+        // The fiber is long-lived, so its delivery target is a Ref that
+        // tracks the LATEST inbound message: build the target from THIS
+        // message on every inbound and refresh the existing fiber's Ref,
+        // so a later turn's reply quotes (and stream-edits against) the
+        // message that triggered it instead of the thread's first message.
         const adapterList = yield* Ref.get(adapters)
         for (const adapter of adapterList) {
           // Only the adapter owning this transport may deliver. Without this
@@ -243,23 +252,27 @@ export const ChannelServiceLayer: Layer.Layer<
           if (adapter.transport !== msg.transport) continue
           const fiberKey = `${threadId}:${adapter.id}`
           const fibers = yield* Ref.get(deliveryFibers)
-          if (!fibers.has(fiberKey)) {
+          const existing = fibers.get(fiberKey)
+          const target = buildDeliveryTarget(msg)
+          if (existing !== undefined) {
+            yield* Ref.set(existing.target, target)
+          } else {
             // Build the delivery target from the inbound message
-            const target = buildDeliveryTarget(msg)
+            const targetRef = yield* Ref.make(target)
 
             // Spawn delivery fiber into the service scope so it survives the
             // inbound handler's transient runFork root fiber. Without forkIn
             // (serviceScope), auto-supervision would interrupt the delivery
             // fiber as soon as the root fiber of Effect.runFork completes —
             // before any ChatFrame is consumed and no reply ever delivered.
-            const fiber = yield* subscribeAndDeliver(threadId, adapter, target, serviceScope).pipe(
+            const fiber = yield* subscribeAndDeliver(threadId, adapter, targetRef, serviceScope).pipe(
               Effect.provide(Layer.succeed(ChatService, chat)),
               Effect.orDie,
             )
 
             yield* Ref.update(deliveryFibers, (m) => {
               const next = new Map(m)
-              next.set(fiberKey, fiber)
+              next.set(fiberKey, { fiber, target: targetRef })
               return next
             })
 
@@ -268,7 +281,7 @@ export const ChannelServiceLayer: Layer.Layer<
             fiber.addObserver(() => {
               Effect.runFork(
                 Ref.update(deliveryFibers, (m) => {
-                  if (m.get(fiberKey) !== fiber) return m
+                  if (m.get(fiberKey)?.fiber !== fiber) return m
                   const next = new Map(m)
                   next.delete(fiberKey)
                   return next
@@ -347,7 +360,7 @@ export const ChannelServiceLayer: Layer.Layer<
         yield* Ref.set(startedAdapterIds, new Set<string>())
         // Interrupt all delivery fibers
         const fibers = yield* Ref.get(deliveryFibers)
-        yield* Fiber.interruptAll(Array.from(fibers.values()))
+        yield* Fiber.interruptAll(Array.from(fibers.values()).map((e) => e.fiber))
       })
 
     // Finalizer: stop adapters when the service scope closes

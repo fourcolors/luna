@@ -150,13 +150,25 @@ export function overallStatus(insts: readonly ConnectorInstance[]): OverallStatu
 }
 
 /** Client-side mirror of the server's labelSlug (lowercase, non-alnum runs ->
- *  '_', trimmed) - close enough to preflight the common collision: a second
- *  account left on the default label. The server check stays authoritative. */
+ *  '_', trimmed; symbol-only labels fall back to the same deterministic
+ *  djb2 `acct_<hex>` so distinct labels stay distinct) - close enough to
+ *  preflight the common collision: a second account left on the default
+ *  label. The server check stays authoritative. */
 function labelSlugLite(label: string | null | undefined): string {
-  return String(label || "")
+  const raw = String(label || "")
+  const s = raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_+|_+$/g, "")
+  if (s.length > 0) return s
+  // Mirror the server fallback (review C1): without it every symbol-only
+  // label slugs to "" and labelTaken blocks a distinct label (e.g. "###"
+  // after "!!!") the server would accept as a second account.
+  let h = 5381
+  for (let i = 0; i < raw.length; i++) {
+    h = ((h * 33) ^ raw.charCodeAt(i)) >>> 0
+  }
+  return `acct_${h.toString(16)}`
 }
 
 export function labelTaken(

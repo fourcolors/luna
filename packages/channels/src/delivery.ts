@@ -219,11 +219,15 @@ const buildWorkingBlock = (steps: ReadonlyArray<ToolStep>): string => {
  * An open fenced block: the normalized 3-char marker plus the block's info
  * string (the language tag and any extra attributes, e.g.
  * `typescript title=example.ts`). The info string is what makes a reopened
- * continuation keep its syntax highlighting.
+ * continuation keep its syntax highlighting. `length` is the opening run's
+ * length: per CommonMark a closing fence must be at least this long, and the
+ * inserted closer / reopen echo it, so a short run can never close a long
+ * block.
  */
 interface OpenFence {
   readonly marker: "```" | "~~~"
   readonly info: string
+  readonly length: number
 }
 
 /** Length of the normalized fence marker we emit ("```" / "~~~"). */
@@ -241,11 +245,15 @@ const parseFenceLine = (line: string): OpenFence | null => {
   return {
     marker: (m[1] ?? "").startsWith("`") ? "```" : "~~~",
     info: (m[2] ?? "").trim(),
+    length: (m[1] ?? "").length,
   }
 }
 
+/** The full opening marker run, e.g. "````" for a 4-backtick block. */
+const fenceMarker = (f: OpenFence): string => (f.marker[0] ?? "`").repeat(f.length)
+
 /** The text of the line that reopens `f` in a continuation chunk. */
-const reopenLine = (f: OpenFence): string => f.marker + f.info
+const reopenLine = (f: OpenFence): string => fenceMarker(f) + f.info
 
 /**
  * Walk `text` line by line and return the fence still open at the end, or
@@ -258,6 +266,8 @@ const reopenLine = (f: OpenFence): string => f.marker + f.info
  *      inside an already-open ``` block is CONTENT, not a closer. This is
  *      what keeps "markdown about markdown" (which the agent writes
  *      constantly when explaining code) from being mis-parsed.
+ *   3. THE CLOSING RUN IS AT LEAST AS LONG AS THE OPENING RUN — so a ```
+ *      line inside a ```` block is CONTENT, not a closer.
  */
 const scanFences = (text: string): OpenFence | null => {
   let state: OpenFence | null = null
@@ -266,7 +276,11 @@ const scanFences = (text: string): OpenFence | null => {
     if (fence === null) continue
     if (state === null) {
       state = fence
-    } else if (fence.marker === state.marker && fence.info.length === 0) {
+    } else if (
+      fence.marker === state.marker &&
+      fence.info.length === 0 &&
+      fence.length >= state.length
+    ) {
       state = null
     }
   }
@@ -283,7 +297,8 @@ const scanFences = (text: string): OpenFence | null => {
  * title=example.ts, not a bare ```), so the second half of a split code
  * block keeps its syntax highlighting. The INSERTED CLOSER is always a bare
  * marker, because per CommonMark a closing fence must not carry an info
- * string.
+ * string — and it echoes the opening run's length, because a shorter run
+ * cannot close a longer block.
  *
  * See `scanFences` for the tracking rules.
  */
@@ -293,7 +308,7 @@ export const repairSplitFences = (chunks: ReadonlyArray<string>): string[] => {
   for (const chunk of chunks) {
     let c: string = open !== null ? reopenLine(open) + "\n" + chunk : chunk
     open = scanFences(c)
-    if (open !== null) c = c + "\n" + open.marker
+    if (open !== null) c = c + "\n" + fenceMarker(open)
     out.push(c)
   }
   return out
@@ -308,14 +323,17 @@ export const repairSplitFences = (chunks: ReadonlyArray<string>): string[] => {
  * chunk: a reopen line (`reopenLine(f)` + "\n") at the front and a bare
  * closer ("\n" + marker) at the back. So the worst case is
  *
- *     longest possible reopen + 1 + 1 + FENCE_MARKER_LEN
+ *     longest possible reopen + 1 + 1 + longest run in the text
  *
- * The bound on "longest possible reopen" is taken over every 3+ backtick /
- * tilde run ANYWHERE in the text, not just at line starts, because
- * splitToChunks is fence-blind and may cut mid-line: a chunk that begins
- * exactly at such a run turns it into a fence line whose info string is the
- * rest of that line. Scanning every run therefore covers every reopen the
- * repair could ever emit for this text, whatever the cut positions are.
+ * The closer echoes the opening run's length (a shorter run cannot close a
+ * longer block), so it is bounded by the longest run, not by
+ * FENCE_MARKER_LEN. The bound on "longest possible reopen" is taken over
+ * every 3+ backtick / tilde run ANYWHERE in the text, not just at line
+ * starts, because splitToChunks is fence-blind and may cut mid-line: a chunk
+ * that begins exactly at such a run turns it into a fence line whose info
+ * string is the rest of that line. Scanning every run therefore covers every
+ * reopen the repair could ever emit for this text, whatever the cut positions
+ * are.
  *
  * Consequences worth noting:
  *   - Text with no fence run at all reserves 0 — repair provably inserts
@@ -325,21 +343,36 @@ export const repairSplitFences = (chunks: ReadonlyArray<string>): string[] => {
  *     of an empty info string; a 40-char language tag needs 48 and would have
  *     overflowed the platform limit.
  */
-const fenceRepairReserve = (text: string): number => {
+interface FenceRepairStats {
+  readonly longestReopen: number
+  readonly longestRun: number
+}
+
+const fenceRepairStats = (text: string): FenceRepairStats => {
   let longestReopen = 0
-  for (const m of text.matchAll(/(?:`{3,}|~{3,})([^\n]*)/g)) {
-    const candidate = FENCE_MARKER_LEN + (m[1] ?? "").trim().length
+  let longestRun = 0
+  for (const m of text.matchAll(/(`{3,}|~{3,})([^\n]*)/g)) {
+    const runLen = (m[1] ?? "").length
+    if (runLen > longestRun) longestRun = runLen
+    const candidate = runLen + (m[2] ?? "").trim().length
     if (candidate > longestReopen) longestReopen = candidate
   }
+  return { longestReopen, longestRun }
+}
+
+const fenceRepairReserve = (text: string): number => {
+  const { longestReopen, longestRun } = fenceRepairStats(text)
   if (longestReopen === 0) return 0
-  return longestReopen + 1 + 1 + FENCE_MARKER_LEN
+  return longestReopen + 1 + 1 + longestRun
 }
 
 /**
  * The per-chunk length limit to hand `splitToChunks` so that, after
  * `repairSplitFences`, no chunk exceeds `maxLen`. That promise is proved below
- * for `maxLen >= 7`, and it is NOT made below that: see the NOTE in step 4,
- * where the band is recorded as degenerate rather than quietly worded around.
+ * for `maxLen >= R + 4`, where `R` is the longest fence run in the text (7
+ * for an ordinary 3-char fence), and it is NOT made below that: see the NOTE
+ * in step 4, where the band is recorded as degenerate rather than quietly
+ * worded around.
  *
  * The reserve is derived from the text (see `fenceRepairReserve`) rather than
  * fixed, so short answers keep essentially their whole budget and only a long
@@ -362,37 +395,41 @@ const fenceRepairReserve = (text: string): number => {
  * itself has to carry the guarantee. It does:
  *
  *   1. `splitToChunks` emits chunks of at most `limit`, so every fence-line
- *      candidate inside a chunk is at most `limit` characters and the info
- *      string carried onto a reopen line is at most `limit - FENCE_MARKER_LEN`.
+ *      candidate inside a chunk is at most `limit` characters and a reopen
+ *      line (run + info) is at most `limit` characters.
  *   2. `repairSplitFences` prepends `reopenLine(f) + "\n"`, which is at most
- *      `FENCE_MARKER_LEN + (limit - FENCE_MARKER_LEN) + 1 = limit + 1`, and
- *      appends a bare closer `"\n" + marker`, i.e. `1 + FENCE_MARKER_LEN`.
+ *      `limit + 1`, and appends a bare closer `"\n" + <the full opening
+ *      run>`, i.e. `1 + R`, where `R` is the longest fence run in the text
+ *      (`fenceRepairStats`; `R >= 3` whenever a fence is present, and the
+ *      floor falls back to `FENCE_MARKER_LEN` when there is none).
  *   3. A reopened chunk is therefore at most
- *          limit + 1 + limit + 1 + FENCE_MARKER_LEN  =  2 * limit + 5.
- *   4. Substituting the floor below, `limit = floor((maxLen - 5) / 2)`:
- *          2 * floor((maxLen - 5) / 2) + 5  <=  (maxLen - 5) + 5  =  maxLen
+ *          limit + 1 + limit + 1 + R  =  2 * limit + 2 + R.
+ *   4. Substituting the floor below, `limit = floor((maxLen - 2 - R) / 2)`:
+ *          2 * floor((maxLen - 2 - R) / 2) + 2 + R  <=  (maxLen - 2 - R) + 2 + R  =  maxLen
  *      for every integer `maxLen`. That is an identity, not a measurement, and
  *      the floor is the LARGEST integer satisfying it, so nothing is
- *      over-reserved: `2*b + 5 <= maxLen` iff `b <= (maxLen - 5) / 2`.
+ *      over-reserved: `2*b + 2 + R <= maxLen` iff `b <= (maxLen - 2 - R) / 2`.
  *
  *      NOTE, RECORDED RATHER THAN WORDED AROUND: the identity governs the
  *      FLOOR TERM ONLY, not the value this function returns. `Math.max(1, ...)`
- *      dominates the floor for `maxLen <= 6`, where `floor((maxLen - 5) / 2)`
- *      is already `<= 0`. Whenever a fence is present at all the returned limit
- *      is then exactly 1, because any match forces `reserve >= 8` (a bare
- *      marker with an empty info string) and so `maxLen - reserve < 0` too; the
- *      bound of step 3 reads `7 > maxLen`. Steps 1 to 4 therefore prove nothing
- *      at those sizes, which is exactly why the headline above is qualified.
+ *      dominates the floor for `maxLen <= R + 3`, where
+ *      `floor((maxLen - 2 - R) / 2)` is already `<= 0` (for an ordinary 3-char
+ *      fence that is the old band, `maxLen <= 6`). Whenever a fence is present
+ *      at all the returned limit is then exactly 1, because any match forces
+ *      `reserve >= 8` (a bare marker with an empty info string) and so
+ *      `maxLen - reserve < 0` too; the bound of step 3 reads
+ *      `2 * 1 + 2 + R > maxLen`. Steps 1 to 4 therefore prove nothing at
+ *      those sizes, which is exactly why the headline above is qualified.
  *      (With no fence the limit is just `maxLen`, but then `repairSplitFences`
  *      prepends no reopen line and a chunk cannot exceed `maxLen` anyway.)
- *      Confirmed exhaustively over `maxLen` 1..8192: the bound is violated at
- *      1..6, first satisfied at 7, and holds from there.
+ *      Confirmed exhaustively over `maxLen` 1..8192 for ordinary 3-char
+ *      fences: the bound is violated at 1..6, first satisfied at 7, and holds
+ *      from there.
  *
  *      Nothing is guaranteed in that band and nothing needs to be: a bare
- *      marker plus its closer is already
- *      `FENCE_MARKER_LEN + 1 + FENCE_MARKER_LEN` = 7 characters, so fence
- *      repair is degenerate below it. The `1` is a crash guard, not a bound
- *      (`splitToChunks` throws on `maxLength <= 0`), and no current caller can
+ *      marker plus its closer is already `R + 1 + R` characters (7 for a
+ *      3-char fence), so fence repair is degenerate below it. The `1` is a
+ *      crash guard, not a bound (`splitToChunks` throws on `maxLength <= 0`), and no current caller can
  *      reach the band: the sole producer is `adapter.maxMessageLength`, and the
  *      only two shipping adapters are 2000 (discord.ts) and 4096 (telegram.ts).
  *      Left as prose deliberately. A runtime guard would be dead by
@@ -401,7 +438,8 @@ const fenceRepairReserve = (text: string): number => {
  *      would push a constraint into the public `ChannelAdapter` contract to
  *      serve a size at which the feature is meaningless anyway.
  *
- * The floor this replaced, `floor(maxLen / 2)`, makes step 4 read `maxLen + 5`.
+ * The floor this replaced, `floor(maxLen / 2)`, makes step 4 read
+ * `maxLen + 2 + R` (maxLen + 5 for a 3-char fence).
  * Overflow was then REACHABLE whenever the clamp bound AND a fence-line
  * candidate filled the window. Clamp-binding alone is NECESSARY, NOT
  * SUFFICIENT, and the counterexample is already in the suite: the Slice 2b
@@ -413,7 +451,7 @@ const fenceRepairReserve = (text: string): number => {
  * and are recorded here so they are not reintroduced. (a) A fence line longer
  * than the limit is hard-cut, and that does NOT make what ends up open shorter
  * than the bound assumes — it PINS the carried info string at exactly
- * `limit - FENCE_MARKER_LEN`, i.e. at the worst case. (b) Closing the gap does
+ * `limit` minus the opening run's length, i.e. at the worst case. (b) Closing the gap does
  * not need a fence-aware splitter; it needs this one expression. A lower floor
  * is also not "stricter and therefore worse": it makes the clamp bind LATER
  * and reserves MORE, which is the safe direction, so the only question is what
@@ -421,11 +459,18 @@ const fenceRepairReserve = (text: string): number => {
  *
  * Cost: 997 rather than 1000 usable body characters at Discord's 2000, and the
  * floor only binds at all once the derived reserve already exceeds half the
- * budget. Inert on every ordinary path.
+ * budget. Inert on every ordinary path. A longer run in the text lowers the
+ * floor by half its excess over 3 — a 4-run costs nothing at 2000, a 5-run
+ * costs one character.
  */
 const fenceRepairChunkLimit = (text: string, maxLen: number): number => {
   const reserve = fenceRepairReserve(text)
-  const bodyFloor = Math.floor((maxLen - (1 + 1 + FENCE_MARKER_LEN)) / 2)
+  // The closer term is the longest fence run in the text (see step 2); with
+  // no fence in the text it falls back to FENCE_MARKER_LEN, the old value
+  // exactly, so the floor is unchanged for ordinary 3-char fences.
+  const { longestRun } = fenceRepairStats(text)
+  const closerLen = Math.max(longestRun, FENCE_MARKER_LEN)
+  const bodyFloor = Math.floor((maxLen - (1 + 1 + closerLen)) / 2)
   return Math.max(1, maxLen - reserve, bodyFloor)
 }
 
@@ -576,10 +621,21 @@ const deliverFinalChunks = (
 /* Public: subscribeAndDeliver                                                 */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Subscribe to a thread's frames and deliver them through `adapter`.
+ *
+ * `targetRef` is a Ref because the delivery fiber is long-lived (one per
+ * thread+adapter, see ChannelService) while the delivery target belongs to
+ * the inbound message that triggered the current turn: ChannelService
+ * refreshes the Ref on every inbound message for the thread. The fiber
+ * snapshots it once per turn (see `turnTarget` below) so a message that
+ * arrives mid-turn cannot hijack the in-flight turn's reply routing, and a
+ * later turn never delivers against the first message's target.
+ */
 export const subscribeAndDeliver = (
   threadId: string,
   adapter: ChannelAdapter,
-  target: DeliveryTarget,
+  targetRef: Ref.Ref<DeliveryTarget>,
   serviceScope: Scope.Scope,
 ): Effect.Effect<Fiber.Fiber<void, never>, never, ChatService> =>
   Effect.gen(function* () {
@@ -600,6 +656,28 @@ export const subscribeAndDeliver = (
     const toolSteps = yield* Ref.make<ReadonlyArray<ToolStep>>([])
     // Current rendered tool-status block for stream-edit adapters.
     const currentStatusLine = yield* Ref.make<string>("")
+    // Delivery target for the CURRENT turn, snapshotted from targetRef at
+    // the turn's first delivery and cleared on turn-complete /
+    // assistant-error. The service refreshes targetRef on every inbound
+    // message, so resolving it per frame would let a message that arrives
+    // mid-turn hijack the in-flight turn's reply routing (Telegram turnKey
+    // + reply_parameters); resolving once per turn keeps the whole turn
+    // addressed to the message that triggered it.
+    const turnTarget = yield* Ref.make<DeliveryTarget | null>(null)
+
+    /**
+     * Target for the current turn: the cached snapshot, or the latest
+     * target from the service when no turn is in flight. Standalone
+     * (background-job) deliveries deliberately do NOT use this — they are
+     * not part of a turn and must not pin the next turn's snapshot.
+     */
+    const resolveTarget = Effect.gen(function* () {
+      const cached = yield* Ref.get(turnTarget)
+      if (cached !== null) return cached
+      const fresh = yield* Ref.get(targetRef)
+      yield* Ref.set(turnTarget, fresh)
+      return fresh
+    })
 
     const capability = adapter.capability
     const maxLen = adapter.maxMessageLength
@@ -618,7 +696,11 @@ export const subscribeAndDeliver = (
       return buildStreamEditText(current, status, maxLen)
     })
 
-    const deliverStreamEdit = (content: string, isFinal: boolean): Effect.Effect<void> =>
+    const deliverStreamEdit = (
+      content: string,
+      isFinal: boolean,
+      target: DeliveryTarget,
+    ): Effect.Effect<void> =>
       adapter
         .deliver(target, content.slice(0, maxLen), {
           isPartial: !isFinal,
@@ -628,21 +710,22 @@ export const subscribeAndDeliver = (
         })
         .pipe(Effect.catchCause(() => Effect.void))
 
-    const scheduleThrottledEdit = Effect.gen(function* () {
-      yield* cancelPendingEdit
+    const scheduleThrottledEdit = (target: DeliveryTarget): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* cancelPendingEdit
 
-      const editFiber = yield* Effect.gen(function* () {
-        yield* Effect.sleep(`${STREAM_EDIT_THROTTLE_MS} millis`)
-        const current = yield* renderCurrentEdit
-        const last = yield* Ref.get(lastEditedText)
-        if (current !== last) {
-          yield* deliverStreamEdit(current, false)
-          yield* Ref.set(lastEditedText, current)
-        }
-      }).pipe(Effect.forkChild)
+        const editFiber = yield* Effect.gen(function* () {
+          yield* Effect.sleep(`${STREAM_EDIT_THROTTLE_MS} millis`)
+          const current = yield* renderCurrentEdit
+          const last = yield* Ref.get(lastEditedText)
+          if (current !== last) {
+            yield* deliverStreamEdit(current, false, target)
+            yield* Ref.set(lastEditedText, current)
+          }
+        }).pipe(Effect.forkChild)
 
-      yield* Ref.set(throttleFiber, editFiber as Fiber.Fiber<void, never>)
-    })
+        yield* Ref.set(throttleFiber, editFiber as Fiber.Fiber<void, never>)
+      })
 
     /**
      * Deliver a status-only update (tool steps). For stream-edit adapters:
@@ -652,7 +735,7 @@ export const subscribeAndDeliver = (
      * The first status creates the placeholder immediately; follow-up status
      * edits share the same throttle path as assistant deltas.
      */
-    const deliverStatusLine = (statusLine: string): Effect.Effect<void> => {
+    const deliverStatusLine = (statusLine: string, target: DeliveryTarget): Effect.Effect<void> => {
       if (capability !== "stream-edit") return Effect.void
       if (statusLine.length === 0) return Effect.void
       return Effect.gen(function* () {
@@ -661,10 +744,10 @@ export const subscribeAndDeliver = (
         if (!started) {
           const content = yield* renderCurrentEdit
           yield* Ref.set(editStarted, true)
-          yield* deliverStreamEdit(content, false)
+          yield* deliverStreamEdit(content, false, target)
           yield* Ref.set(lastEditedText, content)
         } else {
-          yield* scheduleThrottledEdit
+          yield* scheduleThrottledEdit(target)
         }
       })
     }
@@ -680,6 +763,7 @@ export const subscribeAndDeliver = (
 
                 if (capability === "stream-edit") {
                   yield* Ref.set(currentDeltaText, text)
+                  const target = yield* resolveTarget
 
                   // Send placeholder on first delta
                   const started = yield* Ref.get(editStarted)
@@ -696,7 +780,7 @@ export const subscribeAndDeliver = (
                     yield* Ref.set(lastEditedText, "…")
                   }
 
-                  yield* scheduleThrottledEdit
+                  yield* scheduleThrottledEdit(target)
                 }
                 // For final-only and discrete-chunks we wait for assistant-done
                 break
@@ -718,6 +802,10 @@ export const subscribeAndDeliver = (
                 // a silent hole in the middle of the answer.
                 if (frame.message.delivery !== undefined) {
                   if (text.trim().length > 0) {
+                    // Standalone one-shots resolve the LATEST target without
+                    // touching the turn cache: they are not part of a turn
+                    // and must not pin the next turn's snapshot.
+                    const target = yield* Ref.get(targetRef)
                     const chunks = splitToChunks(text, maxLen)
                     yield* deliverFinalChunks(adapter, target, chunks, true)
                   }
@@ -732,6 +820,7 @@ export const subscribeAndDeliver = (
                   // Fires once per assistant-done, so stop-at-first is
                   // per-MESSAGE here. Worst case a marker is followed by more
                   // content later, which is strictly better than a hole.
+                  const target = yield* resolveTarget
                   const chunks = splitToChunks(text, maxLen)
                   yield* deliverFinalChunks(adapter, target, chunks)
                 }
@@ -753,7 +842,8 @@ export const subscribeAndDeliver = (
                   },
                 ])
                 const steps = yield* Ref.get(toolSteps)
-                yield* deliverStatusLine(buildWorkingBlock(steps))
+                const target = yield* resolveTarget
+                yield* deliverStatusLine(buildWorkingBlock(steps), target)
                 break
               }
 
@@ -767,7 +857,8 @@ export const subscribeAndDeliver = (
                   ),
                 )
                 const steps = yield* Ref.get(toolSteps)
-                yield* deliverStatusLine(buildWorkingBlock(steps))
+                const target = yield* resolveTarget
+                yield* deliverStatusLine(buildWorkingBlock(steps), target)
                 break
               }
 
@@ -784,17 +875,27 @@ export const subscribeAndDeliver = (
                   yield* cancelPendingEdit
                   const partial = yield* Ref.get(currentDeltaText)
                   const errText = partial.length > 0 ? `${partial}\n\n${notice}` : notice
-                  yield* deliverStreamEdit(errText.slice(0, maxLen), true)
+                  const target = yield* resolveTarget
+                  yield* deliverStreamEdit(errText.slice(0, maxLen), true, target)
                   yield* Ref.set(editStarted, false)
                   yield* Ref.set(currentDeltaText, "")
                   yield* Ref.set(lastEditedText, "")
                   yield* Ref.set(currentStatusLine, "")
                   yield* Ref.set(toolSteps, [])
                 }
+                // The turn is over for every capability: a failed
+                // final-only / discrete-chunks turn ends with
+                // assistant-error and no turn-complete, so the snapshot
+                // must be dropped here too, or the next turn keeps
+                // replying against the failed turn's message.
+                yield* Ref.set(turnTarget, null)
                 break
               }
 
               case "turn-complete": {
+                // Resolve (and snapshot) this turn's target before any
+                // finalize delivery below; cleared at the end of the case.
+                const target = yield* resolveTarget
                 // Cancel any pending throttle fiber
                 if (capability === "stream-edit") {
                   yield* cancelPendingEdit
@@ -849,6 +950,9 @@ export const subscribeAndDeliver = (
                 } else if (capability === "discrete-chunks") {
                   yield* Ref.set(turnBuffer, "")
                 }
+                // The turn is over; drop its target snapshot so the next
+                // turn resolves the (possibly newer) target from the service.
+                yield* Ref.set(turnTarget, null)
                 break
               }
 
