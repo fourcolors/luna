@@ -275,6 +275,12 @@ export class LunaWsAdapter implements ClientTransportAdapter {
     const tokenizedUrl = this.#tokenizeUrl(url, token)
 
     const result = await this.#connectWs(tokenizedUrl)
+    // A successful (re-)attach restarts the reconnect budget: the counter is
+    // only reset by a successful auto-reconnect (#doReconnect), so without
+    // this a manual attach after the budget was exhausted leaves the counter
+    // at max and the next transient drop goes straight to `down` with no
+    // retry — the adapter can never auto-reconnect again until restart.
+    this.#reconnectAttempts = 0
     this.#lastAttach = result
     this.#publishConnectionState({ status: "ready" })
     this.#descriptorBroadcast.publish(result)

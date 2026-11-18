@@ -1299,6 +1299,66 @@ describe("LunaWsAdapter", () => {
 
       await adapter.dispose()
     }, 25_000)
+
+    it("manual attach() after budget exhaustion restarts the reconnect budget", async () => {
+      const waitFor = async (pred: () => boolean, timeoutMs = 5000, label = "condition") => {
+        const start = Date.now()
+        while (!pred()) {
+          if (Date.now() - start > timeoutMs) throw new Error(`timeout waiting for ${label}`)
+          await new Promise((r) => setTimeout(r, 20))
+        }
+      }
+
+      server = await startTestServer({ token: TOKEN, sendDescriptor: true })
+      const port = server.port
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "budget-reset-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+        50, // short handshake timeout so failed attempts fail fast
+        { maxAttempts: 2, baseMs: 10, maxMs: 50, jitterMs: 0 },
+      )
+      const seenStates: string[] = []
+      const it0 = adapter.connection[Symbol.asyncIterator]()
+      void (async () => {
+        try {
+          for await (const st of { [Symbol.asyncIterator]: () => it0 }) {
+            seenStates.push(st.status)
+            if (seenStates.length > 60) break
+          }
+        } catch { /* iterator ends on dispose */ }
+      })()
+      await adapter.attach()
+
+      // Exhaust the budget: the server goes away and reconnect attempts fail.
+      server.dropClients()
+      await server.close()
+      server = undefined
+      await waitFor(() => seenStates.includes("down"), 5000, "down after budget exhaustion")
+
+      // Server comes back; the user manually re-attaches (Moon retry).
+      server = await startTestServer({ token: TOKEN, sendDescriptor: true, port })
+      await adapter.attach()
+
+      // One transient drop with the server up must auto-reconnect: the
+      // states after the drop's "recovering" must reach "ready", not "down".
+      // (The connection broadcast replays the latest state to a new
+      // subscriber, so only judge what follows the drop's "recovering".)
+      const mark = seenStates.length
+      server.dropClients()
+      await waitFor(() => {
+        const after = seenStates.slice(mark)
+        const i = after.indexOf("recovering")
+        return i >= 0 && (after.slice(i + 1).includes("ready") || after.slice(i + 1).includes("down"))
+      }, 5000, "reconnect after manual attach")
+      const after = seenStates.slice(mark)
+      const recIdx = after.indexOf("recovering")
+      expect(recIdx).toBeGreaterThanOrEqual(0)
+      expect(after.slice(recIdx + 1)).toContain("ready")
+      expect(after.slice(recIdx + 1)).not.toContain("down")
+
+      await adapter.dispose()
+    }, 25_000)
   })
 
   // ── reconnect jitter ───────────────────────────────────────────────────────
