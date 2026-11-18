@@ -125,6 +125,12 @@ export class LunaWsAdapter implements ClientTransportAdapter {
 
   // Session map — initialized before dispatchToSessions is ever called.
   readonly #sessions = new Map<string, SessionEntry>()
+  // Monotonic per-adapter session sequence: session ids must be unique per
+  // session, and Date.now() alone is not — two openSession() calls for the
+  // same thread in the same millisecond computed the same id, so the second
+  // entry overwrote the first in #sessions (the first session then never
+  // received frames, and closing it deleted the live session's entry too).
+  #sessionSeq = 0
 
   // Reconnect state
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -313,7 +319,7 @@ export class LunaWsAdapter implements ClientTransportAdapter {
       threadId = await this.#createNewThread(ws, opts.model)
     }
 
-    const sessionId = `${threadId}-${Date.now()}`
+    const sessionId = `${threadId}-${Date.now()}-${this.#sessionSeq++}`
 
     // Subscribe to this thread on the server.
     const subscribeFrame = { type: "subscribe", threadId }

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import WebSocket from "ws"
 import type { ServerDescriptor } from "../src/contract.js"
@@ -35,6 +35,8 @@ interface TestServer {
   port: number
   close(): Promise<void>
   dropClients(): void
+  /** Send a raw frame to every connected client (test injection). */
+  sendToAll(frame: unknown): void
   lastNewThreadFrame?: Record<string, unknown>
   /** Count of new-thread frames received (proves a create reached the server). */
   newThreadFrames: number
@@ -192,6 +194,13 @@ async function startTestServer(opts: {
         dropClients: () => {
           for (const client of wss.clients) {
             client.close(1001, "drop")
+          }
+        },
+        sendToAll: (frame) => {
+          for (const client of wss.clients) {
+            if (client.readyState === client.OPEN) {
+              client.send(JSON.stringify(frame))
+            }
           }
         },
         close: () => {
@@ -1359,6 +1368,67 @@ describe("LunaWsAdapter", () => {
 
       await adapter.dispose()
     }, 25_000)
+  })
+
+  describe("sessions", () => {
+    it("two sessions for the same thread in the same millisecond both receive frames", async () => {
+      server = await startTestServer({ token: TOKEN, sendDescriptor: true })
+
+      const adapter = new LunaWsAdapter(
+        { routeKey: "session-id-test", endpoints: [server.url], tokenRef: TOKEN },
+        makeNodeWsFactory(),
+      )
+      await adapter.attach()
+
+      // Pin the clock so both openSession calls compute the same Date.now():
+      // the collision under test is "same millisecond", and without the pin
+      // the two calls can straddle a ms boundary and the test goes flaky.
+      // Invoke both synchronously while pinned, then restore before awaiting.
+      const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000)
+      const p1 = adapter.openSession({ threadId: "thread-same" })
+      const p2 = adapter.openSession({ threadId: "thread-same" })
+      nowSpy.mockRestore()
+      const [s1, s2] = await Promise.all([p1, p2])
+
+      const got1: unknown[] = []
+      const got2: unknown[] = []
+      // Collect WITHOUT breaking: breaking a for-await calls iterator
+      // .return(), which would close the queue and make the second phase
+      // unobservable. The loops end when dispose() drains the queues.
+      void (async () => {
+        for await (const f of s1.messages) got1.push(f)
+      })()
+      void (async () => {
+        for await (const f of s2.messages) got2.push(f)
+      })()
+      const waitFor = async (cond: () => boolean, label: string, timeoutMs = 3000) => {
+        const start = Date.now()
+        while (!cond()) {
+          if (Date.now() - start > timeoutMs) {
+            throw new Error(`timeout waiting for ${label}: s1=${JSON.stringify(got1)} s2=${JSON.stringify(got2)}`)
+          }
+          await new Promise((r) => setTimeout(r, 10))
+        }
+      }
+
+      // Give the subscribe frames a moment to land, then push one delta.
+      await new Promise((r) => setTimeout(r, 50))
+      server.sendToAll({ type: "assistant-delta", threadId: "thread-same", turnId: "t1", text: "hi" })
+      await waitFor(() => got1.length >= 1 && got2.length >= 1, "first delta on both sessions")
+      expect(got1).toHaveLength(1)
+      expect(got2).toHaveLength(1)
+
+      // Closing session 1 must not kill session 2: pre-fix both sessions
+      // shared one map key, so s1.close() deleted the live session too.
+      s1.close()
+      await new Promise((r) => setTimeout(r, 50))
+      server.sendToAll({ type: "assistant-delta", threadId: "thread-same", turnId: "t2", text: "again" })
+      await waitFor(() => got2.length >= 2, "second delta on session 2 after s1.close()")
+      expect(got2).toHaveLength(2)
+      expect(got1).toHaveLength(1)
+
+      await adapter.dispose()
+    }, 10_000)
   })
 
   // ── reconnect jitter ───────────────────────────────────────────────────────
