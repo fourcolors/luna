@@ -2534,6 +2534,23 @@ export const startUIWebSocketServer = (
                       })
                       return
                     }
+                    // Malformed-frame guard: frame.text is attacker-controlled
+                    // JSON (parsed with a bare cast, no schema validation).
+                    // A null/non-string text reaches buildUserMessage's
+                    // `text.length` and throws a TypeError defect, killing
+                    // this handler fiber with no reply — the client hangs
+                    // waiting for a turn that never starts. Reject it with a
+                    // typed error instead, mirroring the guards on
+                    // survey-response / skill-toggle / capability-execute.
+                    if (typeof frame.text !== "string") {
+                      send(ws, {
+                        type: "assistant-error",
+                        threadId: frame.threadId,
+                        turnId: null,
+                        error: { kind: "sdk", message: "user-message text must be a string" },
+                      })
+                      return
+                    }
                     const result = yield* chat.send(
                       frame.threadId,
                       frame.text,
