@@ -878,6 +878,13 @@ const send = (ws: WebSocket, frame: ServerFrame): void => {
 const validateAttachments = (
   atts: ReadonlyArray<{ readonly mediaType?: unknown; readonly data?: unknown }> | undefined,
 ): string | null => {
+  // Malformed-frame guard: attachments is attacker-controlled JSON — a
+  // non-array (number, plain object) has an undefined .length, so the loop
+  // below never runs and the value reaches buildUserMessage's `for...of`,
+  // which throws "not iterable" and kills the handler fiber with no reply.
+  if (atts !== undefined && !Array.isArray(atts)) {
+    return "attachments must be an array"
+  }
   if (!atts || atts.length === 0) return null
   if (atts.length > MAX_ATTACHMENTS_PER_TURN) {
     return `too many attachments: ${atts.length} (max ${MAX_ATTACHMENTS_PER_TURN})`
