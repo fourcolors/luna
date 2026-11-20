@@ -508,6 +508,84 @@ describe("UIWebSocketServer (chat routing)", () => {
     }
   })
 
+  it("user-message with non-string client.name surfaces assistant-error instead of hanging", async () => {
+    // frame.client is attacker-controlled JSON (parsed with a bare cast, no
+    // schema validation). applyClientMarker does `client.name.replace` with
+    // no typeof check, so a numeric name throws a TypeError defect inside
+    // chat.send (typed `never`), killing the per-message handler fiber: the
+    // client gets no frame and hangs waiting for a reply. The guard must
+    // answer with a typed error instead. Same malformed-frame class as the
+    // text/attachments guards (PR #841).
+    rig = await startChatRig((t) => `echo:${t}`)
+    const frames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [{ type: "new-thread", model: "claude-test" }],
+        },
+        {
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [
+              {
+                type: "user-message",
+                threadId: snap.threadId,
+                text: "hi",
+                client: { name: 5 },
+              } as unknown as ClientFrame,
+            ]
+          },
+        },
+      ],
+      64,
+      5000,
+      (f) => f.type === "assistant-error",
+    )
+    const err = frames.find((f) => f.type === "assistant-error")
+    expect(err).toBeDefined()
+    if (err?.type === "assistant-error") {
+      expect(err.error.kind).toBe("sdk")
+    }
+    // No turn was started: no user-accepted frame for the malformed message.
+    expect(frames.some((f) => f.type === "user-accepted")).toBe(false)
+  })
+
+  it("user-message with a well-formed client still starts the turn", async () => {
+    // Guard against over-rejection: a valid client object must pass through
+    // and the turn must proceed normally.
+    rig = await startChatRig((t) => `echo:${t}`)
+    const frames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [{ type: "new-thread", model: "claude-test" }],
+        },
+        {
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [
+              {
+                type: "user-message",
+                threadId: snap.threadId,
+                text: "hi",
+                client: { name: "luna-moon", version: "0.0.1", platform: "darwin" },
+              },
+            ]
+          },
+        },
+      ],
+      64,
+      5000,
+      (f) => f.type === "assistant-done",
+    )
+    expect(frames.some((f) => f.type === "user-accepted")).toBe(true)
+    expect(frames.some((f) => f.type === "assistant-done")).toBe(true)
+  })
+
   it("re-subscribe without unsubscribe re-emits a thread-snapshot (Moon switcher A→B→A)", async () => {
     // Moon never unsubscribes on thread switch. The live fiber stays in the
     // map, so a pure no-op re-subscribe left the client with a cleared
