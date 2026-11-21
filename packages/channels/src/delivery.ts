@@ -762,6 +762,15 @@ export const subscribeAndDeliver = (
                 const text = frame.text // cumulative
 
                 if (capability === "stream-edit") {
+                  // Empty deltas carry no content (Anthropic emits
+                  // text_delta {text: ""} and the SDK publishes them as
+                  // assistant-delta frames with cumulative text ""). Do
+                  // not send the "…" placeholder for one: a turn that then
+                  // completes with no text never finalizes (turn-complete
+                  // skips empty finalContent), so the placeholder would
+                  // strand in the chat forever. A later non-empty delta
+                  // starts the placeholder normally.
+                  if (text.length === 0) break
                   yield* Ref.set(currentDeltaText, text)
                   const target = yield* resolveTarget
 
