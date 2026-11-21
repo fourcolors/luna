@@ -1302,6 +1302,65 @@ describe("delivery fiber management", () => {
     expect(turn2.every((d) => d.target.inReplyTo.platformMessageId === "pm-2")).toBe(true)
     expect(turn2.every((d) => d.target.address["messageId"] === 222)).toBe(true)
   })
+
+  it("an empty first delta does not let a follow-up hijack the in-flight turn's target", async () => {
+    // The empty-delta guard skipped resolveTarget, so the turn's snapshot
+    // was not taken until the first non-empty delta — a follow-up that
+    // landed in between refreshed targetRef first, and the whole turn
+    // attached to the follow-up instead of the message that triggered it.
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("fiber-target-empty", "stream-edit")
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-1",
+              metadata: { chatType: "supergroup", messageId: 111 },
+            }),
+          )
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread created")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub for thread")
+          yield* Effect.sleep("50 millis")
+          // Empty first delta: no placeholder, but the turn's target must
+          // still snapshot here.
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, ""))
+          yield* Effect.sleep("50 millis")
+
+          yield* svc.handleMessage(
+            makeMessage({
+              platformMessageId: "pm-2",
+              text: "second question",
+              metadata: { chatType: "supergroup", messageId: 222 },
+            }),
+          )
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "first part continued"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "second answer"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("150 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    const turn1 = fakeCtx.deliveries.filter((d) => d.content.includes("first part"))
+    const turn2 = fakeCtx.deliveries.filter((d) => d.content.includes("second answer"))
+    expect(turn1.length).toBeGreaterThan(0)
+    expect(turn2.length).toBeGreaterThan(0)
+    expect(turn1.every((d) => d.target.inReplyTo.platformMessageId === "pm-1")).toBe(true)
+    expect(turn1.every((d) => d.target.address["messageId"] === 111)).toBe(true)
+    expect(turn2.every((d) => d.target.inReplyTo.platformMessageId === "pm-2")).toBe(true)
+    expect(turn2.every((d) => d.target.address["messageId"] === 222)).toBe(true)
+  })
 })
 
 /* -------------------------------------------------------------------------- */
