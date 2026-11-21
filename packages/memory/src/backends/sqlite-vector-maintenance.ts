@@ -610,7 +610,32 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
   // reads rewrites the sidecar on close; see getHnswStatus.)
   db.run("PRAGMA busy_timeout = 5000")
   if (vlInit.ok) {
-    db.loadExtension?.(vlInit.path)
+    try {
+      db.loadExtension?.(vlInit.path)
+    } catch {
+      // Best-effort, mirroring the backend's load path: vlInit.ok only
+      // means the extension file resolved, not that this connection can
+      // load it (e.g. Homebrew sqlite ABI skew vs the vectorlite
+      // prebuilt). A previous HNSW-enabled open leaves the sync triggers
+      // and v-table in the schema, and SQLite compiles trigger bodies at
+      // prepare time, so the stale triggers would make the status
+      // probe/backfill and reembed's UPDATE throw 'no such module:
+      // vectorlite' instead of degrading. Drop them up front. The
+      // v-table DROP itself needs the module registered, so it throws
+      // here and is swallowed — that is fine: with the triggers gone the
+      // v-table is inert (the status probe/backfill that touches it is
+      // try/catch-guarded and reports indexedCount null), and the backend
+      // recreates any missing triggers via CREATE TRIGGER IF NOT EXISTS
+      // on its next open.
+      try {
+        db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+        db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+        db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+        db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+      } catch {
+        /* best-effort */
+      }
+    }
   }
   return db
 }
