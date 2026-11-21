@@ -892,6 +892,87 @@ describe("delivery — stream-edit", () => {
     expect(lastDelivery?.content).toBe("Hello world")
   })
 
+  it("an empty-text turn sends no placeholder (no stranded '…' message)", async () => {
+    // Anthropic emits empty text deltas (text_delta {text: ""}); the SDK
+    // publishes them as assistant-delta frames with cumulative text "".
+    // The stream-edit path sent the "…" placeholder on the first delta
+    // regardless of content, and turn-complete skips finalization when
+    // finalContent is empty — so a wholly textless turn left the "…"
+    // message in the chat forever (later turns use a new turnKey, so
+    // nothing ever cleans it up). Regression test: an empty delta
+    // followed by turn-complete must produce zero deliveries.
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-empty", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-empty-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          // Empty delta, then the turn completes with no text.
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, ""))
+          yield* Effect.sleep("10 millis")
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+
+          // Longer than the stream-edit throttle: any throttled edit the
+          // empty delta scheduled must have landed by now.
+          yield* Effect.sleep("1800 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries).toHaveLength(0)
+  })
+
+  it("an empty delta before real text still starts the placeholder normally", async () => {
+    // Pins the other side of the empty-delta guard: ignoring the empty
+    // delta must not suppress the placeholder for the text that follows.
+    const { service: chatService, threads } = makeStubChatService(new Map())
+    const fakeCtx = makeFakeAdapterClean("se-empty-then-text", "stream-edit", 4096)
+
+    await Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const svc = yield* ChannelService
+          yield* svc.registerAdapter(fakeCtx.adapter)
+
+          const msg = makeMessage({ platformMessageId: "se-empty-text-pm-1" })
+          yield* svc.handleMessage(msg)
+          yield* Effect.sleep("50 millis")
+
+          const threadId = [...threads.keys()][0]
+          if (threadId === undefined) throw new Error("no thread")
+          const pub = threads.get(threadId)
+          if (pub === undefined) throw new Error("no pubsub")
+
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, ""))
+          yield* Effect.sleep("10 millis")
+          yield* PubSub.publish(pub, makeAssistantDeltaFrame(threadId, "Hello"))
+          yield* PubSub.publish(pub, makeAssistantDoneFrame(threadId, "Hello"))
+          yield* PubSub.publish(pub, makeTurnCompleteFrame(threadId))
+          yield* Effect.sleep("200 millis")
+        }),
+        baseLayer(chatService as unknown as ReturnType<typeof makeStubChatService>["service"]),
+      ) as Effect.Effect<void, never>,
+    )
+
+    expect(fakeCtx.deliveries[0]?.content).toBe("…")
+    const lastDelivery = fakeCtx.deliveries[fakeCtx.deliveries.length - 1]
+    expect(lastDelivery?.opts.isFinal).toBe(true)
+    expect(lastDelivery?.content).toBe("Hello")
+  })
+
   // issue #375: deliverResult only emits assistant-done with message.delivery
   it("delivers a background job assistant-done as a standalone final without turn-complete (#375)", async () => {
     const { service: chatService, threads } = makeStubChatService(new Map())
