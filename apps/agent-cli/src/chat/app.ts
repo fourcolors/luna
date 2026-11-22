@@ -162,6 +162,25 @@ export const isAutoApprovedLocalShellCwd = (
   return isCwdWithinRoot(cwd, root)
 }
 
+/**
+ * The dangerous auto-approve root gate, shared by the headless and TUI
+ * local-shell handlers so they cannot drift: with
+ * --dangerously-auto-approve-local-shell on, a request whose cwd falls
+ * outside the approved root is denied outright instead of falling through
+ * to auto-approval. Returns the denial stderr, or null when the request
+ * passes the gate.
+ */
+export const dangerousLocalShellCwdDenial = (
+  cwd: string | undefined,
+  dangerouslyAutoApprove: boolean,
+  root = DEFAULT_AUTO_APPROVED_LOCAL_SHELL_ROOT,
+): string | null => {
+  if (dangerouslyAutoApprove && !isAutoApprovedLocalShellCwd(cwd, root)) {
+    return "local shell cwd outside approved root"
+  }
+  return null
+}
+
 export const connectWithRecovery = async (
   cfg: ReturnType<typeof loadChatConfig>,
   io: LunaCliIO,
@@ -309,8 +328,9 @@ export async function runLunaCli(
       client.send(deniedLocalShellResult(frame, localShell.clientId, "local shell unavailable for thread"))
       return
     }
-    if (cfg.dangerouslyAutoApproveLocalShell && !isAutoApprovedLocalShellCwd(frame.cwd, cfg.dangerousLocalShellRoot)) {
-      client.send(deniedLocalShellResult(frame, localShell.clientId, "local shell cwd outside approved root"))
+    const cwdDenial = dangerousLocalShellCwdDenial(frame.cwd, cfg.dangerouslyAutoApproveLocalShell, cfg.dangerousLocalShellRoot)
+    if (cwdDenial !== null) {
+      client.send(deniedLocalShellResult(frame, localShell.clientId, cwdDenial))
       return
     }
 

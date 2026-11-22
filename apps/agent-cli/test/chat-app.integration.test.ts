@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocketServer } from "ws"
 import type { ClientFrame, ServerFrame } from "@luna/ui-ws"
 import type { ChatMessage, SessionSummary } from "@luna/core"
-import { isAutoApprovedLocalShellCwd, runLunaCli } from "../src/chat/app.js"
+import { dangerousLocalShellCwdDenial, isAutoApprovedLocalShellCwd, runLunaCli } from "../src/chat/app.js"
 
 /**
  * Hang guard for the integration promises below. Fixes #455.
@@ -201,6 +201,23 @@ describe("luna chat app", () => {
 
     expect(isAutoApprovedLocalShellCwd("/root/luna-other", "/root/luna/")).toBe(false)
     expect(isAutoApprovedLocalShellCwd("/etc", "/root/luna/")).toBe(false)
+  })
+
+  it("denies out-of-root cwds only when dangerous auto-approve is on", () => {
+    // Flag off: the gate is inert, the per-command prompt decides instead.
+    expect(dangerousLocalShellCwdDenial("/etc", false)).toBeNull()
+    expect(dangerousLocalShellCwdDenial(undefined, false)).toBeNull()
+
+    // Flag on: in-root and cwd-less requests pass; out-of-root is denied.
+    expect(dangerousLocalShellCwdDenial("/root/luna", true)).toBeNull()
+    expect(dangerousLocalShellCwdDenial("/root/luna/subdir", true)).toBeNull()
+    expect(dangerousLocalShellCwdDenial(undefined, true)).toBeNull()
+    expect(dangerousLocalShellCwdDenial("/etc", true)).toBe("local shell cwd outside approved root")
+    expect(dangerousLocalShellCwdDenial("/root/luna-other", true)).toBe("local shell cwd outside approved root")
+
+    // Custom root is honored, including a trailing slash.
+    expect(dangerousLocalShellCwdDenial("/work/sub", true, "/work/")).toBeNull()
+    expect(dangerousLocalShellCwdDenial("/etc", true, "/work/")).toBe("local shell cwd outside approved root")
   })
 
   it("creates a thread, sends one user message, renders assistant output, and quits", async () => {

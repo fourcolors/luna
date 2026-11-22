@@ -308,9 +308,20 @@ export class SqliteVectorBackend extends Context.Service<SqliteVectorBackend, Sq
             ;(db as unknown as { loadExtension: (p: string) => void })
               .loadExtension(vlInit.path)
           } catch {
-            // The setup block below falls back to naive cosine ranking
-            // when v-table setup fails; the early load is best-effort
-            // here so its failure mode stays that same fallback.
+            // The load failed after vlInit succeeded (e.g. the vectorlite
+            // .so cannot load on this connection: Homebrew sqlite ABI skew
+            // vs the prebuilt). The setup block below falls back to naive
+            // cosine ranking when v-table setup fails — but only if no stale
+            // HNSW trigger bodies are left for the schema/scope work below
+            // to resolve: drop them now, mirroring the !vlInit.ok branch.
+            // Best-effort: the triggers are dropped first, so even if the
+            // v-table DROP itself throws (no such module), no later
+            // statement can hit a stale trigger.
+            try {
+              dropHnswObjects()
+            } catch {
+              /* best-effort */
+            }
           }
         } else {
           // Same prepare-time hazard on the naive path: drop the stale

@@ -878,6 +878,13 @@ const send = (ws: WebSocket, frame: ServerFrame): void => {
 const validateAttachments = (
   atts: ReadonlyArray<{ readonly mediaType?: unknown; readonly data?: unknown }> | undefined,
 ): string | null => {
+  // Malformed-frame guard: attachments is attacker-controlled JSON — a
+  // non-array (number, plain object) has an undefined .length, so the loop
+  // below never runs and the value reaches buildUserMessage's `for...of`,
+  // which throws "not iterable" and kills the handler fiber with no reply.
+  if (atts !== undefined && !Array.isArray(atts)) {
+    return "attachments must be an array"
+  }
   if (!atts || atts.length === 0) return null
   if (atts.length > MAX_ATTACHMENTS_PER_TURN) {
     return `too many attachments: ${atts.length} (max ${MAX_ATTACHMENTS_PER_TURN})`
@@ -2580,6 +2587,23 @@ export const startUIWebSocketServer = (
                         threadId: frame.threadId,
                         turnId: null,
                         error: { kind: "sdk", message: attachErr },
+                      })
+                      return
+                    }
+                    // Malformed-frame guard: frame.text is attacker-controlled
+                    // JSON (parsed with a bare cast, no schema validation).
+                    // A null/non-string text reaches buildUserMessage's
+                    // `text.length` and throws a TypeError defect, killing
+                    // this handler fiber with no reply — the client hangs
+                    // waiting for a turn that never starts. Reject it with a
+                    // typed error instead, mirroring the guards on
+                    // survey-response / skill-toggle / capability-execute.
+                    if (typeof frame.text !== "string") {
+                      send(ws, {
+                        type: "assistant-error",
+                        threadId: frame.threadId,
+                        turnId: null,
+                        error: { kind: "sdk", message: "user-message text must be a string" },
                       })
                       return
                     }

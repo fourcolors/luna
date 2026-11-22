@@ -7,8 +7,13 @@ import {
   LunaSqliteBootstrap,
   StubEmbedderLayer,
   float32ToBuffer,
+  makeStubEmbedderLayer,
 } from "@luna/core"
-import { SqliteVectorBackend } from "@luna/memory"
+import {
+  LunaSqliteBootstrapLive,
+  SqliteVectorBackend,
+  makeRecord,
+} from "@luna/memory"
 import { runMemoryCommand } from "../src/memory.js"
 
 const hasBunSqlite = (() => {
@@ -245,6 +250,79 @@ d("luna memory CLI", () => {
       expect(status.stdout).toContain("Vectors: total=1 stale=0")
     } finally {
       fixture.cleanup()
+    }
+  })
+
+  it("reembed --dry-run proceeds when the extension cannot load and the HNSW dimension mismatches", async () => {
+    // Devin review on #843: with a stale 768-dim HNSW table and the
+    // default 64-dim stub embedder, the CLI preflight blocked reembed
+    // (even --dry-run) because it treated the persisted table as an active
+    // index. When the extension cannot load on the maintenance connection
+    // the table is inert schema, so the preflight must let the degraded
+    // path proceed. Control: with the extension loading, the same command
+    // still exits 2 on the mismatch.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-memory-cli-hnsw-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const seedLayer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(
+          makeStubEmbedderLayer({ dimension: 768 }),
+          LunaSqliteBootstrapLive,
+        ),
+      )
+      const hnswEnabled = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "hnsw-768-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "768-dim hnsw row" },
+              }),
+            )
+            return b.hnswEnabled
+          }).pipe(Effect.provide(seedLayer)),
+        ),
+      )
+      if (!hnswEnabled) return
+
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => unknown
+      }
+      const proto = (
+        bunSqlite.Database as unknown as {
+          prototype: { loadExtension: (p: string) => void }
+        }
+      ).prototype
+      const origLoad = proto.loadExtension
+      proto.loadExtension = () => {
+        throw new Error("simulated loadExtension failure")
+      }
+      try {
+        const degraded = await runMemoryCommand(
+          ["reembed", "--dry-run", "--db-path", dbPath],
+          { env: {} },
+        )
+        expect(degraded.exitCode, degraded.stderr).toBe(0)
+        expect(degraded.stdout).toContain("Dry run: 1 stale row(s)")
+        expect(degraded.stdout).toContain("hnsw-768-1")
+      } finally {
+        proto.loadExtension = origLoad
+      }
+
+      const blocked = await runMemoryCommand(
+        ["reembed", "--dry-run", "--db-path", dbPath],
+        { env: {} },
+      )
+      expect(blocked.exitCode).toBe(2)
+      expect(blocked.stderr).toContain(
+        "active HNSW dimension does not match configured embedder",
+      )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
     }
   })
 

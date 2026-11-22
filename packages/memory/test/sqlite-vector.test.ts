@@ -1039,6 +1039,146 @@ describe.skipIf(!hasBunSqlite)("SqliteVectorBackend (bun:sqlite + Stub embedder)
     }
   })
 
+  it("HNSW-era reopen with a failing per-connection extension load still boots (naive fallback)", async () => {
+    // vlInit.ok can be true while the per-connection loadExtension() throws
+    // (e.g. Homebrew sqlite ABI skew vs the vectorlite prebuilt on macOS).
+    // The early load is swallowed as best-effort, but the stale HNSW sync
+    // triggers were left in place, so the scope backfill UPDATE below
+    // resolved a trigger body and threw 'no such module: vectorlite' — the
+    // backend could not boot at all, defeating the documented
+    // graceful-degradation-to-naive-cosine contract. Regression test: seed
+    // one row via the backend, insert a scope-less vector row externally,
+    // then reopen with loadExtension stubbed to throw, and assert the
+    // backend boots (hnswEnabled false) and still searches the seeded row.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(`[hnsw-load-fail-reopen] skipping — vectorlite unavailable: ${probe.reason}`)
+      return
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "luna-hnsw-load-fail-"))
+    const dbPath = path.join(tmp, "vectors.db")
+    try {
+      const layer1 = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "seed",
+                namespace: "rs",
+                kind: "note",
+                content: { text: "seed payload keyword echo" },
+              }),
+            )
+          }),
+        ).pipe(Effect.provide(layer1)),
+      )
+
+      // External writer (loads the extension, like maintenance openDb)
+      // inserts a vector row WITHOUT scope columns -> defaults ''.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            get: (...p: unknown[]) => unknown
+            all: (...p: unknown[]) => unknown[]
+            run: (...p: unknown[]) => { changes: number }
+          }
+          loadExtension: (p: string) => void
+          close: () => void
+        }
+      }
+      const direct = new bunSqlite.Database(dbPath)
+      direct.loadExtension(probe.path)
+      const now = Date.now()
+      direct
+        .query(
+          `INSERT INTO memory_keyed
+             (id, namespace, kind, content_json, schema_version,
+              created_at, updated_at, tags_json)
+           VALUES (?,?,?,?,?,?,?,?)`,
+        )
+        .run(
+          "external-1",
+          "rs",
+          "note",
+          JSON.stringify({ text: "external payload keyword echo" }),
+          1,
+          now,
+          now,
+          "[]",
+        )
+      const emb = Buffer.alloc(64 * 4) // 64-dim zero embedding (StubEmbedder dim)
+      direct
+        .query(
+          `INSERT INTO memory_vectors
+             (id, namespace, embedding, dimension, text, ts)
+           VALUES (?,?,?,?,?,?)`,
+        )
+        .run("external-1", "rs", emb, 64, "external payload keyword echo", now)
+      const row = direct
+        .query(`SELECT subject_id FROM memory_vectors WHERE id='external-1'`)
+        .get() as { subject_id: string }
+      expect(row.subject_id).toBe("")
+      direct.close()
+
+      // Stub the per-connection loadExtension to throw (vlInit stays ok,
+      // mirroring a vectorlite .so that resolves but cannot load), then
+      // reopen. Pre-fix this throws 'no such module: vectorlite' out of
+      // the scope backfill and the Layer build dies.
+      const proto = (
+        bunSqlite.Database as unknown as {
+          prototype: { loadExtension: (p: string) => void }
+        }
+      ).prototype
+      const origLoad = proto.loadExtension
+      proto.loadExtension = () => {
+        throw new Error("simulated loadExtension failure")
+      }
+      try {
+        const layer2 = Layer.provideMerge(
+          SqliteVectorBackend.fromPath(dbPath),
+          Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+        )
+        const out = await Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const b = yield* SqliteVectorBackend
+              const arr = yield* Stream.runCollect(
+                b.search({
+                  queryText: "payload keyword echo",
+                  namespace: "rs",
+                  topK: 10,
+                  mode: "vec",
+                }),
+              )
+              return {
+                hnswEnabled: b.hnswEnabled,
+                ids: Array.from(arr).map((h) => h.record.id),
+              }
+            }),
+          ).pipe(Effect.provide(layer2)),
+        )
+        expect(out.hnswEnabled).toBe(false)
+        expect(out.ids).toContain("seed")
+      } finally {
+        proto.loadExtension = origLoad
+      }
+    } finally {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true })
+      } catch {
+        /* ignore */
+      }
+    }
+  })
+
   it("Scenario 7k: HNSW v-table rebuilds from memory_vectors across close/reopen", async () => {
     // The HNSW sidecar flush on db.close() is best-effort: certain
     // prepared-statement combinations prevent vectorlite from serializing

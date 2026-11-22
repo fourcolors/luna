@@ -321,7 +321,19 @@ export async function runMemoryCommand(
     }
     try {
       const status = await readStatus(dbPath, opts.env)
-      if (status.hnsw.present && status.hnsw.compatible === false) {
+      // The dimension guard only applies when the persisted index is
+      // actually usable on this connection: when the extension failed to
+      // load, the v-table is inert schema (status reports
+      // extensionAvailable false), so there is no active index to protect
+      // — blocking here would strand the dimension-change recovery the
+      // degraded path exists to serve. Dry-run only lists stale rows, and
+      // a forced reembed rewrites them while the backend rebuilds the
+      // index at the new dimension on its next open.
+      if (
+        status.hnsw.present &&
+        status.hnsw.compatible === false &&
+        status.hnsw.extensionAvailable
+      ) {
         return {
           exitCode: 2,
           stdout: "",

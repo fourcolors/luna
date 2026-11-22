@@ -508,6 +508,89 @@ describe("UIWebSocketServer (chat routing)", () => {
     }
   })
 
+  it("user-message with non-string text and attachments surfaces assistant-error instead of hanging", async () => {
+    // frame.text is attacker-controlled JSON (parsed with a bare cast, no
+    // schema validation). With attachments present, a null text reaches
+    // buildUserMessage's `text.length` and throws a TypeError defect, which
+    // kills the per-message handler fiber: the client gets no frame and hangs
+    // waiting for a reply. The guard must answer with a typed error instead.
+    rig = await startChatRig((t) => `echo:${t}`)
+    const frames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [{ type: "new-thread", model: "claude-test" }],
+        },
+        {
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [
+              {
+                type: "user-message",
+                threadId: snap.threadId,
+                text: null as unknown as string,
+                attachments: [{ mediaType: "image/png", data: "iVBORw0KGgo=" }],
+              },
+            ]
+          },
+        },
+      ],
+      64,
+      5000,
+      (f) => f.type === "assistant-error",
+    )
+    const err = frames.find((f) => f.type === "assistant-error")
+    expect(err).toBeDefined()
+    if (err?.type === "assistant-error") {
+      expect(err.error.kind).toBe("sdk")
+    }
+    // No turn was started: no user-accepted frame for the malformed message.
+    expect(frames.some((f) => f.type === "user-accepted")).toBe(false)
+  })
+
+  it("user-message with non-array attachments surfaces assistant-error instead of hanging", async () => {
+    // validateAttachments only checks .length, which is undefined on a
+    // number/object, so its loop never runs and the value reaches
+    // buildUserMessage's `for...of`, which throws "not iterable" and kills
+    // the handler fiber with no reply to the client.
+    rig = await startChatRig((t) => `echo:${t}`)
+    const frames = await driveSequence(
+      rig.url,
+      [
+        {
+          waitFor: (f) => f.type === "hello",
+          thenSend: () => [{ type: "new-thread", model: "claude-test" }],
+        },
+        {
+          waitFor: (f) => f.type === "thread-snapshot",
+          thenSend: (snap) => {
+            if (snap.type !== "thread-snapshot") return []
+            return [
+              {
+                type: "user-message",
+                threadId: snap.threadId,
+                text: "hi",
+                attachments: 5,
+              } as unknown as ClientFrame,
+            ]
+          },
+        },
+      ],
+      64,
+      5000,
+      (f) => f.type === "assistant-error",
+    )
+    const err = frames.find((f) => f.type === "assistant-error")
+    expect(err).toBeDefined()
+    if (err?.type === "assistant-error") {
+      expect(err.error.kind).toBe("sdk")
+    }
+    // No turn was started: no user-accepted frame for the malformed message.
+    expect(frames.some((f) => f.type === "user-accepted")).toBe(false)
+  })
+
   it("user-message with non-string client.name surfaces assistant-error instead of hanging", async () => {
     // frame.client is attacker-controlled JSON (parsed with a bare cast, no
     // schema validation). applyClientMarker does `client.name.replace` with
