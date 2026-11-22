@@ -762,6 +762,27 @@ export const subscribeAndDeliver = (
                 const text = frame.text // cumulative
 
                 if (capability === "stream-edit") {
+                  // Empty deltas carry no content (Anthropic emits
+                  // text_delta {text: ""} and the SDK publishes them as
+                  // assistant-delta frames with cumulative text ""). Do
+                  // not send the "…" placeholder for one: a turn that then
+                  // completes with no text never finalizes (turn-complete
+                  // skips empty finalContent), so the placeholder would
+                  // strand in the chat forever. A later non-empty delta
+                  // starts the placeholder normally.
+                  //
+                  // Still resolve the turn's target here: the service
+                  // refreshes targetRef on every inbound message, so
+                  // resolving only on the first non-empty delta would let
+                  // a follow-up that lands in between hijack this turn's
+                  // routing (its placeholder and final answer would attach
+                  // to the follow-up instead of the message that triggered
+                  // the turn). The placeholder and throttle stay behind
+                  // the guard.
+                  if (text.length === 0) {
+                    yield* resolveTarget
+                    break
+                  }
                   yield* Ref.set(currentDeltaText, text)
                   const target = yield* resolveTarget
 
