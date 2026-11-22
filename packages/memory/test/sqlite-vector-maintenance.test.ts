@@ -9,7 +9,7 @@ import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
 import { describe, expect, it } from "vitest"
-import { Effect, Layer } from "effect"
+import { Effect, Layer, Stream } from "effect"
 import {
   StubEmbedderLayer,
   makeStubEmbedderLayer,
@@ -206,11 +206,305 @@ d("sqlite-vector maintenance", () => {
         present: true,
         dimension: 64,
         compatible: true,
+        extensionAvailable: true,
         // Phase 27d: status reports actual HNSW population. getHnswStatus
         // backfills its fresh maintenance connection's graph, so the v-table
         // mirrors the 1 row in memory_vectors.
         indexedCount: 1,
       })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("status + reembed survive a failing per-connection extension load (HNSW-era DB)", async () => {
+    // vlInit.ok can be true while the per-connection loadExtension() throws
+    // (e.g. Homebrew sqlite ABI skew vs the vectorlite prebuilt on macOS).
+    // openDb() called loadExtension unguarded, so the throw rejected the
+    // whole status/reembed Effect (op status.open / reembed.open) even
+    // though getHnswStatus is designed to report indexedCount null when
+    // the extension is not loaded. Regression test: seed one row via the
+    // backend (plants the HNSW v-table + sync triggers), stub
+    // loadExtension to throw, and assert status + a real reembed still
+    // succeed — the mutating reembed drops the stale sync triggers up
+    // front (status and dry-run leave them alone; see the live-backend
+    // test below), mirroring the backend's best-effort load path. (The
+    // v-table itself cannot be dropped without the module registered, so
+    // it stays behind as inert schema: present stays true, indexedCount
+    // reports null, and the backend recreates the missing triggers on its
+    // next open.)
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[maintenance-load-fail] skipping — vectorlite unavailable: ${probe.reason}`,
+      )
+      return
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-maint-load-fail-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const hnswEnabled = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "maint-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "maintenance load failure row" },
+              }),
+            )
+            return b.hnswEnabled
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      if (!hnswEnabled) return
+
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => unknown
+      }
+      const proto = (
+        bunSqlite.Database as unknown as {
+          prototype: { loadExtension: (p: string) => void }
+        }
+      ).prototype
+      const origLoad = proto.loadExtension
+      proto.loadExtension = () => {
+        throw new Error("simulated loadExtension failure")
+      }
+      try {
+        const status = await Effect.runPromise(
+          getMemoryVectorStatus({ dbPath, embedder: replacementStub }),
+        )
+        expect(status.totalVectors).toBe(1)
+        expect(status.staleVectors).toBe(1)
+        // The v-table row survives (it cannot be dropped without the
+        // module), but its probe degrades to null instead of crashing.
+        expect(status.hnsw.present).toBe(true)
+        expect(status.hnsw.indexedCount).toBeNull()
+
+        const result = await Effect.runPromise(
+          reembedMemoryVectors({
+            dbPath,
+            embedder: replacementStub,
+            dryRun: false,
+          }),
+        )
+        expect(result.reembedded).toBe(1)
+        const after = await Effect.runPromise(
+          getMemoryVectorStatus({ dbPath, embedder: replacementStub }),
+        )
+        expect(after.staleVectors).toBe(0)
+      } finally {
+        proto.loadExtension = origLoad
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("a degraded status call leaves the shared HNSW triggers intact for a live backend", async () => {
+    // Devin review on #843: openDb dropped the shared sync triggers even
+    // for a read-only status call, so a healthy backend running against the
+    // same file kept writing while nothing entered its HNSW graph — new
+    // memories went missing from vector search until the backend restarted
+    // (triggers are only recreated at open). Status and dry-run reembed
+    // never write memory_vectors, so they must not mutate shared schema;
+    // only the mutating reembed path drops stale triggers. Regression test:
+    // keep a backend open through a degraded status call, then save a new
+    // row through it and vector-search for it.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[maintenance-load-fail] skipping — vectorlite unavailable: ${probe.reason}`,
+      )
+      return
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "luna-maint-live-"))
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      // Dynamic import up front (a gen body cannot await): the stub is
+      // installed inside the scoped effect, only AFTER the backend opened.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          query: (sql: string) => {
+            all: () => Array<{ name: string }>
+          }
+          close: () => void
+        }
+      }
+      const proto = (
+        bunSqlite.Database as unknown as {
+          prototype: { loadExtension: (p: string) => void }
+        }
+      ).prototype
+      const origLoad = proto.loadExtension
+      const found = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "live-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "live backend first row" },
+              }),
+            )
+            if (!b.hnswEnabled) return false
+            // Stub loadExtension only AFTER the backend opened: the stub
+            // simulates a CLI process whose per-connection load fails while
+            // this backend stays healthy on the same file.
+            try {
+              proto.loadExtension = () => {
+                throw new Error("simulated loadExtension failure")
+              }
+              const status = yield* getMemoryVectorStatus({
+                dbPath,
+                embedder: replacementStub,
+              })
+              expect(status.totalVectors).toBe(1)
+              expect(status.hnsw.present).toBe(true)
+              expect(status.hnsw.indexedCount).toBeNull()
+              // The shared sync triggers must survive the degraded call.
+              const checkDb = new bunSqlite.Database(dbPath)
+              try {
+                const triggers = checkDb
+                  .query(
+                    `SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_vectors_hnsw_%'`,
+                  )
+                  .all()
+                  .map((row) => row.name)
+                  .sort()
+                expect(triggers).toEqual([
+                  "memory_vectors_hnsw_ad",
+                  "memory_vectors_hnsw_ai",
+                  "memory_vectors_hnsw_au",
+                ])
+              } finally {
+                checkDb.close()
+              }
+              // The live backend's next write must still enter the graph.
+              yield* b.put(
+                makeRecord({
+                  id: "live-2",
+                  namespace: "notes",
+                  kind: "note",
+                  content: { text: "live backend second row" },
+                }),
+              )
+              const hits = yield* Stream.runCollect(
+                b.search({
+                  queryText: "live backend second row",
+                  mode: "vec",
+                  topK: 5,
+                }),
+              )
+              return Array.from(hits).some(
+                (hit) => hit.record.id === "live-2",
+              )
+            } finally {
+              proto.loadExtension = origLoad
+            }
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      expect(found).toBe(true)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("degraded status reports the extension as unavailable when the table dimension mismatches", async () => {
+    // Devin review on #843: with a stale 64-dim HNSW table and a 768-dim
+    // embedder, the CLI preflight blocked reembed (even --dry-run) because
+    // the status could not tell an inert persisted table from an active
+    // index. The status must report extension availability separately so
+    // the preflight can let the degraded path proceed.
+    const initMod = await import("../src/backends/vectorlite-init.js")
+    const probe = initMod.initVectorlite()
+    if (!probe.ok) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[maintenance-load-fail] skipping — vectorlite unavailable: ${probe.reason}`,
+      )
+      return
+    }
+    const dir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "luna-maint-ext-avail-"),
+    )
+    const dbPath = path.join(dir, "memory.db")
+    try {
+      const layer = Layer.provideMerge(
+        SqliteVectorBackend.fromPath(dbPath),
+        Layer.merge(StubEmbedderLayer, LunaSqliteBootstrapLive),
+      )
+      const hnswEnabled = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const b = yield* SqliteVectorBackend
+            yield* b.put(
+              makeRecord({
+                id: "avail-1",
+                namespace: "notes",
+                kind: "note",
+                content: { text: "extension availability row" },
+              }),
+            )
+            return b.hnswEnabled
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+      if (!hnswEnabled) return
+      // Healthy connection: the extension loads, so the persisted table is
+      // a live (if mismatched) index.
+      const healthy = await Effect.runPromise(
+        getMemoryVectorStatus({ dbPath, embedder: activeEmbeddingGemma }),
+      )
+      expect(healthy.hnsw.present).toBe(true)
+      expect(healthy.hnsw.dimension).toBe(64)
+      expect(healthy.hnsw.compatible).toBe(false)
+      expect(healthy.hnsw.extensionAvailable).toBe(true)
+      expect(healthy.hnsw.indexedCount).toBeNull()
+      // Degraded connection: same table, but the extension cannot load, so
+      // the table is inert schema, not an active index.
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => unknown
+      }
+      const proto = (
+        bunSqlite.Database as unknown as {
+          prototype: { loadExtension: (p: string) => void }
+        }
+      ).prototype
+      const origLoad = proto.loadExtension
+      proto.loadExtension = () => {
+        throw new Error("simulated loadExtension failure")
+      }
+      try {
+        const degraded = await Effect.runPromise(
+          getMemoryVectorStatus({ dbPath, embedder: activeEmbeddingGemma }),
+        )
+        expect(degraded.hnsw.present).toBe(true)
+        expect(degraded.hnsw.dimension).toBe(64)
+        expect(degraded.hnsw.compatible).toBe(false)
+        expect(degraded.hnsw.extensionAvailable).toBe(false)
+        expect(degraded.hnsw.indexedCount).toBeNull()
+      } finally {
+        proto.loadExtension = origLoad
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }

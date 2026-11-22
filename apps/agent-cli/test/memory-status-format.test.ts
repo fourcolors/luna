@@ -32,6 +32,7 @@ function makeStatus(over: {
       present: true,
       dimension: over.hnswDimension,
       compatible: over.compatible,
+      extensionAvailable: true,
       indexedCount: over.indexedCount,
     },
     groups: over.groups.map((g) => ({

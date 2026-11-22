@@ -79,6 +79,15 @@ export interface MemoryVectorHnswStatus {
   readonly dimension: number | null
   readonly compatible: boolean | null
   /**
+   * Whether the vectorlite extension loaded on THIS connection. False when
+   * the load failed (or the file never resolved): the persisted v-table is
+   * then inert schema, not a usable index — `present`/`compatible` still
+   * describe the schema, but no caller may treat the index as active.
+   * The CLI reembed preflight consults this so a degraded connection does
+   * not block the dimension-change recovery it exists to serve.
+   */
+  readonly extensionAvailable: boolean
+  /**
    * `null` when `present` is false (no v-table) or when the index is
    * unprobeable (compat mismatch / extension not loaded). Otherwise the
    * number of source rows the index can recall — measured by issuing
@@ -450,6 +459,7 @@ function getHnswStatus(
   db: BunDatabase,
   dbPath: string,
   embedder: EmbedderApi,
+  vectorliteLoaded: boolean,
 ): MemoryVectorHnswStatus {
   const row = db
     .query(
@@ -462,6 +472,7 @@ function getHnswStatus(
       present: false,
       dimension: null,
       compatible: null,
+      extensionAvailable: vectorliteLoaded,
       indexedCount: null,
     }
   }
@@ -536,6 +547,7 @@ function getHnswStatus(
     present: true,
     dimension,
     compatible,
+    extensionAvailable: vectorliteLoaded,
     indexedCount,
   }
 }
@@ -595,7 +607,10 @@ function auditRow(row: VectorAuditRow, embedder: EmbedderApi): MemoryVectorStatu
   }
 }
 
-async function openDb(dbPath: string): Promise<BunDatabase> {
+async function openDb(
+  dbPath: string,
+  opts: { dropStaleTriggers: boolean },
+): Promise<{ db: BunDatabase; vectorliteLoaded: boolean }> {
   const vlInit = initVectorlite()
   const bunSqlite = (await import("bun:sqlite" as string)) as {
     Database: new (p: string) => BunDatabase
@@ -609,10 +624,54 @@ async function openDb(dbPath: string): Promise<BunDatabase> {
   // misreporting a populated index as empty. (Even a connection that only
   // reads rewrites the sidecar on close; see getHnswStatus.)
   db.run("PRAGMA busy_timeout = 5000")
-  if (vlInit.ok) {
-    db.loadExtension?.(vlInit.path)
+  // Drop the stale HNSW objects (sync triggers + v-table) when the
+  // extension cannot load on this connection. Whether the caller may ask
+  // for that depends on what it does with the connection:
+  //
+  // A previous HNSW-enabled open leaves the sync triggers and v-table in
+  // the schema, and SQLite compiles trigger bodies at prepare time, so a
+  // stale trigger makes any write against memory_vectors throw 'no such
+  // module: vectorlite'. A mutating reembed MUST write that table, so it
+  // drops them up front (the v-table DROP itself needs the module
+  // registered, so it throws here and is swallowed — that is fine: with
+  // the triggers gone the v-table is inert, and the backend recreates any
+  // missing triggers via CREATE TRIGGER IF NOT EXISTS on its next open).
+  //
+  // Read-only callers (status, dry-run reembed) must NOT drop them: the
+  // triggers are shared schema, and a healthy backend running against the
+  // same file only recreates them at open — a degraded status call would
+  // silently stop its later writes from entering the HNSW graph until it
+  // restarts. Those paths never write memory_vectors (their v-table probe
+  // is try/catch-guarded and reports indexedCount null), so they degrade
+  // fine with the triggers left in place.
+  const dropStaleHnswObjects = (): void => {
+    try {
+      db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ai`)
+      db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_ad`)
+      db.run(`DROP TRIGGER IF EXISTS memory_vectors_hnsw_au`)
+      db.run(`DROP TABLE IF EXISTS memory_vectors_hnsw`)
+    } catch {
+      /* best-effort */
+    }
   }
-  return db
+  let vectorliteLoaded = false
+  if (vlInit.ok) {
+    try {
+      db.loadExtension?.(vlInit.path)
+      vectorliteLoaded = true
+    } catch {
+      // Best-effort, mirroring the backend's load path: vlInit.ok only
+      // means the extension file resolved, not that this connection can
+      // load it (e.g. Homebrew sqlite ABI skew vs the vectorlite
+      // prebuilt).
+      if (opts.dropStaleTriggers) dropStaleHnswObjects()
+    }
+  } else if (opts.dropStaleTriggers) {
+    // Same stale-trigger hazard when the extension file itself never
+    // resolved: a previous HNSW-enabled open left the triggers behind.
+    dropStaleHnswObjects()
+  }
+  return { db, vectorliteLoaded }
 }
 
 /**
@@ -645,12 +704,13 @@ export function getMemoryVectorStatus(args: {
 }): Effect.Effect<MemoryVectorStatus, MemoryBackendError> {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => openDb(args.dbPath),
+      try: () => openDb(args.dbPath, { dropStaleTriggers: false }),
       catch: (cause) => asError("status.open", cause),
     }),
-    (db) =>
+    (handle) =>
       Effect.try({
         try: () => {
+          const db = handle.db
           ensureMemoryVectorSchema(db)
           const rawRows = selectAuditRows(db)
           const rows = rawRows.map((row) => auditRow(row, args.embedder))
@@ -686,7 +746,12 @@ export function getMemoryVectorStatus(args: {
             },
             totalVectors: rows.length,
             staleVectors: rows.filter((row) => row.stale).length,
-            hnsw: getHnswStatus(db, args.dbPath, args.embedder),
+            hnsw: getHnswStatus(
+              db,
+              args.dbPath,
+              args.embedder,
+              handle.vectorliteLoaded,
+            ),
             groups: Array.from(groupsByKey.values()).sort(
               (a, b) =>
                 a.dimension - b.dimension ||
@@ -699,7 +764,7 @@ export function getMemoryVectorStatus(args: {
         },
         catch: (cause) => asError("status", cause),
       }),
-    (db) => Effect.sync(() => closeAndSecureSidecar(db, args.dbPath)),
+    (handle) => Effect.sync(() => closeAndSecureSidecar(handle.db, args.dbPath)),
   )
 }
 
@@ -1004,11 +1069,16 @@ export function reembedMemoryVectors(args: {
 }): Effect.Effect<MemoryReembedResult, MemoryBackendError> {
   return Effect.acquireUseRelease(
     Effect.tryPromise({
-      try: () => openDb(args.dbPath),
+      // Only the mutating reembed drops stale triggers: it must UPDATE
+      // memory_vectors, and a stale trigger body would throw at prepare
+      // time without the module. Dry-run never writes that table, so it
+      // leaves the shared schema alone (see openDb).
+      try: () => openDb(args.dbPath, { dropStaleTriggers: !args.dryRun }),
       catch: (cause) => asError("reembed.open", cause),
     }),
-    (db) =>
+    (handle) =>
       Effect.gen(function* () {
+        const db = handle.db
         const candidates = yield* Effect.try({
           try: () => {
             ensureMemoryVectorSchema(db)
@@ -1265,6 +1335,6 @@ export function reembedMemoryVectors(args: {
           rows,
         }
       }),
-    (db) => Effect.sync(() => closeAndSecureSidecar(db, args.dbPath)),
+    (handle) => Effect.sync(() => closeAndSecureSidecar(handle.db, args.dbPath)),
   )
 }
