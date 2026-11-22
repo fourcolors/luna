@@ -914,6 +914,37 @@ const validateAttachments = (
 }
 
 /**
+ * Validate inbound user-message client identity. The wire type narrows
+ * `client` to ClientInfo, but a malicious client can send arbitrary JSON —
+ * TS types don't run at runtime. applyClientMarker does `client.name.replace`
+ * with no typeof check, so a non-object client, or a non-string name /
+ * version / platform, throws a TypeError defect inside chat.send (typed
+ * `never`), killing the handler fiber with no reply. Returns a
+ * human-readable error message on failure, or null on success.
+ */
+const validateClient = (client: unknown): string | null => {
+  if (client === undefined) return null
+  if (client === null || typeof client !== "object" || Array.isArray(client)) {
+    return "client must be an object with a string name"
+  }
+  const c = client as {
+    readonly name?: unknown
+    readonly version?: unknown
+    readonly platform?: unknown
+  }
+  if (typeof c.name !== "string") {
+    return "client.name must be a string"
+  }
+  if (c.version !== undefined && typeof c.version !== "string") {
+    return "client.version must be a string"
+  }
+  if (c.platform !== undefined && typeof c.platform !== "string") {
+    return "client.platform must be a string"
+  }
+  return null
+}
+
+/**
  * Start a UIWebSocketServer. Returns a handle inside a Scope.
  *
  * The server forks all per-connection forwarders into THIS server's scope,
@@ -2527,6 +2558,24 @@ export const startUIWebSocketServer = (
                     // Registering here makes any actively-chatting thread a valid
                     // secret target. Idempotent (last writer wins); cheap.
                     registerSecretClient(frame.threadId)
+                    // Malformed-frame guard: frame.client is attacker-controlled
+                    // JSON (parsed with a bare cast, no schema validation).
+                    // A non-object client, or a non-string name/version/
+                    // platform, reaches applyClientMarker's `s.replace` and
+                    // throws a TypeError defect, killing this handler fiber
+                    // with no reply — the client hangs waiting for a turn
+                    // that never starts. Reject it with a typed error
+                    // instead, mirroring the text/attachments guards.
+                    const clientErr = validateClient(frame.client)
+                    if (clientErr !== null) {
+                      send(ws, {
+                        type: "assistant-error",
+                        threadId: frame.threadId,
+                        turnId: null,
+                        error: { kind: "sdk", message: clientErr },
+                      })
+                      return
+                    }
                     // TS types are erased at runtime — clients can send
                     // arbitrary mediaType strings or oversized data. Validate
                     // before forwarding to the SDK so a clean error surfaces
