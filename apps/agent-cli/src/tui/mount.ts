@@ -25,6 +25,7 @@ import {
 } from "../chat/config.js"
 import {
   connectWithRecovery,
+  dangerousLocalShellCwdDenial,
   localShellScopeSummary,
   resolveAttachRoot,
 } from "../chat/app.js"
@@ -228,6 +229,22 @@ export const mountTui = async (argv: readonly string[]): Promise<TuiMountResult>
         exitCode: null,
         stdout: "",
         stderr: "local shell disabled",
+        durationMs: 0,
+        timedOut: false,
+      })
+      return
+    }
+    const cwdDenial = dangerousLocalShellCwdDenial(frame.cwd, cfg.dangerouslyAutoApproveLocalShell, cfg.dangerousLocalShellRoot)
+    if (cwdDenial !== null) {
+      client.send({
+        type: "local-shell-result",
+        requestId: frame.requestId,
+        threadId: frame.threadId,
+        clientId: localShell.clientId,
+        approved: false,
+        exitCode: null,
+        stdout: "",
+        stderr: cwdDenial,
         durationMs: 0,
         timedOut: false,
       })
