@@ -3491,7 +3491,10 @@ export const startUIWebSocketServer = (
                     )
                     send(ws, {
                       type: "register-op-token-status",
-                      requestId: frame.requestId,
+                      // Same normalization as the rejection path above: the
+                      // reply contract requires requestId: string, so a
+                      // non-string (or missing) id echoes as "".
+                      requestId: opReqId,
                       ok: result.ok,
                       message: result.message,
                     })

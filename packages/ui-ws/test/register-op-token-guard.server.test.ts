@@ -80,19 +80,25 @@ const sendFrames = (url: string, frames: ReadonlyArray<unknown>): Promise<Server
       headers: { authorization: `Bearer ${TOKEN}` },
     })
     const out: ServerFrame[] = []
-    const stop = setTimeout(() => {
+    let settled = false
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(hardStop)
       ws.close()
       resolve(out)
-    }, 400)
+    }
+    // Safety net: never hang the test if the server never answers.
+    const hardStop = setTimeout(finish, 5000)
     ws.on("error", (err) => {
-      clearTimeout(stop)
+      clearTimeout(hardStop)
       reject(err)
     })
     ws.on("message", (raw) => {
       try {
         out.push(JSON.parse(raw.toString()) as ServerFrame)
       } catch (e) {
-        clearTimeout(stop)
+        clearTimeout(hardStop)
         reject(e)
       }
     })
@@ -103,6 +109,11 @@ const sendFrames = (url: string, frames: ReadonlyArray<unknown>): Promise<Server
         await new Promise((r) => setTimeout(r, 10))
       }
       for (const f of frames) ws.send(JSON.stringify(f))
+      // Give the server a beat to reply before closing. The settle timer
+      // starts only after the frames are sent: the hello wait above allows
+      // up to 2s, so a timer started at connect could fire first on slow
+      // CI and resolve before the frames were ever sent.
+      setTimeout(finish, 400)
     })
   })
 
@@ -167,5 +178,24 @@ describe("register-op-token malformed-frame guard", () => {
     expect(good).toBeDefined()
     expect(good!.ok).toBe(true)
     expect(good!.message).toBe('Saved "personal".')
+  })
+
+  it("normalizes a non-string requestId on the success path too", async () => {
+    const rig = await startRig()
+    shutdown = rig.shutdown
+
+    const out = await sendFrames(rig.url, [
+      // Well-formed label/token but a numeric requestId: the handler still
+      // runs, and the status reply must carry a string requestId per the
+      // reply contract — not the client's raw number.
+      { type: "register-op-token", requestId: 99, label: "personal", token: "ops_test-token" },
+    ])
+
+    expect(rig.calls).toEqual([{ label: "personal", token: "ops_test-token" }])
+    const got = statuses(out)
+    expect(got).toHaveLength(1)
+    expect(got[0]!.requestId).toBe("")
+    expect(got[0]!.ok).toBe(true)
+    expect(got[0]!.message).toBe('Saved "personal".')
   })
 })
