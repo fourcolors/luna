@@ -3464,12 +3464,37 @@ export const startUIWebSocketServer = (
                     // its status. The token is sensitive — never logged here,
                     // and the handler contract forbids echoing it in `message`.
                     if (registerOpToken === null) return
+                    // Malformed-frame guard: label/token are
+                    // attacker-controlled JSON — makeRegisterOpToken calls
+                    // .trim() on both, so a non-string (or missing) value
+                    // rejects the promise and fails this handler fiber with
+                    // no status reply, leaving the client hanging (same
+                    // class as the pty-input / survey-response guards).
+                    // Reject with a typed status instead; requestId echoes
+                    // only when it is actually a string.
+                    const opReqId =
+                      typeof frame.requestId === "string" ? frame.requestId : ""
+                    if (
+                      typeof frame.label !== "string" ||
+                      typeof frame.token !== "string"
+                    ) {
+                      send(ws, {
+                        type: "register-op-token-status",
+                        requestId: opReqId,
+                        ok: false,
+                        message: "malformed register-op-token frame",
+                      })
+                      return
+                    }
                     const result = yield* Effect.promise(() =>
                       registerOpToken({ label: frame.label, token: frame.token }),
                     )
                     send(ws, {
                       type: "register-op-token-status",
-                      requestId: frame.requestId,
+                      // Same normalization as the rejection path above: the
+                      // reply contract requires requestId: string, so a
+                      // non-string (or missing) id echoes as "".
+                      requestId: opReqId,
                       ok: result.ok,
                       message: result.message,
                     })
