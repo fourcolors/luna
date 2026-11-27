@@ -1082,4 +1082,108 @@ d("sqlite-vector maintenance", () => {
       cleanup()
     }
   })
+
+  it("reembed --limit caps the total rows processed across stale reembed and backfill", async () => {
+    // Regression test: --limit is documented as "cap rows processed by
+    // reembed" (apps/agent-cli/src/memory.ts), but reembedMemoryVectors
+    // applied the limit to the stale list AND again to the missing-vector
+    // backfill, so a run could process up to 2x the cap. The backfill
+    // only gets the budget the stale rows did not use, in both the
+    // dry-run and the mutating path.
+    const { dbPath, cleanup } = await makeOldVectorDb()
+    try {
+      const bunSqlite = (await import("bun:sqlite" as string)) as {
+        Database: new (p: string) => {
+          run: (sql: string) => void
+          query: (sql: string) => {
+            run: (...p: unknown[]) => { changes: number }
+          }
+          close: () => void
+        }
+      }
+      const raw = new bunSqlite.Database(dbPath)
+      try {
+        // Second stale row (64-dim vector vs the 768-dim active embedder).
+        raw
+          .query(
+            `INSERT INTO memory_keyed
+               (id, namespace, kind, content_json, schema_version, created_at, updated_at, tags_json)
+             VALUES (?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            "stale-2",
+            "notes",
+            "note",
+            JSON.stringify({ text: "second stale memory" }),
+            1,
+            1,
+            1,
+            JSON.stringify([]),
+          )
+        raw
+          .query(
+            `INSERT INTO memory_vectors
+               (id, namespace, embedding, dimension, text, ts)
+             VALUES (?,?,?,?,?,?)`,
+          )
+          .run(
+            "stale-2",
+            "notes",
+            float32ToBuffer(new Float32Array(64)),
+            64,
+            "second stale memory",
+            1,
+          )
+        // Two keyed rows with no vector row at all (embedder-outage shape).
+        for (const id of ["missing-1", "missing-2"]) {
+          raw
+            .query(
+              `INSERT INTO memory_keyed
+                 (id, namespace, kind, content_json, schema_version, created_at, updated_at, tags_json)
+               VALUES (?,?,?,?,?,?,?,?)`,
+            )
+            .run(
+              id,
+              "notes",
+              "note",
+              JSON.stringify({ text: `${id} memory` }),
+              1,
+              1,
+              1,
+              JSON.stringify([]),
+            )
+        }
+      } finally {
+        raw.close()
+      }
+
+      const dry = await Effect.runPromise(
+        reembedMemoryVectors({
+          dbPath,
+          embedder: activeEmbeddingGemma,
+          limit: 2,
+          dryRun: true,
+        }),
+      )
+      expect(dry.rows).toHaveLength(2)
+      expect(dry.rows.map((row) => row.action)).toEqual([
+        "would-reembed",
+        "would-reembed",
+      ])
+
+      const result = await Effect.runPromise(
+        reembedMemoryVectors({
+          dbPath,
+          embedder: activeEmbeddingGemma,
+          limit: 2,
+          dryRun: false,
+        }),
+      )
+      expect(result.reembedded).toBe(2)
+      expect(result.backfilled).toBe(0)
+      expect(result.rows).toHaveLength(2)
+    } finally {
+      cleanup()
+    }
+  })
 })

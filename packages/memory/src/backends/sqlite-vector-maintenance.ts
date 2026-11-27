@@ -1096,13 +1096,18 @@ export function reembedMemoryVectors(args: {
         })
 
         if (args.dryRun) {
+          // The stale list above is already capped at args.limit, so the
+          // backfill only gets the budget the stale rows did not use:
+          // --limit caps the TOTAL rows processed, not each phase.
           const backfill = yield* backfillMissingVectors({
             db,
             embedder: args.embedder,
             ...(args.namespace !== undefined
               ? { namespace: args.namespace }
               : {}),
-            ...(args.limit !== undefined ? { limit: args.limit } : {}),
+            ...(args.limit !== undefined
+              ? { limit: Math.max(0, args.limit - candidates.stale.length) }
+              : {}),
             dryRun: true,
           })
           return {
@@ -1316,11 +1321,17 @@ export function reembedMemoryVectors(args: {
 
         // Missing-vector backfill: keyed rows that never got a vector row
         // (pre-kind-aware-extraction beliefs, embedder-outage writes).
+        // Only the budget the stale reembed did not use remains: --limit
+        // caps the TOTAL rows processed, not each phase. Rows skipped
+        // above (concurrent write) were not processed, so they do not
+        // consume budget.
         const backfill = yield* backfillMissingVectors({
           db,
           embedder: args.embedder,
           ...(args.namespace !== undefined ? { namespace: args.namespace } : {}),
-          ...(args.limit !== undefined ? { limit: args.limit } : {}),
+          ...(args.limit !== undefined
+            ? { limit: Math.max(0, args.limit - reembedded) }
+            : {}),
           dryRun: false,
         })
         for (const row of backfill.rows) rows.push(row)
